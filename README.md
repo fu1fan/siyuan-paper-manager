@@ -50,15 +50,18 @@ Zotero Connector 浏览器扩展
 
 ## 直接导入 PDF 的元数据提取
 
-参考 Zotero 原生与茉莉花插件的做法，采用多级回退策略：
+参考 Zotero 原生与茉莉花插件的做法，采用多级回退策略。第一版以 **公开 API 为主 + 知网检索为可选（默认关闭）**：
 
-| 级别 | 方法 | 适用 |
-|---|---|---|
-| 1 | 读 PDF 内嵌 XMP / 文档属性 | 出版商 PDF |
-| 2 | 提取前几页文本 → 找 DOI → 调 CrossRef REST API | 大多英文文献 |
-| 3 | 文件名(标题_作者) → 中文检索（知网式） | 中文文献增强 |
+| 级别 | 方法 | 适用 | 合规性 |
+|---|---|---|---|
+| 1 | 读 PDF 内嵌 XMP / 文档属性 | 出版商 PDF | ✅ 本地读取 |
+| 2 | 提取前几页文本 → 找 DOI → 交叉引库（CrossRef / 维基 Citoid） | 大多文献（含部分中文） | ✅ 公开 API，免 key |
+| 3 | 文件名(标题_作者) → 中文检索（知网式） | 中文文献增强 | ⚠️ 无官方 API、有反爬，作为可选开关（默认关闭） |
 
-> 说明：Zotero 原生（5.0.36+）就是"前几页文本 → DOI/ISBN 检测 → Crossref/web 服务补全"，**不读 XMP、不用 Google Scholar**。茉莉花则依赖"文件名反推 → 模拟知网检索 → 解析页面"，可参考其中文姓名拆分/合并。
+> **API 合规性**（核实自 BibLib 源码 `src/services/api/citoid.ts`）：BibLib 实际用的是 **维基 Citoid REST**（`en.wikipedia.org/api/rest_v1/data/citation/bibtex/`，公开免 key）+ **Citation.js**（内部组合 **CrossRef / PubMed / Open Library / Wikidata** 等公开 API）。这些全部对第三方开放。
+> 相反，**Zotero 官方的 PDF 识别 web 服务未公开、无开发者授权**，BibLib 也没用，不建议用；**知网 CNKI 无官方 API**（茉莉花靠爬虫模拟），置为可选且默认关闭。
+
+> 说明：Zotero 原生（5.0.36+）是"前几页文本 → DOI/ISBN 检测 → Crossref/web 服务补全"，**不读 XMP、不用 Google Scholar**。茉莉花则依赖"文件名反推 → 模拟知网检索 → 解析页面"，可参考其中文姓名拆分/合并。
 
 详细设计见 [docs/implementation-design.md](docs/implementation-design.md)。
 

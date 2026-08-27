@@ -216,21 +216,37 @@ Zotero 5.0.36（2018）之后的机制（**旧版查 Google Scholar 已废弃**�
 
 ### 5.D 本插件的元数据提取设计（可行路径）
 
-在本插件里，直接导入 PDF 后需拿到结构化元数据。按可靠性排序，采用**多级提取策略**：
+> **决策（已确认）**：第一版走 **公开 API 为主 + 知网爬虫可选开关（默认关闭）**。
+> - **外文文献**：用公开、免费、免 key 的公共服务，合规稳定。
+> - **中文文献**：提供可选开关调用知网检索（类似茉莉花），默认关闭以规避反爬与条款风险；中文文献有 DOI 时，公开 API 亦可能覆盖。
+
+#### 元数据 API 的合规性对照（先厘清"能不能用"）
+
+| 来源 | 性质 | 第三方是否可用 | 说明 |
+|---|---|---|---|
+| **维基 Citoid**（Wikipedia REST，URL/DOI/ISBN → BibTeX） | 维基媒体基金会公开 REST 服务 | ✅ 可用 | 免 key、无访问限制，设 `User-Agent` 即可 |
+| **CrossRef**（DOI → CSL-JSON） | 公开学术元数据登记库 | ✅ 可用 | 免费、免 key，`api.crossref.org` |
+| **PubMed / Open Library / Wikidata**（PMID / ISBN） | 公开 API | ✅ 可用 | 配合 citation-js 插件调用 |
+| **Zotero 官方 PDF 识别 web 服务** | Zotero 内部私用 | ❌ 不可用 | 未公开、无文档、无开发者授权；BibLib 也没用 |
+| **知网 CNKI 检索**（茉莉花式） | 无官方 API，爬虫 + 反爬 | ⚠️ 灰色 | 不稳定、有反爬风险、可能违反条款；作为可选开关 |
+| **Google Scholar** | 已被 Zotero 弃用（限流） | ❌ 不建议 | — |
+| **PDF 内嵌 XMP** | 本地读取，非 API | ✅ 可用 | 质量参差，只作兜底 |
+
+#### MetadataExtractor 提取流程（按可靠性回退）
 
 | 级别 | 方法 | 适用 | 优点 | 依赖 |
 |---|---|---|---|---|
 | **1. 嵌入 XMP / 文档属性** | 读 PDF 的 Document Info / XMP（Dublin Core 等） | 出版商 PDF | 本地、快 | PDF 内嵌元数据质量参差 |
-| **2. DOI 检测 + Crossref** | 从 PDF 全文/前几页正则找 DOI → 调 CrossRef REST API | 大多英文文献 | 准、标准 | 需提取 PDF 文本、联网 |
-| **3. 文件名 + 中文检索** | 茉莉花式：文件名(`标题_作者`) → 知网检索（或 Crossref 等） | 中文文献 | 补上中文本地化 | 强依赖文件名含中文、反爬风险 |
+| **2. DOI 检测 + 公开 API** | 从 PDF 前几页正则找 DOI → 交叉引库（CrossRef/Citoid） | 大多文献（含部分中文） | 准、标准、合规 | 需提取 PDF 文本、联网 |
+| **3. 文件名 + 中文检索（可选，默认关）** | 茉莉花式：文件名(`标题_作者`) → 知网检索 | 中文文献 | 补上中文本地化 | 强依赖文件名含中文、反爬风险 |
 | | | | | |
 
 **落地建议**：
-- **先本地、后联网**：先试方法 1（XMP）与 2（DOI→Crossref），都不行再试方法 3（中文检索）。
-- **PDF 文本层**：需要从 PDF 提取文本。思源插件里可用 Node 的 PDF 解析库（`pdf-parse` / `pdfjs-dist` 等）在前端/本地提取前几页，再正则找 DOI 或标题。
-- **CrossRef REST**：`https://api.crossref.org/works?query.bibliographic=...`，免费无需 key，返回 JSON 含 title/authors/journal/date/DOI，与我们的模板字段天然对齐。
-- **中文来源策略**：若要复刻茉莉花，需实现知网检索 + 解析（无官方 API、有反爬），复杂度高且易被前端改版影响。**建议第一版先做方法 2（Crossref/DOI），中文文献作为增强用文件名+中文搜索引擎或知网可选插件**，风险可控。
-- **中文姓名归一化**：把提取到的中文作者名按茉莉花逻辑拆成 family/given，供模板 `{{range .authors}}` 复用。
+- **先本地、后联网**：方法 1（XMP）→ 方法 2（DOI→ CrossRef/Citoid，公开 API）→ 方法 3（知网，仅在开关开启时）。
+- **公开 API 首选**：DOI 走 CrossRef 或 Citoid（推荐先用 Citoid 拿 BibTeX 再解析，或直接 CrossRef 的 CSL-JSON，与本插件模板字段最贴合）。
+- **中文策略（开关）**：`中文检索` 默认关闭。仅当用户开启时，才调用知网检索补中文本地化；失败不影响主流程（回退到公开 API 或仅存 PDF）。
+- **PDF 文本层**：用 Node 的 PDF 解析库（`pdf-parse`/`pdfjs-dist`）提取前几页，正则找 DOI/标题。
+- **中文姓名归一化**：把中文作者名拆成 family/given，供模板 `{{range .authors}}` 复用。
 
 ### 5.E 直接导入 PDF 的流程（时序）
 
@@ -240,9 +256,9 @@ Zotero 5.0.36（2018）之后的机制（**旧版查 Google Scholar 已废弃**�
    ▼
 MetadataExtractor
   1. 读 XMP / 文档属性（本地）
-  2. 提取前几页文本 → 正则找 DOI
-  3. 花 DOI → Crossref 查元数据（英文）
-  4. 可选：文件名中文 → 知网/CSL 检索（中文，增强）
+  2. 提取前几页文本 → 正则找 DOI/标题
+  3. 公开 API 查元数据（首选 CrossRef / Citoid，免 key）
+  4. 若"中文检索"开关开启：文件名中文 → 知网检索（可选中一个最匹配结果）
    │ 产出统一 ZoteroItem 结构（含 attachments 指向本地 pdf）
    ▼
 ItemProcessor 复用：上传附件 → 渲染模板 → createDocWithMd
@@ -258,8 +274,8 @@ ItemProcessor 复用：上传附件 → 渲染模板 → createDocWithMd
 | 附件目录 | `assetsDirPath` | `/assets/` |
 | 模板路径 | 模板文件在 templates 下的路径 | `/data/templates/paper.md` |
 | 开箱默认模板 | 首次运行是否写入内置模板 | 开启 |
-| PDF 元数据回退顺序 | 直接导入 PDF 时的提取顺序 | XMP → DOI/Crossref → 中文检索 |
-| 中文文献检索 | 是否启用中文（知网）元数据增强 | 关闭（默认） |
+| PDF 元数据回退顺序 | 直接导入 PDF 时的提取顺序 | XMP → DOI/Citoid → 中文检索 |
+| 中文检索（知网） | 是否启用中文（知网）元数据增强；默认关闭 | 关闭（默认） |
 
 ## 七、工作流（完整时序）
 
