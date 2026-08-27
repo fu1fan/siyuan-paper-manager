@@ -38,13 +38,16 @@ Zotero Connector 浏览器扩展
 4. **保存到指定位置**：通过思源内核 API 将文献写入指定笔记本 + 路径下的新文档。
 5. **附件处理**：（可选进阶）接收并保存 Zotero Connector 发来的 PDF 等附件。
 
-## 存储设计（待细化）
+## 存储设计
 
-参照 BibLib：用 Markdown 存储，元数据以 YAML frontmatter 形式写入。对思源而言，最贴合的做法是：
+已确定采用 **思源原生模板片段** 方案：
 
 - 每篇文献 = 一篇思源文档，通过内核 API `POST /api/filetree/createDocWithMd` 创建；
-- 文献元数据以 YAML / 属性形式置于文档头部（思源支持块级属性 / 文档属性）；
-- 正文可包含摘要、PDF 链接、阅读笔记等。
+- 文献信息由模板格式化：模板以 `.md` 存于思源工作空间 `data/templates/`，插件通过内核 API `POST /api/template/render` 让思源渲染填充（支持 Go 模板 + Sprig：条件、循环、日期等）；
+- 元数据以 YAML / 属性形式置于文档头部，正文可含摘要、PDF 附件引用、阅读笔记等；
+- 附件（PDF / HTML）通过内核 API `POST /api/asset/upload` 转存到思源仓库，禁止直接 `fs` 写 `data`。
+
+详细设计见 [docs/implementation-design.md](docs/implementation-design.md)。
 
 ## 技术要点
 
@@ -61,6 +64,7 @@ Zotero Connector 浏览器扩展
 - [docs/biblib-zotero-connector-core.md](docs/biblib-zotero-connector-core.md) — BibLib 插件的 Connector 实现逻辑
 - [docs/zotero-connector-protocol.md](docs/zotero-connector-protocol.md) — Zotero Connector 本地 HTTP 协议细节
 - [docs/siyuan-kernel-api.md](docs/siyuan-kernel-api.md) — 思源内核 API（创建文档等）
+- [docs/implementation-design.md](docs/implementation-design.md) — 插件实现设计（附件落盘 + 模板渲染）
 
 ### 官方 / 上游链接
 
