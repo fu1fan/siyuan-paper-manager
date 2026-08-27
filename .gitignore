@@ -1,0 +1,19 @@
+# dependencies
+node_modules/
+*.log
+
+# build output
+dist/
+build/
+*.zip
+
+# 思源插件调试时的数据目录
+data/
+
+# editor
+.DS_Store
+.vscode/
+*.swp
+
+# 临时文件
+*.tsbuildinfo
