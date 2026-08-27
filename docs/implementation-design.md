@@ -3,11 +3,12 @@
 > **模板方案决策**：采用 **思源原生模板片段**（方案 A，用户已确认）。
 > 模板以 `.md` 文件存在于思源工作空间 `data/templates/`，插件通过内核 API `POST /api/template/render` 让思源渲染填充，再调 `createDocWithMd` 创建文档。
 
-## 一、目标功能（三件事）
+## 一、目标功能（四件事）
 
 1. **保存 Zotero 浏览器端插件发送的所有文件**（PDF、HTML 快照、toc 页等）。
-2. **把论文信息用模板格式化** 成预设计好的模板内容，保存为思源文档。
+2. **把论文文档升级为元数据页**（隐藏字段 + 元数据模板区 + 一次性笔记区），见能力 2。
 3. **直接导入本地 PDF**：用户主动选择本地 PDF 文件导入，插件自动提取其元数据（含中文文献），再走模板流程保存。
+4. **论文翻译**：调用本地额外安装的 `pdf2zh` 命令行工具，根据隐藏字段定位论文 PDF 附件，生成单语/双语翻译版，并更新元数据模板区中的翻译文档链接。
 
 ## 二、总体架构
 
@@ -29,10 +30,18 @@ Zotero Connector 浏览器扩展 │        PDF 直接导入入口        │
 │  1. 附件落盘 → 思源 kernel API                │
 │  2. 读取模板 → /api/template/render 渲染      │
 │  3. 创建文档 → /api/filetree/createDocWithMd  │
+│  4. 写隐藏字段 → /api/attr/setBlockAttrs      │
+└───────────────┬─────────────────────────────┘
+                │
+                ▼
+┌─────────────────────────────────────────────┐
+│  PdfTranslator  (能力 4：翻译)               │
+│  按隐藏字段定位 PDF 附件 → 调 pdf2zh CLI      │
+│  → 生成 mono/dual 翻译版 → 回填元数据模板区   │
 └─────────────────────────────────────────────┘
 ```
 
-> PDF 直接导入与 Zotero Connector 两条入口最终汇合到同一套 `ItemProcessor`，共用模板渲染与落盘逻辑。
+> 两条输入入口（浏览器 Connector、PDF 直接导入）最终汇合到同一套 `ItemProcessor`；翻译则作为独立能力，对任意已存在的论文元数据页触发。
 
 ## 三、能力 1：保存附件文件（PDF / HTML 等）
 
@@ -148,6 +157,8 @@ Zotero 的 `saveItems` 传入的 item 字段，映射为模板变量。约定如
   "attachments": [                        // 已上传的附件地址
     { "title": "PDF", "url": "assets/xxx.pdf", "mimeType": "application/pdf" }
   ],
+  "translationMono": "assets/xxx-mono.pdf",   // 单语翻译版地址（pdf2zh 生成后回填，可空）
+  "translationDual": "assets/xxx-dual.pdf",   // 双语对照版地址（pdf2zh 生成后回填，可空）
   "citekey": "smith2024alice"             // 引用键（可选，生成）
 }
 ```
@@ -322,7 +333,115 @@ MetadataExtractor
 ItemProcessor 复用：上传附件 → 渲染模板 → createDocWithMd
 ```
 
-## 六、需要用户配置项（设置面板）
+## 六、能力 4：论文翻译（调用本地 pdf2zh 命令行工具）
+
+### 6.A 原理与目标
+
+依赖用户本地额外安装的 **pdf2zh**（PDFMathTranslate）命令行工具，对论文 PDF 进行翻译。功能目标：
+
+- 通过**隐藏字段**定位论文的 PDF 附件位置；
+- 调用 `pdf2zh` 对 PDF 翻译，生成**单语翻译版**（`…-mono.pdf`）与**双语版**（`…-dual.pdf`）；
+- 重新格式化论文的元数据模板区，**更新/新增翻译文档的链接**。
+
+### 6.B pdf2zh 关键信息（来自其 README）
+
+**安装方式**（任选其一，需 Python 3.11–3.12）：
+
+```bash
+# uv
+uv tool install --python 3.12 pdf2zh
+# pip
+pip install pdf2zh
+```
+
+**基本用法**——默认生成 `example-mono.pdf`（单语译版）和 `example-dual.pdf`（双语版）到当前目录：
+
+```bash
+pdf2zh document.pdf
+```
+
+**常用 CLI 选项**（插件需用到的）：
+
+| 选项 | 作用 | 示例 |
+|---|---|---|
+| `files` | 本地文件路径 | `pdf2zh ~/local.pdf` |
+| `-o` | 输出目录 | `pdf2zh example.pdf -o output` |
+| `-li` | 源语言（默认 en） | `pdf2zh example.pdf -li en` |
+| `-lo` | 目标语言（默认 zh） | `pdf2zh example.pdf -lo zh` |
+| `-s` | 翻译服务（默认 google） | `pdf2zh example.pdf -s deepl` |
+| `-p` | 部分翻译（页码） | `pdf2zh example.pdf -p 1` |
+| `-t` | 多线程数 | `pdf2zh example.pdf -t 1` |
+| `--dir` | 批量翻译目录 | `pdf2zh --dir /path/to/` |
+| `--config` | 配置文件 | `pdf2zh --config config.json` |
+| `--mode` | `fast`(默认 v1) / `precise`(v2 实验) | `pdf2zh --mode precise example.pdf` |
+
+**输出文件命名规则**：
+- `{原文件名}-mono.pdf` —— 纯翻译版
+- `{原文件名}-dual.pdf` —— 双语对照版
+
+**注意**：依赖下载 AI 模型（DocLayout-YOLO），国内网络需设 `HF_ENDPOINT=https://hf-mirror.com`。默认 Google 翻译服务，可换 deepel/openai 等。
+
+### 6.C 插件如何调用 pdf2zh
+
+pdf2zh 是**独立 CLI 子进程**，与插件是两个进程。插件用 Node 的 `child_process` 执行：
+
+```ts
+import { execFile } from "child_process";
+import { promisify } from "util";
+const execFileP = promisify(execFile);
+
+// 1. 根据隐藏字段定位 PDF 附件路径
+const pdfPath = await resolvePdfFromHiddenField(paperDocId);   // 见 6.D
+
+// 2. 调 pdf2zh，输出到临时/指定目录
+const opts = ["-o", outputDir, ...(settings.pdf2zhArgs || []), pdfPath];
+// 例如默认：["-o", outputDir, pdfPath]  → 生成 {name}-mono.pdf / {name}-dual.pdf
+const { stdout, stderr } = await execFileP(settings.pdf2zhPath || "pdf2zh", opts);
+```
+
+**要点**：
+- 插件不会打包 pdf2zh（体积大、需 Python），只**检测本地是否安装**（`which pdf2zh` / 可执行路径设置），未安装时提示用户按 README 安装。
+- 输出目录可配置（默认写入思源 `assets/` 或某翻译子目录），再由 `/api/asset/upload` 转存回思源仓库。
+- CLI 是**同步阻塞**的（翻译耗时），插件侧需放入异步任务（后台执行），完成后用事件/通知回填元数据模板区，避免卡死 UI。
+
+### 6.D 通过隐藏字段定位 PDF 附件
+
+从论文元数据页的隐藏字段（`custom-*`）中读取 PDF 附件地址。约定字段：
+
+| 隐藏字段 | 含义 |
+|---|---|
+| `custom-attachment-pdf` | 论文主 PDF 在思源中的地址（`assets/….pdf` 或 `data` 相对路径） |
+| `custom-translation-mono` | 单语翻译版地址（若已生成） |
+| `custom-translation-dual` | 双语翻译版地址（若已生成） |
+
+定位流程：
+1. 读取文档根块属性 `custom-attachment-pdf`，拿到原 PDF 地址；
+2. 转成磁盘路径（思源工作空间 + 相对地址），交给 pdf2zh；
+3. 翻译完成后，`/api/asset/upload` 把 `…-mono.pdf` / `…-dual.pdf` 上传回思源，得到 `assets/….pdf` 地址；
+4. 写入 `custom-translation-mono` / `custom-translation-dual`，并重渲染元数据模板区。
+
+### 6.E 重渲染元数据模板区，更新翻译链接
+
+翻译生成、回填隐藏字段后，把新的翻译链接写入元数据模板区：
+
+- 把 `custom-translation-mono` / `custom-translation-dual` 作为模板变量传入 `/api/template/render`；
+- `paper-meta.md` 里对应新增"翻译版本"区块，如：
+
+```markdown
+## 翻译版本
+{{if .translationMono}}- [单语翻译版]({{.translationMono}})
+{{end}}{{if .translationDual}}- [双语对照版]({{.translationDual}})
+{{end}}
+```
+
+- 用 `/api/block/updateBlock` 刷新元数据区区块（注意用 `getBlockKramdown` 保留块属性，见能力 2 的 4.7）。
+
+### 6.F 翻译功能触发入口
+
+- 在论文元数据页文档块菜单/右键，或插件命令面板提供"翻译本文档"命令；
+- 翻译是长耗时异步任务，需显示进度/完成通知，翻译完成后自动回填链接并刷新模板区。
+
+## 七、需要用户配置项（设置面板）
 
 | 设置项 | 说明 | 默认值 |
 |---|---|---|
@@ -336,8 +455,13 @@ ItemProcessor 复用：上传附件 → 渲染模板 → createDocWithMd
 | 编辑元数据 UI | 插件自建"编辑元数据"对话框（隐藏字段的唯一修改入口） | 开启（必需） |
 | PDF 元数据回退顺序 | 直接导入 PDF 时的提取顺序 | XMP → DOI/Citoid → 中文检索 |
 | 中文检索（知网） | 是否启用中文（知网）元数据增强；默认关闭 | 关闭（默认） |
+| pdf2zh 路径 | 本地 pdf2zh 可执行文件路径 | `pdf2zh`（PATH 中） |
+| pdf2zh 翻译参数 | 传给 pdf2zh 的 CLI 参数（如 `-s deepl -li en -lo zh`） | 空（用默认） |
+| pdf2zh 源/目标语言 | `-li` / `-lo` | `en` / `zh` |
+| 翻译输出目录 | 生成 mono/dual 的临时/落盘目录 | `/assets/` |
+| 是否生成双语版 | 是否需要 `…-dual.pdf` | 开启 |
 
-## 七、工作流（完整时序）
+## 八、工作流（完整时序）
 
 **入口 A：浏览器 Connector**
 1. **插件 onload**：读取设置 → 启动 ConnectorServer（监听 23119）→ 检查默认模板是否存在，不存在则写入。
@@ -356,9 +480,16 @@ ItemProcessor 复用：上传附件 → 渲染模板 → createDocWithMd
 1. 用户选择本地 PDF → `MetadataExtractor` 提取元数据（见 5.D 多级策略）。
 2. 产出 `ZoteroItem` 结构 → 走与入口 A 相同的 `ItemProcessor`（上传附件 → 渲染模板 → 建文档）。
 
-> 两条入口共用 `ItemProcessor`，保证模板与落盘逻辑一致。
+**入口 C：论文翻译（PDF → pdf2zh）**
+1. 用户在论文元数据页触发"翻译本文档"，插件读取隐藏字段 `custom-attachment-pdf` 定位原 PDF；
+2. 后端异步执行 `pdf2zh`（参数见设置），生成 `…-mono.pdf` / `…-dual.pdf`；
+3. 翻译完成后 `/api/asset/upload` 回传思源，写 `custom-translation-mono` / `custom-translation-dual`；
+4. 用新翻译链接重渲染元数据模板区（`/api/template/render` + `updateBlock`），更新"翻译版本"区块；
+5. 通知用户完成。
 
-## 八、关键风险与注意
+> 三条入口 (A/B/C) 最终都落点于同一套元数据页与模板刷新逻辑。
+
+## 九、关键风险与注意
 
 1. **端口冲突**：23119 与 Zotero 桌面版冲突，使用插件时须关闭 Zotero；只绑定 `127.0.0.1`，禁公网。
 2. **`window.require` 可用性**：思源桌面版（Electron）是否能像 Obsidian 一样在渲染进程用 `window.require` 取 Node 模块，**需实测确认**；若不可用，需另找在思源里启动本地 http server 的方法。
@@ -370,15 +501,20 @@ ItemProcessor 复用：上传附件 → 渲染模板 → createDocWithMd
 8. **`setBlockAttrs` 无属性变更事件**：Issue #17179 —— 修改块属性不会触发 `savedoc`。**但这不影响本插件**：因隐藏字段唯一修改入口是插件 UI，改动必经过插件，插件主动刷新模板区即可（见 4.7(2)）。仅当未来允许用户直接在思源面板改属性时才需兜底。
 9. **`updateBlock` 会清空块属性**：直接 `updateBlock` 更新元数据区会丢该块原有属性，需 `getBlockKramdown` 取回内联属性一并传回，或用 `/api/transactions` / `protyle` 事务。
 10. **`setBlockAttrs` 的转义 bug**（Issue #6198）：API 写入的属性值读取时可能被 HTML 转义，某些值需 `htmlDecode` 处理。
+11. **pdf2zh 依赖本地环境**：插件不打包 pdf2zh，需用户自行安装（Python 3.11–3.12 + `pip install pdf2zh`）。未安装或路径不对时需给出明确提示。
+12. **pdf2zh 首次运行需下载 AI 模型**：依赖 DocLayout-YOLO 模型，国内网络可能失败，需设 `HF_ENDPOINT=https://hf-mirror.com` 或配置镜像。
+13. **翻译是长耗时 CLI**：`pdf2zh` 同步阻塞、耗时较长，插件需在后台/异步执行并显示进度，避免卡死 UI；同时注意同一时间不宜并发多个翻译任务。
+14. **模型/服务键**：若配置非默认翻译服务（`-s openai` 等）需相应 API key，插件只透传参数不落地管理 key。
 
-## 九、待办（实现前的 confirm 项）
+## 十、待办（实现前的 confirm 项）
 
 - [ ] 实测思源桌面版 `window.require` / Electron 环境下能否启动 Node `http.server`；
 - [ ] 确认获取思源**工作空间绝对路径**的方式（渲染模板需要）；
 - [ ] 用 curl 验证 `/api/template/render` 在本机思源可用、字段映射正确；
 - [ ] 在思源插件运行环境里实测 Node 的 PDF 解析库能否提取文本（决定直接导入 PDF 的可行性）；
 - [ ] 实测"插件 UI 改隐藏字段 → 重渲染元数据模板区 → updateBlock 刷新"这条链路是否顺畅（这是元数据自动更新的核心路径）；
-- [ ] 实测 `updateBlock` 更新元数据区时，如何用 `getBlockKramdown` 保留块属性（避免数据丢失）。
+- [ ] 实测 `updateBlock` 更新元数据区时，如何用 `getBlockKramdown` 保留块属性（避免数据丢失）；
+- [ ] 在插件运行环境实测能否用 Node `child_process` 调 `pdf2zh` CLI，并确认生成 `-mono.pdf` / `-dual.pdf` 的命名与路径（决定翻译功能的可行性与落盘方式）。
 
 ## 参考
 
@@ -388,3 +524,4 @@ ItemProcessor 复用：上传附件 → 渲染模板 → createDocWithMd
 - `../docs/siyuan-plugin-dev-guide.md` — 思源插件开发指南
 - https://github.com/l0o0/jasminum — 茉莉花（中文文献元数据增强）源码参考
 - https://www.zotero.org/support/adding_items_to_zotero — Zotero PDF 元数据提取说明
+- https://github.com/Byaidu/PDFMathTranslate — pdf2zh（本地论文翻译 CLI 工具）

@@ -38,6 +38,19 @@ Zotero Connector 浏览器扩展
 4. **保存到指定位置**：通过思源内核 API 将文献写入指定笔记本 + 路径下的新文档。
 5. **附件处理**：接收并保存 Zotero Connector 发来的 PDF 等附件（走 `/api/asset/upload` 转存）。
 6. **直接导入本地 PDF**：用户主动导入本地 PDF，插件自动提取元数据（含中文文献增强），再走模板流程保存。
+7. **论文翻译**：调用本地 `pdf2zh` 命令行工具，根据隐藏字段定位论文 PDF 附件，生成单语/双语翻译版，并更新元数据模板区的翻译文档链接。
+
+## 论文翻译
+
+依赖用户本地额外安装的 **pdf2zh**（PDFMathTranslate）命令行工具（需 Python 3.11–3.12，`pip install pdf2zh`）。插件用 Node `child_process` 将其作为独立 CLI 进程调用：
+
+- **定位 PDF**：从论文元数据页的隐藏字段 `custom-attachment-pdf` 读取原 PDF 附件地址；
+- **生成翻译版**：`pdf2zh document.pdf -o <dir>` 生成 `…-mono.pdf`（单语译版）与 `…-dual.pdf`（双语对照版），默认 Google 翻译服务，参数可配置（`-li/-lo/-s` 等）；
+- **回填并刷新**：翻译版经 `/api/asset/upload` 转存回思源，写隐藏字段 `custom-translation-mono` / `custom-translation-dual`，再重渲染元数据模板区的"翻译版本"区块。
+
+> ⚠️ pdf2zh 首次运行需下载 AI 模型（DocLayout-YOLO），国内网络可设 `HF_ENDPOINT=https://hf-mirror.com`。翻译是长耗时异步任务，插件后台执行并显示进度。
+
+详见 [docs/implementation-design.md](docs/implementation-design.md) 能力 4。
 
 ## 存储设计：论文元数据页
 
@@ -85,7 +98,7 @@ Zotero Connector 浏览器扩展
 - [docs/biblib-zotero-connector-core.md](docs/biblib-zotero-connector-core.md) — BibLib 插件的 Connector 实现逻辑
 - [docs/zotero-connector-protocol.md](docs/zotero-connector-protocol.md) — Zotero Connector 本地 HTTP 协议细节
 - [docs/siyuan-kernel-api.md](docs/siyuan-kernel-api.md) — 思源内核 API（创建文档等）
-- [docs/implementation-design.md](docs/implementation-design.md) — 插件实现设计（附件落盘 + 模板渲染）
+- [docs/implementation-design.md](docs/implementation-design.md) — 插件实现设计（附件落盘 + 模板渲染 + 翻译）
 
 ### 官方 / 上游链接
 
@@ -94,3 +107,5 @@ Zotero Connector 浏览器扩展
 - 思源内核 API 文档（中文）：https://github.com/siyuan-note/siyuan/blob/master/API_zh_CN.md
 - BibLib 仓库：https://github.com/callumalpass/obsidian-biblib
 - Zotero Connector HTTP Server 文档：https://www.zotero.org/support/dev/client_coding/connector_http_server
+- 茉莉花（Zotero 中文文献增强插件）：https://github.com/l0o0/jasminum
+- pdf2zh（PDFMathTranslate，本地论文翻译）：https://github.com/Byaidu/PDFMathTranslate
