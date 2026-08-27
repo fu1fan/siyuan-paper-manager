@@ -63,36 +63,54 @@ Zotero Connector 在 `saveItems` 后会调用 `/connector/saveAttachment`（或 
 - 在文献文档内插入对附件的引用，或用文档/块属性 `data-assets` 记录附件地址，防止"清理未引用资源"误删；
 - 附件路径作为资源链接写入 Markdown（`![[assets/xxx.pdf]]` 或直接引用），让思源识别为附件。
 
-## 四、能力 2：模板化论文信息
+## 四、能力 2：论文元数据页（文档定位升级）
 
-### 4.1 模板方案（已确认：思源原生模板片段）
+> **文档定位升级（本次变更）**：生成的论文文档不再只是一篇"文献笔记"，而是升级为 **论文的元数据页（Metadata Page）**。自上而下分三段结构：
+>
+> 1. **隐藏字段区**：保存论文的**所有**元数据（以思源块属性存储，正文不渲染）。
+> 2. **元数据模板区**：论文创建**或元数据被修改**时，自动重新渲染，展示可读的元数据摘要。
+> 3. **笔记模板区**：只在论文创建时**一次性**格式化到文档末尾，作为自由笔记区，后续不再被模板覆盖。
 
-- 模板文件存放在思源工作空间 `data/templates/` 下，`.md` 后缀，文件名即模板名；
-- 插件在设置页提供「模板路径」，默认指向 `data/templates/paper.md`（或某个约定文件名）；
-- **插件启动检测**：若默认模板文件不存在，可选择写入一份内置默认模板，让用户开箱即用。
+### 4.1 是否需要思源官方 API 支撑（可行性结论）
 
-### 4.2 渲染链路（关键：复用思源模板引擎）
+三个需求逐一核对思源 API，**结论：都能实现，但第 2 点的"自动"触发机制有明确限制**——详见 4.7。
+
+| 需求 | 思源 API | 是否满足 |
+|---|---|---|
+| 1. 隐藏字段存元数据 | `/api/attr/setBlockAttrs` 写 `custom-*` 块属性 | ✅ 满足（属性正文不渲染，天然隐藏） |
+| 2. 元数据模板自动更新 | `/api/block/updateBlock` + 模板 `render` | ⚠️ 部分满足（需自定义触发，见 4.7） |
+| 3. 笔记模板一次性创建 | `createDocWithMd` 时写入正文末尾 | ✅ 满足（等价于文档正文，只在创建时生成） |
+
+### 4.2 模板文件方案（沿用思源原生模板片段）
+
+沿用已确认的"思源原生模板片段"方案，但拆成**两份模板**：
+
+| 模板文件 | 用途 | 渲染时机 |
+|---|---|---|
+| `data/templates/paper-meta.md` | 生成"元数据模板区"内容 | 创建 + 元数据变更时重渲染 |
+| `data/templates/paper-note.md` | 生成"笔记模板区"内容 | 仅创建时一次 |
+
+> 创建文档时可把两段拼成一份 Markdown 一次性 `createDocWithMd`；此后更新只重渲染 `paper-meta` 对应块。
+
+### 4.3 渲染链路（创建时，复用思源模板引擎）
 
 ```ts
 import { request } from "siyuan";        // 或 this.app 提供的请求方法
 
 // 1. 读取模板内容（走内核 API，禁止 fs）
-const fileRes = await request("/api/file/getFile", { path: "/data/templates/paper.md" });
-const templateMd = fileRes.data as string;
+const metaMd = (await request("/api/file/getFile", { path: "/data/templates/paper-meta.md" })).data;
+const noteMd = (await request("/api/file/getFile", { path: "/data/templates/paper-note.md" })).data;
 
 // 2. 渲染模板：传模板绝对路径 + JSON 数据，思源返回渲染后的 Markdown
-const renderRes = await request("/api/template/render", {
-  path: "/<工作空间>/data/templates/paper.md",   // 绝对路径
-  data: JSON.stringify(zoteroData),               // 结构化文献数据（JSON 字符串）
-});
-const renderedMd = renderRes.data;
+const render = async (path:string, data:object) =>
+  (await request("/api/template/render", { path, data: JSON.stringify(data) })).data;
 
-// 3. 创建文档
+const metaRendered = await render("/<工作空间>/data/templates/paper-meta.md", zoteroData);
+const noteRendered = await render("/<工作空间>/data/templates/paper-note.md", zoteroData);
+
+// 3. 创建文档（正文 = 元数据区 + 笔记区）
 await request("/api/filetree/createDocWithMd", {
-  notebook: notebookId,
-  path: "/文献库/xxx",
-  markdown: renderedMd,
-  title: docTitle,
+  notebook, path: "/文献库/xxx", markdown: `${metaRendered}\n\n${noteRendered}`, title: docTitle,
 });
 ```
 
@@ -103,7 +121,7 @@ await request("/api/filetree/createDocWithMd", {
 > - 该接口有管理员权限校验，且需思源版本 ≥ 3.1.16（规避 renderSprig SSTI 漏洞）。
 > - **渲染路径是绝对路径**（含工作空间前缀），而 `createDocWithMd` 的 `path` 是仓库内相对 hpath（`/` 开头），两者不要混。
 
-### 4.3 模板变量协议（给 Zotero item → 模板的上下文）
+### 4.4 模板变量协议（给 Zotero item → 模板的上下文）
 
 Zotero 的 `saveItems` 传入的 item 字段，映射为模板变量。约定如下（字段名尽量沿用 Zotero，便于记忆）：
 
@@ -134,29 +152,21 @@ Zotero 的 `saveItems` 传入的 item 字段，映射为模板变量。约定如
 }
 ```
 
-模板示例（`data/templates/paper.md`）：
+模板示例——元数据区（`data/templates/paper-meta.md`）：
 
 ```markdown
----
-title: {{.title}}
-citation-key: {{.citekey}}
-type: {{.itemType}}
-authors:
-{{range .authors}}  - {{.family}}, {{.given}}
-{{end}}---
-
 # {{.title}}
 
-## 元数据
+## 元数据摘要
+- **类型**：{{.itemType}}
+- **作者**：
+{{range .authors}}  - {{.family}}, {{.given}}
+{{end}}
 - **日期**：{{.date}}
 - **期刊**：{{.journal}}
 - **卷期**：{{.volume}}({{.issue}}) {{.pages}}
 - **DOI**：{{.doi}}
 - **链接**：{{.url}}
-
-## 作者
-{{range .authors}}- {{.family}}, {{.given}}
-{{end}}
 
 ## 摘要
 {{.abstract}}
@@ -164,21 +174,64 @@ authors:
 ## 附件
 {{range .attachments}}- [{{.title}}]({{.url}})
 {{end}}
-
-## 阅读笔记
-<!-- 在这里记录… -->
 ```
 
-### 4.4 引用键（citekey）生成
+模板示例——笔记区（`data/templates/paper-note.md`，仅创建时渲染一次）：
 
-BibLib 用 citekey 命名笔记。建议从 `firstAuthor family` + `year` + `title首词` 拼，如 `smith2024alice`，存入 frontmatter `citation-key`，便于后续引用与去重。
+```markdown
+## 阅读笔记
+<!-- 在这里记录你的阅读/思考，此区域不会被自动覆盖 -->
 
-### 4.5 去重 / 复用已有文档
+- 一句话总结：
+- 关键论点：
+- 启发：
+```
+
+### 4.5 引用键（citekey）生成
+
+BibLib 用 citekey 命名笔记。建议从 `firstAuthor family` + `year` + `title首词` 拼，如 `smith2024alice`，存入隐藏字段 `citekey`，便于后续引用与去重。
+
+### 4.6 去重 / 复用已有文档
 
 `createDocWithMd` 用相同 `path` 重复调用**不会覆盖**（会新建带随机后缀的文档）。为避免重复导入同一篇文献：
 
 - 先按 `citekey` 或 DOI 查重（用 `/api/query/sql` 查 `blocks` 的属性，或用 `/api/filetree/getIDsByHPath` 按路径查）；
 - 已存在时，可选：跳过 / 追加 `/api/block/appendBlock` / 弹窗询问。
+
+### 4.7 隐藏字段区 + 元数据自动更新的实现方案（关键：可行的边界）
+
+#### (1) 隐藏字段区——存所有元数据
+
+用思源**块属性**存元数据，正文不渲染，天然"隐藏"。做法：
+
+- 创建文档后，对**文档根块（文档 ID）**调用 `/api/attr/setBlockAttrs` 写入全部元数据，属性名用 `custom-` 前缀，如 `custom-title`、`custom-authors`、`custom-doi`、`custom-tags` 等等（字段名见 4.4 协议）。
+- 用户查/改入口：思源属性面板（右侧或块标菜单→属性）的自定义属性页签；编辑字段正文不渲染，只作为结构化数据。
+- **注意**：`custom-*` 属性默认**不在正文显示**（需 CSS 才显示），这正好符合"隐藏字段"需求；想要时也可停官方 CSS 片段把指定属性显示出来。
+
+#### (2) 元数据模板区——元数据修改时自动更新
+
+这是**唯一需要特别处理的点**。思源内核的限制：
+- 更新模板区内容用 `/api/block/updateBlock` 可改（保留块 ID），但**直接 `updateBlock` 会清空该块原有属性**，需用 `getBlockKramdown` 取回源码、内联属性一并传回，或用 `/api/transactions` / `protyle` 事务改。
+- **`setBlockAttrs` 修改属性不会触发 `savedoc` 事件**（Issue #17179，内核不广播块属性变更）。所以**无法**仅凭"用户改了属性"就自动被事件驱动刷新模板区。
+
+**因此"自动更新"的触发机制改为（优先级从上到下）：**
+1. **插件自身改元数据时**（如从 Zotero 重新导入、编辑界面上改属性），插件主动重渲染模板区——这是主路径，完全可行的自动化。
+2. **监听主题 `ws-main` 的 `savedoc` / `doOperations` 事件**：用户保存文档（改正文内容）时会触发，可借此**兜底**重渲染。但对"只改属性、不改正文"的情况不会触发。
+3. **插件给属性面板/文档提供编辑入口**：插件自己弹一个"编辑元数据"对话框，改完由插件写属性和重渲染模板区，绕开"属性变更无事件"的限制。
+
+> **结论**：隐藏字段 ✅、元数据模板区（创建/由插件触发更新）✅、笔记模板区（一次性）✅ 都能实现。仅"用户手动改属性 → 模板区自动刷新"这条**纯自动**链路受限于**思源无属性变更事件**，需按上述 2/3 补触发。建议在文档中标注该限制，落地时以方案 1（插件主动更新）+ 方案 3（插件提供编辑入口）为主。
+
+#### (3) 笔记模板区——一次性创建
+
+笔记区作为文档正文的一部分，在 `createDocWithMd` 时随元数据区一起写入文档末尾，后续**不参与元数据刷新**（更新只作用于专门标记的元数据区块）。可通过给笔记区块设标记（如 `custom-note-section`）保持稳定，避免被模板刷新误覆盖。
+
+### 4.8 文档如何区分"元数据区"与"笔记区"
+
+为避免更新元数据模板时误伤笔记区，可在创建时用**块属性**给两部分打标：
+- 元数据区根块加 `custom-section = "meta"`；
+- 笔记区根块加 `custom-section = "note"`。
+
+更新时按属性定位元数据区块（SQL 查 `attributes` 或按容器块遍历），只 `updateBlock` 该区块。
 
 ## 五、能力 3：直接导入本地 PDF
 
@@ -272,8 +325,10 @@ ItemProcessor 复用：上传附件 → 渲染模板 → createDocWithMd
 | 目标笔记本 | 文献保存到哪个笔记本 | 用户选择（`/api/notebook/lsNotebooks` 列出） |
 | 存放路径 | 笔记本内文档树相对路径（hpath） | `/文献库` |
 | 附件目录 | `assetsDirPath` | `/assets/` |
-| 模板路径 | 模板文件在 templates 下的路径 | `/data/templates/paper.md` |
+| 元数据模板路径 | 元数据区模板（创建+变更时重渲染） | `/data/templates/paper-meta.md` |
+| 笔记模板路径 | 笔记区模板（仅创建时一次） | `/data/templates/paper-note.md` |
 | 开箱默认模板 | 首次运行是否写入内置模板 | 开启 |
+| 编辑元数据入口 | 是否提供插件自建的"编辑元数据"对话框（绕开属性变更无事件的限制） | 开启 |
 | PDF 元数据回退顺序 | 直接导入 PDF 时的提取顺序 | XMP → DOI/Citoid → 中文检索 |
 | 中文检索（知网） | 是否启用中文（知网）元数据增强；默认关闭 | 关闭（默认） |
 
@@ -286,10 +341,11 @@ ItemProcessor 复用：上传附件 → 渲染模板 → createDocWithMd
 4. 会话完成后 ConnectorServer `emitCustomEvent('zotero-item-received', {item, files})`。
 5. **ItemProcessor** 消费事件：
    - 所有附件 `/api/asset/upload` 转存到思源，拿回 `assets/...` 地址；
-   - 组装 `zoteroData` → `/api/template/render` 渲染模板得到 Markdown；
-   - `/api/filetree/createDocWithMd` 创建文档；
-   - 查重/追加策略可选。
-6. **用户卸载插件**：`onunload` 关闭服务器、清临时目录。
+   - 组装 `zoteroData` → `/api/template/render` 同时渲染**元数据区 + 笔记区**两份模板；
+   - `/api/filetree/createDocWithMd` 创建文档（正文 = 元数据区 + 笔记区）；
+   - `/api/attr/setBlockAttrs` 对文档根块写入**隐藏字段**（全部元数据，`custom-*`）。
+6. **元数据变更时**（见 4.7）：插件重渲染"元数据区"模板，`updateBlock` 刷新对应区块；笔记区不参与。
+7. **用户卸载插件**：`onunload` 关闭服务器、清临时目录。
 
 **入口 B：直接导入本地 PDF**
 1. 用户选择本地 PDF → `MetadataExtractor` 提取元数据（见 5.D 多级策略）。
@@ -306,13 +362,18 @@ ItemProcessor 复用：上传附件 → 渲染模板 → createDocWithMd
 5. **版本安全**：思源 ≥ 3.1.16，规避 renderSprig / asset upload 的历史漏洞。
 6. **PDF 文本提取依赖**：直接导入 PDF 需要从 PDF 提取前几页文本，需引入 PDF 解析库（`pdf-parse`/`pdfjs-dist`）；纯扫描/图片型 PDF 无文字层，提取会失败，需提示用户手动或改用 Connector。
 7. **知网反爬**：若实现中文知网检索（茉莉花式），无官方 API、依赖浏览器模拟 + cookie 处理，易受知网前端改版影响，不建议放入第一版核心路径。
+8. **`setBlockAttrs` 无属性变更事件**：Issue #17179 —— 修改块属性不会触发 `savedoc`。因此"用户手动改属性 → 元数据模板区自动刷新"的纯自动化链路不成立，需以插件主动更新 + 插件提供编辑入口为主。
+9. **`updateBlock` 会清空块属性**：直接 `updateBlock` 更新元数据区会丢该块原有属性，需 `getBlockKramdown` 取回内联属性一并传回，或用 `/api/transactions` / `protyle` 事务。
+10. **`setBlockAttrs` 的转义 bug**（Issue #6198）：API 写入的属性值读取时可能被 HTML 转义，某些值需 `htmlDecode` 处理。
 
 ## 九、待办（实现前的 confirm 项）
 
 - [ ] 实测思源桌面版 `window.require` / Electron 环境下能否启动 Node `http.server`；
 - [ ] 确认获取思源**工作空间绝对路径**的方式（渲染模板需要）；
 - [ ] 用 curl 验证 `/api/template/render` 在本机思源可用、字段映射正确；
-- [ ] 在思源插件运行环境里实测 Node 的 PDF 解析库能否提取文本（决定直接导入 PDF 的可行性）。
+- [ ] 在思源插件运行环境里实测 Node 的 PDF 解析库能否提取文本（决定直接导入 PDF 的可行性）；
+- [ ] 实测 `setBlockAttrs` 写 `custom-*` 属性后，属性面板能否正常显示/编辑（验证"隐藏字段+用户改元数据"入口是否可用）；
+- [ ] 实测 `updateBlock` 更新元数据区时，如何用 `getBlockKramdown` 保留块属性（避免数据丢失）。
 
 ## 参考
 

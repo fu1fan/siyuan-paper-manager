@@ -39,14 +39,19 @@ Zotero Connector 浏览器扩展
 5. **附件处理**：接收并保存 Zotero Connector 发来的 PDF 等附件（走 `/api/asset/upload` 转存）。
 6. **直接导入本地 PDF**：用户主动导入本地 PDF，插件自动提取元数据（含中文文献增强），再走模板流程保存。
 
-## 存储设计
+## 存储设计：论文元数据页
 
-已确定采用 **思源原生模板片段** 方案：
+每篇文献 = 一个**论文元数据页（Metadata Page）**，自上而下三段结构，通过思源内核 API 创建与维护：
 
-- 每篇文献 = 一篇思源文档，通过内核 API `POST /api/filetree/createDocWithMd` 创建；
-- 文献信息由模板格式化：模板以 `.md` 存于思源工作空间 `data/templates/`，插件通过内核 API `POST /api/template/render` 让思源渲染填充（支持 Go 模板 + Sprig：条件、循环、日期等）；
-- 元数据以 YAML / 属性形式置于文档头部，正文可含摘要、PDF 附件引用、阅读笔记等；
-- 附件（PDF / HTML）通过内核 API `POST /api/asset/upload` 转存到思源仓库，禁止直接 `fs` 写 `data`。
+- **隐藏字段区**：用思源块属性（`custom-*`）保存论文**所有**元数据，正文不渲染、天然隐藏；通过 `/api/attr/setBlockAttrs` 写入，用户在属性面板查看/编辑。
+- **元数据模板区**：可读的元数据摘要，用思源模板片段渲染；论文创建**或元数据被修改**时自动重渲染（用 `/api/block/updateBlock` 更新）。
+- **笔记模板区**：自由笔记区，仅在论文创建时由模板**一次性**格式化到文档末尾，之后不再被覆盖。
+
+模板以 `.md` 存于思源工作空间 `data/templates/`（两份：`paper-meta.md` 元数据区、`paper-note.md` 笔记区），插件通过 `POST /api/template/render` 让思源渲染填充（Go 模板 + Sprig：条件、循环、日期等）。
+
+> **已知限制**：思源内核 `setBlockAttrs` 修改属性**不触发 `savedoc` 事件**（Issue #17179），因此"用户手动改属性 → 元数据模板区纯自动刷新"较难；落地以插件主动更新 + 插件提供"编辑元数据"入口为主。详见设计文档 4.7。
+
+附件（PDF / HTML）通过内核 API `POST /api/asset/upload` 转存到思源仓库，禁止直接 `fs` 写 `data`。
 
 ## 直接导入 PDF 的元数据提取
 
