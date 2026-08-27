@@ -36,7 +36,8 @@ Zotero Connector 浏览器扩展
 2. **接收文献**：处理 `/connector/ping`、`/connector/saveItems`、`/connector/saveSnapshot`、`/connector/saveAttachment` 等端点。
 3. **解析元数据**：把 Zotero item 数据（itemType、title、creators、date、DOI 等）转换为思源可用的结构化数据。
 4. **保存到指定位置**：通过思源内核 API 将文献写入指定笔记本 + 路径下的新文档。
-5. **附件处理**：（可选进阶）接收并保存 Zotero Connector 发来的 PDF 等附件。
+5. **附件处理**：接收并保存 Zotero Connector 发来的 PDF 等附件（走 `/api/asset/upload` 转存）。
+6. **直接导入本地 PDF**：用户主动导入本地 PDF，插件自动提取元数据（含中文文献增强），再走模板流程保存。
 
 ## 存储设计
 
@@ -46,6 +47,18 @@ Zotero Connector 浏览器扩展
 - 文献信息由模板格式化：模板以 `.md` 存于思源工作空间 `data/templates/`，插件通过内核 API `POST /api/template/render` 让思源渲染填充（支持 Go 模板 + Sprig：条件、循环、日期等）；
 - 元数据以 YAML / 属性形式置于文档头部，正文可含摘要、PDF 附件引用、阅读笔记等；
 - 附件（PDF / HTML）通过内核 API `POST /api/asset/upload` 转存到思源仓库，禁止直接 `fs` 写 `data`。
+
+## 直接导入 PDF 的元数据提取
+
+参考 Zotero 原生与茉莉花插件的做法，采用多级回退策略：
+
+| 级别 | 方法 | 适用 |
+|---|---|---|
+| 1 | 读 PDF 内嵌 XMP / 文档属性 | 出版商 PDF |
+| 2 | 提取前几页文本 → 找 DOI → 调 CrossRef REST API | 大多英文文献 |
+| 3 | 文件名(标题_作者) → 中文检索（知网式） | 中文文献增强 |
+
+> 说明：Zotero 原生（5.0.36+）就是"前几页文本 → DOI/ISBN 检测 → Crossref/web 服务补全"，**不读 XMP、不用 Google Scholar**。茉莉花则依赖"文件名反推 → 模拟知网检索 → 解析页面"，可参考其中文姓名拆分/合并。
 
 详细设计见 [docs/implementation-design.md](docs/implementation-design.md)。
 

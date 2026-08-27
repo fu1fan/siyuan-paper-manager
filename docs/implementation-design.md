@@ -3,34 +3,36 @@
 > **模板方案决策**：采用 **思源原生模板片段**（方案 A，用户已确认）。
 > 模板以 `.md` 文件存在于思源工作空间 `data/templates/`，插件通过内核 API `POST /api/template/render` 让思源渲染填充，再调 `createDocWithMd` 创建文档。
 
-## 一、目标功能（两件事）
+## 一、目标功能（三件事）
 
 1. **保存 Zotero 浏览器端插件发送的所有文件**（PDF、HTML 快照、toc 页等）。
 2. **把论文信息用模板格式化** 成预设计好的模板内容，保存为思源文档。
+3. **直接导入本地 PDF**：用户主动选择本地 PDF 文件导入，插件自动提取其元数据（含中文文献），再走模板流程保存。
 
 ## 二、总体架构
 
 ```
-Zotero Connector 浏览器扩展
-   │  POST http://127.0.0.1:23119/connector/*
-   ▼
+                        ┌──────────────────────────────┐
+Zotero Connector 浏览器扩展 │        PDF 直接导入入口        │
+   │ POST /connector/*    │  (用户选本地 PDF 文件)         │
+   ▼                      └──────────┬───────────────────┘
+┌────────────────────────────┐       │
+│  ConnectorServer (Node http)│       │
+│  监听 127.0.0.1:23119       │       │
+│  /ping /saveItems /...      │       ▼
+│  收集 item + 附件到临时目录   │  MetadataExtractor
+└──────────┬─────────────────┘  (PDF 元数据提取)
+           │ emitCustomEvent      │ 含中文文献增强
+           ▼                      ▼
 ┌─────────────────────────────────────────────┐
-│  ConnectorServer  (插件内 Node http.Server)  │
-│  监听 127.0.0.1:23119                        │
-│  /connector/ping  /saveItems  /saveSnapshot  │
-│  /saveAttachment  /sessionProgress ...       │
-│  → 收集 item + 附件到临时目录                  │
-│  → 组装为 ZoteroItem 结构化对象               │
-└──────────────┬───────────────────────────────┘
-               │ emitCustomEvent
-               ▼
-┌─────────────────────────────────────────────┐
-│  ItemProcessor  (消费 item 事件)             │
+│  ItemProcessor  (统一消费来源)               │
 │  1. 附件落盘 → 思源 kernel API                │
 │  2. 读取模板 → /api/template/render 渲染      │
 │  3. 创建文档 → /api/filetree/createDocWithMd  │
 └─────────────────────────────────────────────┘
 ```
+
+> PDF 直接导入与 Zotero Connector 两条入口最终汇合到同一套 `ItemProcessor`，共用模板渲染与落盘逻辑。
 
 ## 三、能力 1：保存附件文件（PDF / HTML 等）
 
@@ -178,7 +180,75 @@ BibLib 用 citekey 命名笔记。建议从 `firstAuthor family` + `year` + `tit
 - 先按 `citekey` 或 DOI 查重（用 `/api/query/sql` 查 `blocks` 的属性，或用 `/api/filetree/getIDsByHPath` 按路径查）；
 - 已存在时，可选：跳过 / 追加 `/api/block/appendBlock` / 弹窗询问。
 
-## 五、需要用户配置项（设置面板）
+## 五、能力 3：直接导入本地 PDF
+
+### 5.A 功能入口
+
+用户主动把本地 PDF 拖入思源/或通过插件命令添加，触发"直接导入"流程。这是除浏览器 Connector 外的第二条输入入口。
+
+### 5.B Zotero 原生如何提取 PDF 元数据
+
+Zotero 5.0.36（2018）之后的机制（**旧版查 Google Scholar 已废弃**）：
+
+1. **取 PDF 前几页文本**——依赖 PDF 有可检索文字层（纯扫描/图片型无法识别）；
+2. **识别标识符**——在首几页文本里找 **DOI / ISBN**；
+3. **走 Zotero 官方 web 服务** + **Crossref 查元数据**——把前几页 + 识别到的 DOI/ISBN 发给 Zotero 设计的一个 web 服务，服务用多种算法 + Crossref 数据拼出完整父条目。
+
+**关键结论**：
+- **DOI 最关键**。PDF 首页有清晰 DOI 时提取成功率最高，建议把 DOI 放显眼位置，"Zotero-friendly PDF"正是这个意思。
+- **不读嵌入的 PDF 元数据 / XMP**。Zotero 官方明确"不看 XMP 属性，因为平均质量太低"。即使一个 PDF 用 Adobe 设置了 Title/Author/Keywords，Zotero 也不会采信。
+- **不读 Google Scholar**（2018 后弃用，避免频率限制）。
+
+所以 Zotero 原生 = **前几页文本 → DOI/ISBN 检测 → Crossref/web 服务补全**。
+
+### 5.C 中文文献元数据：茉莉花（Jasminum）怎么做
+
+茉莉花（`l0o0/jasminum`）专门解决 Zotero 对中文文献支持差的问题。它**不用知网官方 API**（知网没有稳定公开接口），而是：
+
+1. **从文件名反推检索词**：默认按 `{%t}_{%g}`（标题_作者）模板解析文件名，用正则提取**标题、作者、年份**。**严格要求文件名含中文**（知网对英文关键词召回率极低）。
+2. **构造知网高级检索请求**：拼出符合知网语法的检索式（如 `TI %= '标题' AND AU='作者'`），模拟浏览器 POST，带正确 Referer / User-Agent / Origin，区分大陆版与海外版。处理反爬（403 时会重试、刷新 cookie）。
+3. **解析检索结果页**：DOM 解析题名、作者、期刊、年卷期、页码、摘要、关键词、DOI、分类号、基金等；多结果时弹窗让人工选最匹配项。
+4. **用知网导出接口拿标准引文**：茉莉花还调用知网 `GetExport` 接口，直接拿到 **EndNote 格式**引文文本（`displaymode=GBTREFER`），这比手动解析列表页字段更规整可靠。
+5. **中文姓名处理**：针对知网"姓在前、名在后、无空格"的姓名，内置常用姓氏库（含欧阳、司马等复姓）、单双字名概率、上下文判断，做**中文姓名拆分/合并**（支持"初步合并/强制分离"两种模式）。
+6. **配套**：把被引次数、是否核心期刊存入 Extra 字段；本地附件智能匹配。
+
+**局限**：强依赖文件名格式且要含中文；**目前只支持知网（CNKI）**，万方/维普不支持；被改过名的文件易匹配失败。
+
+### 5.D 本插件的元数据提取设计（可行路径）
+
+在本插件里，直接导入 PDF 后需拿到结构化元数据。按可靠性排序，采用**多级提取策略**：
+
+| 级别 | 方法 | 适用 | 优点 | 依赖 |
+|---|---|---|---|---|
+| **1. 嵌入 XMP / 文档属性** | 读 PDF 的 Document Info / XMP（Dublin Core 等） | 出版商 PDF | 本地、快 | PDF 内嵌元数据质量参差 |
+| **2. DOI 检测 + Crossref** | 从 PDF 全文/前几页正则找 DOI → 调 CrossRef REST API | 大多英文文献 | 准、标准 | 需提取 PDF 文本、联网 |
+| **3. 文件名 + 中文检索** | 茉莉花式：文件名(`标题_作者`) → 知网检索（或 Crossref 等） | 中文文献 | 补上中文本地化 | 强依赖文件名含中文、反爬风险 |
+| | | | | |
+
+**落地建议**：
+- **先本地、后联网**：先试方法 1（XMP）与 2（DOI→Crossref），都不行再试方法 3（中文检索）。
+- **PDF 文本层**：需要从 PDF 提取文本。思源插件里可用 Node 的 PDF 解析库（`pdf-parse` / `pdfjs-dist` 等）在前端/本地提取前几页，再正则找 DOI 或标题。
+- **CrossRef REST**：`https://api.crossref.org/works?query.bibliographic=...`，免费无需 key，返回 JSON 含 title/authors/journal/date/DOI，与我们的模板字段天然对齐。
+- **中文来源策略**：若要复刻茉莉花，需实现知网检索 + 解析（无官方 API、有反爬），复杂度高且易被前端改版影响。**建议第一版先做方法 2（Crossref/DOI），中文文献作为增强用文件名+中文搜索引擎或知网可选插件**，风险可控。
+- **中文姓名归一化**：把提取到的中文作者名按茉莉花逻辑拆成 family/given，供模板 `{{range .authors}}` 复用。
+
+### 5.E 直接导入 PDF 的流程（时序）
+
+```
+用户选本地 PDF
+   │
+   ▼
+MetadataExtractor
+  1. 读 XMP / 文档属性（本地）
+  2. 提取前几页文本 → 正则找 DOI
+  3. 花 DOI → Crossref 查元数据（英文）
+  4. 可选：文件名中文 → 知网/CSL 检索（中文，增强）
+   │ 产出统一 ZoteroItem 结构（含 attachments 指向本地 pdf）
+   ▼
+ItemProcessor 复用：上传附件 → 渲染模板 → createDocWithMd
+```
+
+## 六、需要用户配置项（设置面板）
 
 | 设置项 | 说明 | 默认值 |
 |---|---|---|
@@ -188,9 +258,12 @@ BibLib 用 citekey 命名笔记。建议从 `firstAuthor family` + `year` + `tit
 | 附件目录 | `assetsDirPath` | `/assets/` |
 | 模板路径 | 模板文件在 templates 下的路径 | `/data/templates/paper.md` |
 | 开箱默认模板 | 首次运行是否写入内置模板 | 开启 |
+| PDF 元数据回退顺序 | 直接导入 PDF 时的提取顺序 | XMP → DOI/Crossref → 中文检索 |
+| 中文文献检索 | 是否启用中文（知网）元数据增强 | 关闭（默认） |
 
-## 六、工作流（完整时序）
+## 七、工作流（完整时序）
 
+**入口 A：浏览器 Connector**
 1. **插件 onload**：读取设置 → 启动 ConnectorServer（监听 23119）→ 检查默认模板是否存在，不存在则写入。
 2. **用户在浏览器点击 Zotero Connector** → 扩展 `ping` 通过（插件返回握手数据）→ `saveItems` 发送 item → 插件登记会话。
 3. **扩展逐附件 POST `/connector/saveAttachment`** → 插件把附件写临时目录并记录进度。
@@ -202,19 +275,28 @@ BibLib 用 citekey 命名笔记。建议从 `firstAuthor family` + `year` + `tit
    - 查重/追加策略可选。
 6. **用户卸载插件**：`onunload` 关闭服务器、清临时目录。
 
-## 七、关键风险与注意
+**入口 B：直接导入本地 PDF**
+1. 用户选择本地 PDF → `MetadataExtractor` 提取元数据（见 5.D 多级策略）。
+2. 产出 `ZoteroItem` 结构 → 走与入口 A 相同的 `ItemProcessor`（上传附件 → 渲染模板 → 建文档）。
+
+> 两条入口共用 `ItemProcessor`，保证模板与落盘逻辑一致。
+
+## 八、关键风险与注意
 
 1. **端口冲突**：23119 与 Zotero 桌面版冲突，使用插件时须关闭 Zotero；只绑定 `127.0.0.1`，禁公网。
 2. **`window.require` 可用性**：思源桌面版（Electron）是否能像 Obsidian 一样在渲染进程用 `window.require` 取 Node 模块，**需实测确认**；若不可用，需另找在思源里启动本地 http server 的方法。
 3. **模板 `render` 需要绝对路径**，需能获取工作空间路径（思源提供相应 API/属性），否则无法定位模板文件。
 4. **附件子目录 bug**（issue #7454）：`/api/asset/upload` 用子文件夹时返回地址不含子文件夹名，需代码拼接。
 5. **版本安全**：思源 ≥ 3.1.16，规避 renderSprig / asset upload 的历史漏洞。
+6. **PDF 文本提取依赖**：直接导入 PDF 需要从 PDF 提取前几页文本，需引入 PDF 解析库（`pdf-parse`/`pdfjs-dist`）；纯扫描/图片型 PDF 无文字层，提取会失败，需提示用户手动或改用 Connector。
+7. **知网反爬**：若实现中文知网检索（茉莉花式），无官方 API、依赖浏览器模拟 + cookie 处理，易受知网前端改版影响，不建议放入第一版核心路径。
 
-## 八、待办（实现前的 confirm 项）
+## 九、待办（实现前的 confirm 项）
 
 - [ ] 实测思源桌面版 `window.require` / Electron 环境下能否启动 Node `http.server`；
 - [ ] 确认获取思源**工作空间绝对路径**的方式（渲染模板需要）；
-- [ ] 用 curl 验证 `/api/template/render` 在本机思源可用、字段映射正确。
+- [ ] 用 curl 验证 `/api/template/render` 在本机思源可用、字段映射正确；
+- [ ] 在思源插件运行环境里实测 Node 的 PDF 解析库能否提取文本（决定直接导入 PDF 的可行性）。
 
 ## 参考
 
@@ -222,3 +304,5 @@ BibLib 用 citekey 命名笔记。建议从 `firstAuthor family` + `year` + `tit
 - `../docs/biblib-zotero-connector-core.md` — BibLib 实现参考
 - `../docs/siyuan-kernel-api.md` — 思源内核 API（createDocWithMd 等）
 - `../docs/siyuan-plugin-dev-guide.md` — 思源插件开发指南
+- https://github.com/l0o0/jasminum — 茉莉花（中文文献元数据增强）源码参考
+- https://www.zotero.org/support/adding_items_to_zotero — Zotero PDF 元数据提取说明
