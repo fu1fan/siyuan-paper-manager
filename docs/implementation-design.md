@@ -106,6 +106,10 @@ Zotero Connector 在 `saveItems` 后会调用 `/connector/saveAttachment`（或 
 ```ts
 import { request } from "siyuan";        // 或 this.app 提供的请求方法
 
+// 0. 组装数据 & 写入隐藏字段（单字段 JSON → base64，见 4.7(1)）
+const dataB64 = btoa(unescape(encodeURIComponent(JSON.stringify(customPaperData))));
+await request("/api/attr/setBlockAttrs", { id: docId, attrs: { "custom-paper-data": dataB64, "custom-citekey": ..., "custom-doi": ... } });
+
 // 1. 读取模板内容（走内核 API，禁止 fs）
 const metaMd = (await request("/api/file/getFile", { path: "/data/templates/paper-meta.md" })).data;
 const noteMd = (await request("/api/file/getFile", { path: "/data/templates/paper-note.md" })).data;
@@ -114,7 +118,7 @@ const noteMd = (await request("/api/file/getFile", { path: "/data/templates/pape
 const render = async (path:string, data:object) =>
   (await request("/api/template/render", { path, data: JSON.stringify(data) })).data;
 
-const metaRendered = await render("/<工作空间>/data/templates/paper-meta.md", zoteroData);
+const metaRendered = await render("/<工作空间>/data/templates/paper-meta.md", zoteroData); // zoteroData 由 customPaperData 归一化
 const noteRendered = await render("/<工作空间>/data/templates/paper-note.md", zoteroData);
 
 // 3. 创建文档（正文 = 元数据区 + 笔记区）
@@ -122,6 +126,8 @@ await request("/api/filetree/createDocWithMd", {
   notebook, path: "/文献库/xxx", markdown: `${metaRendered}\n\n${noteRendered}`, title: docTitle,
 });
 ```
+
+> **`zoteroData` 的来源**：读取隐藏字段 `custom-paper-data` 的 base64 → 解码 → `JSON.parse` → 归一化成模板变量结构（见 4.4）。渲染前才做这种映射。
 
 > **`render` 接口细节**（重要）：
 > - `data` 必须是 **JSON 字符串**，模板内用 `{{.key}}` 或 `.action{.key}` 访问；
@@ -132,13 +138,13 @@ await request("/api/filetree/createDocWithMd", {
 
 ### 4.4 模板变量协议（给 Zotero item → 模板的上下文）
 
-Zotero 的 `saveItems` 传入的 item 字段，映射为模板变量。约定如下（字段名尽量沿用 Zotero，便于记忆）：
+**来源**：模板变量实际是**从隐藏字段 `custom-paper-data` 的 base64 JSON 解析后归一化得到**的视图，用于喂给 `/api/template/render`。核心字段名沿用 Zotero 原始名（便于与 Zotero 数据对齐），渲染前再做一次"Zotero 原始字段 → 模板友好字段"的映射（如 `creators`→`authors`、`abstractNote`→`abstract`、`dois`→`doi`）。
 
 ```jsonc
 {
   "itemType": "journalArticle",          // 条目类型
   "title": "……",
-  "authors": [                            // 创作者（由 creators 归一化）
+  "authors": [                            // 由 creators 归一化
     { "family": "Smith", "given": "Alice", "creatorType": "author" }
   ],
   "date": "2024-06-15",
@@ -162,6 +168,8 @@ Zotero 的 `saveItems` 传入的 item 字段，映射为模板变量。约定如
   "citekey": "smith2024alice"             // 引用键（可选，生成）
 }
 ```
+
+> 存储时（`custom-paper-data`）保留 Zotero 原始字段名；渲染模板前再映射成上面的模板变量结构。参见 4.7(1) 的 JSON 结构。
 
 模板示例——元数据区（`data/templates/paper-meta.md`）：
 
@@ -211,13 +219,77 @@ BibLib 用 citekey 命名笔记。建议从 `firstAuthor family` + `year` + `tit
 
 ### 4.7 隐藏字段区 + 元数据自动更新的实现方案（关键：可行的边界）
 
-#### (1) 隐藏字段区——存所有元数据
+#### (1) 隐藏字段区——存所有元数据（单字段 JSON + base64）
 
-用思源**块属性**存元数据，正文不渲染，天然"隐藏"。做法：
+**设计决策（已确认）**：**不要一个插件占用多个隐藏字段**。把所有论文元数据、附件位置、插件辅助字段打包成一个 **JSON 对象，转 base64 后存入单个自定义属性**。这样避免占用大量 `custom-*` 属性（思源自定义属性名仅允许英文字母数字，且多字段难一致），也便于 JSON 结构扩展。
 
-- 创建文档后，对**文档根块（文档 ID）**调用 `/api/attr/setBlockAttrs` 写入全部元数据，属性名用 `custom-` 前缀，如 `custom-title`、`custom-authors`、`custom-doi`、`custom-tags` 等等（字段名见 4.4 协议）。
-- 用户查/改入口：思源属性面板（右侧或块标菜单→属性）的自定义属性页签；编辑字段正文不渲染，只作为结构化数据。
-- **注意**：`custom-*` 属性默认**不在正文显示**（需 CSS 才显示），这正好符合"隐藏字段"需求；想要时也可停官方 CSS 片段把指定属性显示出来。
+**字段名约定**：
+- **主字段**：`custom-paper-data` —— 存 base64 编码的整包 JSON（论文全部元数据 + 附件 + 辅助字段）。
+- **索引字段**（可选，但强烈建议保留少数几个固定字段供 SQL 查询/去重/模板简化引用）：
+  - `custom-citekey`：引用键
+  - `custom-doi`：DOI
+  - `custom-attachment-pdf`：主 PDF 附件地址（pdf2zh 定位用）
+  - `custom-translation-mono` / `custom-translation-dual`：翻译版地址
+- **命名空间前缀**：全部用 `custom-paper-` 统一前缀，避免与其他插件（如属性管家、番茄钟等用 `custom-*` 的插件）冲突。若将来担心不同用户自定义属性名撞车，可把前缀中的 `paper` 换成更独特的插件标识（如 `custom-si-paper-...`）。
+
+> **版本字段**：建议在 JSON 里加 `version`（如 `schemaVersion: 1`），便于后续结构演进与迁移。
+
+**为什么不是纯单一字段**：若所有信息都塞进一个 base64 字段，思源的 SQL（`/api/query/sql` 查 `attributes` 表）就无法直接按 citekey/DOI 检索或去重。因此**主字段存完整包，另保留少量固定索引字段**供查询与定位——"少占字段"不是"只用一个"，而是避免为每个元数据项都开一个字段。
+
+**base64 编码**：JS 可用 `btoa(unescape(encodeURIComponent(json)))` 处理含中文/UTF-8 的 JSON；读取时 `decodeURIComponent(escape(atob(b64)))`。因整体是 ASCII 字符串，存入思源块属性时也避开转义问题（但仍需注意 Issue #6198 的转义 bug）。
+
+**存取流程**：
+```
+写：JSON.stringify(custom-paper-data 对象) → base64 编码 → setBlockAttrs(custom-paper-data, b64)
+读：getBlockAttrs → b64 → base64 解码 → JSON.parse → 得到完整结构化元数据
+```
+
+**custom-paper-data 的 JSON 结构**（详细字段见 4.4）：
+```jsonc
+{
+  // —— Zotero 网页端原始字段（尽量保留原始键名） ——
+  "itemType": "journalArticle",
+  "title": "……",
+  "creators": [ { "firstName": "……", "lastName": "……", "creatorType": "author" } ],
+  "date": "……",
+  "abstractNote": "……",
+  "dois": "10.xxxx",
+  "isbn": "……",
+  "issn": "……",
+  "url": "……",
+  "journalAbbreviation": "……",
+  "volume": "……", "issue": "……", "pages": "……",
+  "publisher": "……",
+  "language": "……",
+  "tags": [ { "tag": "……" } ],
+  "extra": "……",
+  // —— 附件位置 ——
+  "attachments": [ { "title": "PDF", "url": "assets/xxx.pdf", "mimeType": "application/pdf", "localPath": "……" } ],
+  // —— 插件辅助字段 ——
+  "citekey": "smith2024alice",
+  "noteSection": "……",
+  "translation": {
+    "mono": "assets/xxx-mono.pdf",
+    "dual": "assets/xxx-dual.pdf"
+  },
+  "importedAt": "2026-08-27T00:00:00.000Z",
+  "source": "zotero-connector"   // 或 "pdf-import" / "manual"
+}
+```
+
+> 保留 Zotero 原始字段名（`creators`、`abstractNote`、`dois`）是为了兼容 Zotero 数据，`4.4` 模板变量用的归一化字段在渲染前再映射（`authors`、`abstract` 等）。
+
+#### (1.5) 索引字段与主字段的分工
+
+| 字段 | 用途 | 是否冗余主字段 |
+|---|---|---|
+| `custom-paper-data` | 完整数据包（base64 JSON） | 是（唯一权威来源） |
+| `custom-citekey` | 去重 / 引用 / SQL 查询 | 冗余（作索引） |
+| `custom-doi` | 去重 / 查重 / 模板 | 冗余（作索引） |
+| `custom-attachment-pdf` | pdf2zh 定位原 PDF | 冗余（作索引） |
+| `custom-translation-mono` / `-dual` | 翻译链接快速引用 | 冗余（作索引） |
+
+> 冗余字段以主字段为准，插件修改数据后同步更新索引字段；避免主字段与索引字段不一致时以主字段为权威源。
 
 #### (2) 元数据模板区——元数据修改时自动更新
 
@@ -406,19 +478,23 @@ const { stdout, stderr } = await execFileP(settings.pdf2zhPath || "pdf2zh", opts
 
 ### 6.D 通过隐藏字段定位 PDF 附件
 
-从论文元数据页的隐藏字段（`custom-*`）中读取 PDF 附件地址。约定字段：
+从论文元数据页的隐藏字段读取 PDF 附件地址。**权威源是主字段 `custom-paper-data` 里的 `attachments` / `translation`；索引字段只是冗余，便于快速读取与 SQL 定位**：
 
-| 隐藏字段 | 含义 |
+| 字段 | 含义 |
 |---|---|
-| `custom-attachment-pdf` | 论文主 PDF 在思源中的地址（`assets/….pdf` 或 `data` 相对路径） |
-| `custom-translation-mono` | 单语翻译版地址（若已生成） |
-| `custom-translation-dual` | 双语翻译版地址（若已生成） |
+| `custom-paper-data`（权威） | 主包 JSON，内含 `attachments`（原 PDF 位置）、`translation.mono` / `translation.dual` |
+| `custom-attachment-pdf`（索引） | 论文主 PDF 地址（冗余，pdf2zh 定位用） |
+| `custom-translation-mono`（索引） | 单语翻译版地址（冗余） |
+| `custom-translation-dual`（索引） | 双语翻译版地址（冗余） |
 
 定位流程：
-1. 读取文档根块属性 `custom-attachment-pdf`，拿到原 PDF 地址；
+1. 读取主字段 `custom-paper-data`（base64 解码→JSON），取 `attachments` 找到原 PDF 地址（或直接读索引 `custom-attachment-pdf`）；
 2. 转成磁盘路径（思源工作空间 + 相对地址），交给 pdf2zh；
 3. 翻译完成后，`/api/asset/upload` 把 `…-mono.pdf` / `…-dual.pdf` 上传回思源，得到 `assets/….pdf` 地址；
-4. 写入 `custom-translation-mono` / `custom-translation-dual`，并重渲染元数据模板区。
+4. **更新主字段**（把 `translation.mono`/`translation.dual` 写入 `custom-paper-data` 的 JSON 并重新 base64），同时**同步索引字段** `custom-translation-mono` / `custom-translation-dual`；
+5. 重渲染元数据模板区。
+
+> 主字段与索引字段的一致性：以主字段为权威，写数据时一并更新索引字段，避免不一致。
 
 ### 6.E 重渲染元数据模板区，更新翻译链接
 
