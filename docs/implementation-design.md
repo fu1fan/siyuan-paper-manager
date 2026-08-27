@@ -69,6 +69,14 @@ Zotero Connector 浏览器扩展 │        PDF 直接导入入口        │
 
 ## 三、能力 1：保存附件文件（PDF / HTML 等）
 
+> **环境前提（已核实）**：思源桌面版（Electron）开启 `nodeIntegration`，渲染进程里 **`window.require` 存在**，可 `require('http')/require('fs')/require('child_process')`。但**伺服/浏览器模式禁用 Node 集成，`window.require` 不可用**（`terwer/siyuan-plugin-importer` Issue #82 佐证）。因此启动本地 HTTP 服务器、调 pdf2zh 子进程都**必须检测环境并仅限桌面端**：
+> ```ts
+> import { getFrontend } from "siyuan";
+> const isDesktop = getFrontend().includes("desktop"); // "desktop"|"desktop-window"|…
+> if (window.require && isDesktop) { /* 启动 23119 服务器 / 调 pdf2zh */ }
+> ```
+> 见风险 #2；若实测 `window.require` 受限，改用 `siyuan-background`/`siyuan-plugin-backend` 跑独立 `process.js`。
+
 ### 3.1 附件从哪来
 
 Zotero Connector 在 `saveItems` 后会调用 `/connector/saveAttachment`（或 `saveStandaloneAttachment`），把附件二进制流 POST 过来，插件需：
@@ -560,7 +568,8 @@ const { stdout, stderr } = await execFileP(settings.pdf2zhPath || "pdf2zh", opts
 
 **要点**：
 - 插件不会打包 pdf2zh（体积大、需 Python），只**检测本地是否安装**（`which pdf2zh` / 可执行路径设置），未安装时提示用户按 README 安装。
-- **中间文件存系统临时目录**（决策）：pdf2zh 生成的 `-mono.pdf`/`-dual.pdf` 先写入**系统临时目录**（Node `os.tmpdir()`，跨平台自动处理：macOS/Linux `/tmp`、Windows `%TEMP%`、用户缓存目录等；注意不同系统路径分隔符与返回路径的处理）。翻译完成后从 tmp 读回，再 `/api/asset/upload` 转存到思源 `assets/`。**不担心遗留临时文件**——tmp 目录会被系统/下次运行清理；若需可配置翻译工作子目录（如 `${os.tmpdir()}/siyuan-paper-manager/`）做隔离。
+- **中间文件存系统临时目录**（决策）：pdf2zh 生成的 `-mono.pdf`/`-dual.pdf` 先写入**系统临时目录**（Node `os.tmpdir()`，跨平台自动处理：macOS/Linux `/tmp`、Windows `%TEMP%`、用户缓存目录等；注意不同系统路径分隔符与返回路径的处理）。翻译完成后从 tmp 读回，再 `/api/asset/upload` 转存到思源 `assets/`。
+- **持久化（决策）**：翻译**任务中断不处理**——若插件重载/思源关闭导致翻译中断，tmp 中的中间文件由系统回收清理，不会残留到思源仓库；**只有完整翻译并移动进仓库后才落盘**，因此不会产生垃圾文件。整体逻辑：tmp（临时）→ 完成移动 → 思源仓库（最终），无冗余。
 - CLI 是**同步阻塞**的（翻译耗时），插件侧需放入异步任务（后台执行），完成后用事件/通知回填元数据模板区，避免卡死 UI。
 
 ### 6.D 通过隐藏字段定位 PDF 附件
@@ -653,7 +662,7 @@ const { stdout, stderr } = await execFileP(settings.pdf2zhPath || "pdf2zh", opts
 ## 九、关键风险与注意
 
 1. **端口冲突**：23119 与 Zotero 桌面版冲突，使用插件时须关闭 Zotero；只绑定 `127.0.0.1`，禁公网。
-2. **`window.require` 可用性**：思源桌面版（Electron）是否能像 Obsidian 一样在渲染进程用 `window.require` 取 Node 模块，**需实测确认**；若不可用，需另找在思源里启动本地 http server 的方法。
+2. **`window.require` 可用性**：思源桌面版（Electron）**开启 nodeIntegration，渲染进程 `window.require` 可用**，可拿 `http/fs/child_process`。**但仅限桌面端**；伺服/浏览器模式 `window.require` 为 undefined。须用 `getFrontend().includes("desktop")` + `if(window.require)` 检测并仅桌面端运行（见能力1 环境前提）。若实测因思源设置/版本受限，回退 `siyuan-background`/`siyuan-plugin-backend` 独立进程方案。
 3. **模板 `render` 需要绝对路径**：已确认用官方内核 API `POST /api/system/getWorkspaceInfo`（返回 `data.workspaceDir`，需管理员 Token），再拼 `/data/plugins/{插件名}/templates/xxx.md`。注意该 API 需管理员权限，前端插件需带 Token 调用。
 4. **附件子目录 bug**（issue #7454）：`/api/asset/upload` 用子文件夹时返回地址不含子文件夹名，需代码拼接。
 5. **版本安全**：思源 ≥ 3.1.16，规避 renderSprig / asset upload 的历史漏洞。
@@ -669,7 +678,8 @@ const { stdout, stderr } = await execFileP(settings.pdf2zhPath || "pdf2zh", opts
 
 ## 十、待办（实现前的 confirm 项）
 
-- [ ] **确认 `window.require` / Node 子进程能力**：(这是整个插件技术地基，最优先) 在思源桌面版插件运行时实测能否用 `window.require` 拿 Node 模块（`http`、`child_process`），从而启动监听 23119 的本地服务器 + 调 pdf2zh。**验证方法**：在插件 `onload` 写入 `console.log(typeof window.require)`，或直接 `window.require('child_process')` 试 `execFile`；若为 undefined，需改用思源是否暴露的其他通道（如内核插件 `kernel.js` 在 Node 侧运行）。
+- [x] **`window.require` 可用性** → 已确认：思源桌面版开启 nodeIntegration，渲染进程 `window.require` 可用（可拿 http/fs/child_process）；**仅桌面端，伺服/浏览器端为 undefined**。需在代码里 `getFrontend().includes("desktop") + window.require` 检测（见能力1 环境前提）。剩余待实测：在实际思源版本上跑通 `window.require('http')` 启动监听 23119。
+- [x] 翻译持久化 → 已确认：翻译中间文件写系统 tmp（`os.tmpdir()`），完成后移动到思源仓库；**任务中断不处理**，tmp 残留被系统清理，不产生垃圾。
 - [x] 思源**工作空间绝对路径** → 已确认：`POST /api/system/getWorkspaceInfo` 返回 `data.workspaceDir`（需管理员 Token）。
 - [x] 思源**块属性值长度上限** → 已确认：SQLite TEXT 类型，受 `SQLITE_MAX_LENGTH` 限制约 1GB，无额外小上限，base64 后无长度瓶颈。
 - [ ] 用 curl 验证 `/api/template/render` 在本机思源可用、字段映射正确；
