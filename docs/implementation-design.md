@@ -3,6 +3,30 @@
 > **模板方案决策**：采用 **思源原生模板片段**（方案 A，用户已确认）。
 > 模板**随插件打包**（位于 `data/plugins/{插件名}/templates/`），插件通过内核 API `POST /api/template/render` 让思源渲染填充，再调 `createDocWithMd` 创建文档。模板不写入 `data/templates`，随插件安装/更新/卸载自动管理。
 
+> **技术栈决策**：**Vite + TypeScript**。工程骨架参照社区主流模板（`frostime/plugin-sample-vite` 或 `siyuan-note/plugin-sample-vite-svelte`），支持热重载与 GitHub Action 自动打包。
+
+## 〇、工程结构（Vite + TS）
+
+```
+siyuan-paper-manager/
+├── src/
+│   ├── index.ts                # 插件入口（Plugin 子类，注册命令/UI/事件）
+│   ├── connector-server.ts     # 能力1：监听 23119 的 Zotero Connector 服务器
+│   ├── item-processor.ts       # 能力1/2/3：统一消费来源，渲染+建文档+写隐藏字段
+│   ├── metadata-extractor.ts   # 能力3：PDF 元数据提取（XMP→DOI→中文）
+│   ├── pdf2zh-service.ts       # 能力4：调 pdf2zh CLI（child_process + os.tmpdir）
+│   ├── template-render.ts      # 模板读取+render 封装（getWorkspaceInfo 取绝对路径）
+│   ├── settings.ts             # Setting 面板（4 Tab）
+│   ├── i18n/                   # 国际化
+│   └── ui/                     # Dialog（导入/编辑元数据）、元数据页渲染
+├── templates/
+│   ├── paper-meta.md           # 元数据区模板（随插件打包）
+│   └── paper-note.md           # 笔记区模板
+├── plugin.json
+├── vite.config.ts
+└── package.json
+```
+
 ## 一、目标功能（四件事）
 
 1. **保存 Zotero 浏览器端插件发送的所有文件**（PDF、HTML 快照、toc 页等）。
@@ -67,10 +91,11 @@ Zotero Connector 在 `saveItems` 后会调用 `/connector/saveAttachment`（或 
 
 ### 3.3 附件元数据如何处理
 
-上传成功后，应在文献文档中声明附件。思源里通常的做法：
+**决策（已确认）**：附件**格式化到元数据模板**展示，不额外另立 UI。做法：
 
-- 在文献文档内插入对附件的引用，或用文档/块属性 `data-assets` 记录附件地址，防止"清理未引用资源"误删；
-- 附件路径作为资源链接写入 Markdown（`![[assets/xxx.pdf]]` 或直接引用），让思源识别为附件。
+- 上传成功后，把附件地址写进隐藏字段 `custom-paper-data` 的 `attachments[]`，并作为模板变量 `attachments[]` 传给 `render`，在元数据模板区渲染成链接（如 `- [PDF](assets/xxx.pdf)`）；
+- 同时用文档/块属性 `data-assets` 记录附件地址，防止"清理未引用资源"误删（见风险 #4）；
+- 附件路径写入 Markdown 资源链接（`assets/xxx.pdf`），让思源识别为附件、可直接点击。
 
 ## 四、能力 2：论文元数据页（文档定位升级）
 
@@ -140,8 +165,9 @@ const render = async (path:string, data:object) =>
   (await request("/api/template/render", { path, data: JSON.stringify(data) })).data;
 
 // 注意：render 需要模板文件的《绝对路径》（含工作空间前缀）。
-// 插件安装目录在 {工作空间}/data/plugins/{插件名}/templates/，需解析出工作空间绝对路径再拼。
-const wsAbsPath = pathResolver.getWorkspaceAbsPath();   // 由内核 API（如 /api/system/getWorkspaces 或 this.app 提供）得到
+// 插件安装目录在 {工作空间}/data/plugins/{插件名}/templates/，需先取工作空间绝对路径再拼。
+const wsAbsPath = (await request("/api/system/getWorkspaceInfo", {})).data?.workspaceDir;
+//   ↑ 官方内核 API，返回 data.workspaceDir = 工作空间根目录绝对路径（需管理员权限/Token）。再拼 /data/plugins/…
 const metaRendered = await render(`${wsAbsPath}/data/plugins/${pluginName}/templates/paper-meta.md`, zoteroData);
 const noteRendered = await render(`${wsAbsPath}/data/plugins/${pluginName}/templates/paper-note.md`, zoteroData);
 
@@ -163,7 +189,36 @@ await request("/api/filetree/createDocWithMd", {
 
 ### 4.4 模板变量协议（给 Zotero item → 模板的上下文）
 
-**来源**：模板变量实际是**从隐藏字段 `custom-paper-data` 的 base64 JSON 解析后归一化得到**的视图，用于喂给 `/api/template/render`。核心字段名沿用 Zotero 原始名（便于与 Zotero 数据对齐），渲染前再做一次"Zotero 原始字段 → 模板友好字段"的映射（如 `creators`→`authors`、`abstractNote`→`abstract`、`dois`→`doi`）。
+> **双层字段设计**：
+> - **存储层（`custom-paper-data`）**：保留 **Zotero 全字段**（见下方盘点），忠实记录，不裁剪。
+> - **模板层（喂给 `render`）**：**只需字段子集**——仅挑模板展示需要的字段，不要求覆盖全部 Zotero 字段。缺失的字段在模板变量里留空，模板用 `{{if}}` 条件渲染避免出现空行。
+
+**Zotero 字段盘点（存储层全量保留）**：Zotero 条目字段按类型有差异，通用字段覆盖绝大多数场景。核心字段如下（`/api/itemFields` 全量，此处列常用）：
+`itemType`、`title`、`shortTitle`、`creators[]`（firstName/lastName/name/creatorType）、`date`、`accessDate`、`abstractNote`、`language`、`url`、`extra`、`tags`、`bookTitle`、`publicationTitle`（期刊）、`journalAbbreviation`、`volume`、`issue`、`pages`、`numPages`、`edition`、`publisher`、`place`、`series`、`seriesNumber`、`DOI`、`ISBN`、`ISSN`、`citationKey`、`archive`、`libraryCatalog`、`rights`、`dateAdded`、`dateModified`。
+
+**模板所需字段子集**（模板层，按"文献元数据页展示"所需挑选）：
+
+| 模板字段 | 来源 Zotero 字段 | 说明 |
+|---|---|---|
+| `itemType` | itemType | 条目类型 |
+| `title` | title | 标题 |
+| `authors[]` | creators | 归一化为 `{family,given,creatorType}` |
+| `date` / `dateParts` | date | 日期（原始+结构化） |
+| `journal` | publicationTitle / bookTitle | 期刊/书名 |
+| `volume` `issue` `pages` | 同名 | 卷期页码 |
+| `doi` | DOI | 标识符 |
+| `isbn` `issn` | ISBN/ISSN | 标识符 |
+| `url` | url | 链接 |
+| `publisher` | publisher | 出版社 |
+| `abstract` | abstractNote | 摘要 |
+| `tags[]` | tags | 标签 |
+| `attachments[]` | 附件位置 | 由插件填充 |
+| `translationMono/Dual` | 翻译版 | 由插件填充 |
+| `citekey` | citationKey/生成 | 引用键 |
+
+> 字段取舍原则：**模板层只放"文献元数据页"实际要显示的**，其余 Zotero 字段（`extra`、`archive`、`rights` 等）完整保留在存储层 `custom-paper-data`，作为隐藏字段存档、供查重/扩展，不强制渲染。
+
+**来源**：模板变量实际是**从隐藏字段 `custom-paper-data` 的 base64 JSON 解析后归一化得到**的视图，用于喂给 `/api/template/render`。核心字段名沿用 Zotero 原始名（便于与 Zotero 数据对齐），渲染前再做一次"Zotero 原始字段 → 模板友好字段"的映射（如 `creators`→`authors`、`abstractNote`→`abstract`、`DOI`→`doi`）。
 
 ```jsonc
 {
@@ -179,7 +234,7 @@ await request("/api/filetree/createDocWithMd", {
   "isbn": "……",
   "issn": "……",
   "url": "https://……",
-  "journal": "……",                        // container-title
+  "journal": "……",                        // publicationTitle
   "volume": "12",
   "issue": "3",
   "pages": "123-145",
@@ -231,9 +286,11 @@ await request("/api/filetree/createDocWithMd", {
 - 启发：
 ```
 
-### 4.5 引用键（citekey）生成
+### 4.5 引用键（citekey）生成与文档命名
 
-BibLib 用 citekey 命名笔记。建议从 `firstAuthor family` + `year` + `title首词` 拼，如 `smith2024alice`，存入隐藏字段 `citekey`，便于后续引用与去重。
+**决策（已确认）**：从 `firstAuthor family` + `year` + `title首词` 拼，如 `smith2024alice`，存入隐藏字段 `citekey`。**不处理 citekey 冲突**（两个不同论文生成相同 citekey 时，不主动规避，靠文档路径/标题区分）。
+
+**文档命名**：**`citekey - 论文标题`**（如 `smith2024alice - Example Article Title`）。作为 `createDocWithMd` 的文档名（hpath 末级）与标题。
 
 ### 4.6 去重 / 复用已有文档
 
@@ -241,6 +298,7 @@ BibLib 用 citekey 命名笔记。建议从 `firstAuthor family` + `year` + `tit
 
 - 先按 `citekey` 或 DOI 查重（用 `/api/query/sql` 查 `blocks` 的属性，或用 `/api/filetree/getIDsByHPath` 按路径查）；
 - 已存在时，可选：跳过 / 追加 `/api/block/appendBlock` / 弹窗询问。
+- 注：只在导入前主动查重提示；不做 citekey 冲突自动规避（见 4.5）。
 
 ### 4.7 隐藏字段区 + 元数据自动更新的实现方案（关键：可行的边界）
 
@@ -262,6 +320,8 @@ BibLib 用 citekey 命名笔记。建议从 `firstAuthor family` + `year` + `tit
 **为什么不是纯单一字段**：若所有信息都塞进一个 base64 字段，思源的 SQL（`/api/query/sql` 查 `attributes` 表）就无法直接按 citekey/DOI 检索或去重。因此**主字段存完整包，另保留少量固定索引字段**供查询与定位——"少占字段"不是"只用一个"，而是避免为每个元数据项都开一个字段。
 
 **base64 编码**：JS 可用 `btoa(unescape(encodeURIComponent(json)))` 处理含中文/UTF-8 的 JSON；读取时 `decodeURIComponent(escape(atob(b64)))`。因整体是 ASCII 字符串，存入思源块属性时也避开转义问题（但仍需注意 Issue #6198 的转义 bug）。
+
+> **属性值长度上限（已调研）**：思源属性的 `value` 存于 SQLite `attributes` 表，字段类型 TEXT，受 SQLite `SQLITE_MAX_LENGTH` 限制，默认约 **1GB**。思源未对块属性值额外设置更小的硬上限；base64 膨胀后的 JSON 长度对实际论文元数据而言远低于该上限，**不存在长度瓶颈**。唯一需留意的是界面内输入超长值体验不佳，但本方案走 API 写入不受此影响。
 
 **存取流程**：
 ```
@@ -430,6 +490,8 @@ MetadataExtractor
 ItemProcessor 复用：上传附件 → 渲染模板 → createDocWithMd
 ```
 
+**兜底策略（已确认）**：若元数据提取失败/不完整（如纯扫描 PDF、公开 API 无匹配、中文未被识别），仍**自动创建一篇只有"标题 + DOI"（若识别到）的元数据页**，不丢弃。标题缺省时用文件名占位；其余字段留空，模板用条件渲染避免空行；用户可稍后通过"编辑元数据"补全。
+
 ## 六、能力 4：论文翻译（调用本地 pdf2zh 命令行工具）
 
 ### 6.A 原理与目标
@@ -498,7 +560,7 @@ const { stdout, stderr } = await execFileP(settings.pdf2zhPath || "pdf2zh", opts
 
 **要点**：
 - 插件不会打包 pdf2zh（体积大、需 Python），只**检测本地是否安装**（`which pdf2zh` / 可执行路径设置），未安装时提示用户按 README 安装。
-- 输出目录可配置（默认写入思源 `assets/` 或某翻译子目录），再由 `/api/asset/upload` 转存回思源仓库。
+- **中间文件存系统临时目录**（决策）：pdf2zh 生成的 `-mono.pdf`/`-dual.pdf` 先写入**系统临时目录**（Node `os.tmpdir()`，跨平台自动处理：macOS/Linux `/tmp`、Windows `%TEMP%`、用户缓存目录等；注意不同系统路径分隔符与返回路径的处理）。翻译完成后从 tmp 读回，再 `/api/asset/upload` 转存到思源 `assets/`。**不担心遗留临时文件**——tmp 目录会被系统/下次运行清理；若需可配置翻译工作子目录（如 `${os.tmpdir()}/siyuan-paper-manager/`）做隔离。
 - CLI 是**同步阻塞**的（翻译耗时），插件侧需放入异步任务（后台执行），完成后用事件/通知回填元数据模板区，避免卡死 UI。
 
 ### 6.D 通过隐藏字段定位 PDF 附件
@@ -592,7 +654,7 @@ const { stdout, stderr } = await execFileP(settings.pdf2zhPath || "pdf2zh", opts
 
 1. **端口冲突**：23119 与 Zotero 桌面版冲突，使用插件时须关闭 Zotero；只绑定 `127.0.0.1`，禁公网。
 2. **`window.require` 可用性**：思源桌面版（Electron）是否能像 Obsidian 一样在渲染进程用 `window.require` 取 Node 模块，**需实测确认**；若不可用，需另找在思源里启动本地 http server 的方法。
-3. **模板 `render` 需要绝对路径**，需能获取工作空间路径（思源提供相应 API/属性），否则无法定位模板文件。
+3. **模板 `render` 需要绝对路径**：已确认用官方内核 API `POST /api/system/getWorkspaceInfo`（返回 `data.workspaceDir`，需管理员 Token），再拼 `/data/plugins/{插件名}/templates/xxx.md`。注意该 API 需管理员权限，前端插件需带 Token 调用。
 4. **附件子目录 bug**（issue #7454）：`/api/asset/upload` 用子文件夹时返回地址不含子文件夹名，需代码拼接。
 5. **版本安全**：思源 ≥ 3.1.16，规避 renderSprig / asset upload 的历史漏洞。
 6. **PDF 文本提取依赖**：直接导入 PDF 需要从 PDF 提取前几页文本，需引入 PDF 解析库（`pdf-parse`/`pdfjs-dist`）；纯扫描/图片型 PDF 无文字层，提取会失败，需提示用户手动或改用 Connector。
@@ -607,8 +669,9 @@ const { stdout, stderr } = await execFileP(settings.pdf2zhPath || "pdf2zh", opts
 
 ## 十、待办（实现前的 confirm 项）
 
-- [ ] 实测思源桌面版 `window.require` / Electron 环境下能否启动 Node `http.server`；
-- [ ] 确认获取思源**工作空间绝对路径**的方式（渲染模板需要）；
+- [ ] **确认 `window.require` / Node 子进程能力**：(这是整个插件技术地基，最优先) 在思源桌面版插件运行时实测能否用 `window.require` 拿 Node 模块（`http`、`child_process`），从而启动监听 23119 的本地服务器 + 调 pdf2zh。**验证方法**：在插件 `onload` 写入 `console.log(typeof window.require)`，或直接 `window.require('child_process')` 试 `execFile`；若为 undefined，需改用思源是否暴露的其他通道（如内核插件 `kernel.js` 在 Node 侧运行）。
+- [x] 思源**工作空间绝对路径** → 已确认：`POST /api/system/getWorkspaceInfo` 返回 `data.workspaceDir`（需管理员 Token）。
+- [x] 思源**块属性值长度上限** → 已确认：SQLite TEXT 类型，受 `SQLITE_MAX_LENGTH` 限制约 1GB，无额外小上限，base64 后无长度瓶颈。
 - [ ] 用 curl 验证 `/api/template/render` 在本机思源可用、字段映射正确；
 - [ ] 在思源插件运行环境里实测 Node 的 PDF 解析库能否提取文本（决定直接导入 PDF 的可行性）；
 - [ ] 实测"插件 UI 改隐藏字段 → 重渲染元数据模板区 → updateBlock 刷新"这条链路是否顺畅（这是元数据自动更新的核心路径）；
