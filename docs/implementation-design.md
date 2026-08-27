@@ -1,7 +1,7 @@
 # siyuan-paper-manager 实现设计
 
 > **模板方案决策**：采用 **思源原生模板片段**（方案 A，用户已确认）。
-> 模板以 `.md` 文件存在于思源工作空间 `data/templates/`，插件通过内核 API `POST /api/template/render` 让思源渲染填充，再调 `createDocWithMd` 创建文档。
+> 模板**随插件打包**（位于 `data/plugins/{插件名}/templates/`），插件通过内核 API `POST /api/template/render` 让思源渲染填充，再调 `createDocWithMd` 创建文档。模板不写入 `data/templates`，随插件安装/更新/卸载自动管理。
 
 ## 一、目标功能（四件事）
 
@@ -90,14 +90,33 @@ Zotero Connector 在 `saveItems` 后会调用 `/connector/saveAttachment`（或 
 | 2. 元数据模板自动更新 | `/api/block/updateBlock` + 模板 `render` | ⚠️ 部分满足（需自定义触发，见 4.7） |
 | 3. 笔记模板一次性创建 | `createDocWithMd` 时写入正文末尾 | ✅ 满足（等价于文档正文，只在创建时生成） |
 
-### 4.2 模板文件方案（沿用思源原生模板片段）
+### 4.2 模板文件方案（纯随插件打包，已确认）
 
-沿用已确认的"思源原生模板片段"方案，但拆成**两份模板**：
+> **决策（已确认）**：默认模板**纯随插件打包**，不写入 `data/templates/`。用户不可自定义，始终用插件内置版本。这样模板的**安装 / 更新 / 卸载**完全跟随插件生命周期自动管理，零残留、无同步冲突。
+
+模板放在**插件安装目录** `data/plugins/{插件名}/templates/`，打包时用 copy 插件随包发布：
+
+```
+data/plugins/siyuan-paper-manager/
+├── templates/
+│   ├── paper-meta.md      # 元数据区模板（创建+变更时重渲染）
+│   └── paper-note.md      # 笔记区模板（仅创建时一次）
+├── index.js
+└── plugin.json
+```
+
+**生命周期（自动）**：
+- **安装**：插件目录出现，模板随之出现。
+- **更新**：集市下载新版本 → 整体覆盖插件目录，模板**自动更新为带的新版本**。
+- **卸载**：插件目录被删，模板随之删除。
+- **同步**：模板属于插件数据，不参与笔记云同步，避免跨设备覆盖冲突。
+
+**读取模板**：通过 URL `/plugins/{插件名}/templates/paper-meta.md`，或用内核 `/api/file/getFile` 按 `data/plugins/...` 路径读取。
 
 | 模板文件 | 用途 | 渲染时机 |
 |---|---|---|
-| `data/templates/paper-meta.md` | 生成"元数据模板区"内容 | 创建 + 元数据变更时重渲染 |
-| `data/templates/paper-note.md` | 生成"笔记模板区"内容 | 仅创建时一次 |
+| `paper-meta.md` | 生成"元数据模板区"内容 | 创建 + 元数据变更时重渲染 |
+| `paper-note.md` | 生成"笔记模板区"内容 | 仅创建时一次 |
 
 > 创建文档时可把两段拼成一份 Markdown 一次性 `createDocWithMd`；此后更新只重渲染 `paper-meta` 对应块。
 
@@ -105,21 +124,26 @@ Zotero Connector 在 `saveItems` 后会调用 `/connector/saveAttachment`（或 
 
 ```ts
 import { request } from "siyuan";        // 或 this.app 提供的请求方法
+import pathResolver from "./utils";      // 见下方：解析插件工作空间路径
 
 // 0. 组装数据 & 写入隐藏字段（单字段 JSON → base64，见 4.7(1)）
 const dataB64 = btoa(unescape(encodeURIComponent(JSON.stringify(customPaperData))));
 await request("/api/attr/setBlockAttrs", { id: docId, attrs: { "custom-paper-data": dataB64, "custom-citekey": ..., "custom-doi": ... } });
 
-// 1. 读取模板内容（走内核 API，禁止 fs）
-const metaMd = (await request("/api/file/getFile", { path: "/data/templates/paper-meta.md" })).data;
-const noteMd = (await request("/api/file/getFile", { path: "/data/templates/paper-note.md" })).data;
+// 1. 读取模板内容（模板随插件打包，位于插件安装目录；走内核 API，禁止 fs）
+//    两种读法：① URL /plugins/{插件名}/templates/xxx.md（前端 fetch）；② /api/file/getFile 按 data/plugins/{插件名}/templates/xxx.md
+const metaMd = (await request("/api/file/getFile", { path: `/data/plugins/${pluginName}/templates/paper-meta.md` })).data;
+const noteMd = (await request("/api/file/getFile", { path: `/data/plugins/${pluginName}/templates/paper-note.md` })).data;
 
 // 2. 渲染模板：传模板绝对路径 + JSON 数据，思源返回渲染后的 Markdown
 const render = async (path:string, data:object) =>
   (await request("/api/template/render", { path, data: JSON.stringify(data) })).data;
 
-const metaRendered = await render("/<工作空间>/data/templates/paper-meta.md", zoteroData); // zoteroData 由 customPaperData 归一化
-const noteRendered = await render("/<工作空间>/data/templates/paper-note.md", zoteroData);
+// 注意：render 需要模板文件的《绝对路径》（含工作空间前缀）。
+// 插件安装目录在 {工作空间}/data/plugins/{插件名}/templates/，需解析出工作空间绝对路径再拼。
+const wsAbsPath = pathResolver.getWorkspaceAbsPath();   // 由内核 API（如 /api/system/getWorkspaces 或 this.app 提供）得到
+const metaRendered = await render(`${wsAbsPath}/data/plugins/${pluginName}/templates/paper-meta.md`, zoteroData);
+const noteRendered = await render(`${wsAbsPath}/data/plugins/${pluginName}/templates/paper-note.md`, zoteroData);
 
 // 3. 创建文档（正文 = 元数据区 + 笔记区）
 await request("/api/filetree/createDocWithMd", {
@@ -127,6 +151,7 @@ await request("/api/filetree/createDocWithMd", {
 });
 ```
 
+> **模板内容读取**：模板随插件打包，故用 `/api/file/getFile` 按插件目录路径读取；`render` 渲染时需要 `{工作空间}/data/plugins/{插件名}/templates/xxx.md` 的**绝对路径**（含工作空间前缀），需先获取工作空间绝对路径。
 > **`zoteroData` 的来源**：读取隐藏字段 `custom-paper-data` 的 base64 → 解码 → `JSON.parse` → 归一化成模板变量结构（见 4.4）。渲染前才做这种映射。
 
 > **`render` 接口细节**（重要）：
@@ -171,7 +196,7 @@ await request("/api/filetree/createDocWithMd", {
 
 > 存储时（`custom-paper-data`）保留 Zotero 原始字段名；渲染模板前再映射成上面的模板变量结构。参见 4.7(1) 的 JSON 结构。
 
-模板示例——元数据区（`data/templates/paper-meta.md`）：
+模板示例——元数据区（`data/plugins/{插件名}/templates/paper-meta.md`）：
 
 ```markdown
 # {{.title}}
@@ -195,7 +220,7 @@ await request("/api/filetree/createDocWithMd", {
 {{end}}
 ```
 
-模板示例——笔记区（`data/templates/paper-note.md`，仅创建时渲染一次）：
+模板示例——笔记区（`data/plugins/{插件名}/templates/paper-note.md`，仅创建时渲染一次）：
 
 ```markdown
 ## 阅读笔记
@@ -525,9 +550,7 @@ const { stdout, stderr } = await execFileP(settings.pdf2zhPath || "pdf2zh", opts
 | 目标笔记本 | 文献保存到哪个笔记本 | 用户选择（`/api/notebook/lsNotebooks` 列出） |
 | 存放路径 | 笔记本内文档树相对路径（hpath） | `/文献库` |
 | 附件目录 | `assetsDirPath` | `/assets/` |
-| 元数据模板路径 | 元数据区模板（创建+变更时重渲染） | `/data/templates/paper-meta.md` |
-| 笔记模板路径 | 笔记区模板（仅创建时一次） | `/data/templates/paper-note.md` |
-| 开箱默认模板 | 首次运行是否写入内置模板 | 开启 |
+| 元数据模板容器 | 只读说明（模板随插件打包） | — |
 | 编辑元数据 UI | 插件自建"编辑元数据"对话框（隐藏字段的唯一修改入口） | 开启（必需） |
 | PDF 元数据回退顺序 | 直接导入 PDF 时的提取顺序 | XMP → DOI/Citoid → 中文检索 |
 | 中文检索（知网） | 是否启用中文（知网）元数据增强；默认关闭 | 关闭（默认） |
@@ -540,7 +563,7 @@ const { stdout, stderr } = await execFileP(settings.pdf2zhPath || "pdf2zh", opts
 ## 八、工作流（完整时序）
 
 **入口 A：浏览器 Connector**
-1. **插件 onload**：读取设置 → 启动 ConnectorServer（监听 23119）→ 检查默认模板是否存在，不存在则写入。
+1. **插件 onload**：读取设置 → 启动 ConnectorServer（监听 23119）。模板随插件打包，无需写入。
 2. **用户在浏览器点击 Zotero Connector** → 扩展 `ping` 通过（插件返回握手数据）→ `saveItems` 发送 item → 插件登记会话。
 3. **扩展逐附件 POST `/connector/saveAttachment`** → 插件把附件写临时目录并记录进度。
 4. 会话完成后 ConnectorServer `emitCustomEvent('zotero-item-received', {item, files})`。

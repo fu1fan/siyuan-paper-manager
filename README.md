@@ -60,7 +60,7 @@ Zotero Connector 浏览器扩展
 - **元数据模板区**：可读的元数据摘要，用思源模板片段渲染；论文创建**或元数据被修改**时自动重渲染（用 `/api/block/updateBlock` 更新）。
 - **笔记模板区**：自由笔记区，仅在论文创建时由模板**一次性**格式化到文档末尾，之后不再被覆盖。
 
-模板以 `.md` 存于思源工作空间 `data/templates/`（两份：`paper-meta.md` 元数据区、`paper-note.md` 笔记区），插件通过 `POST /api/template/render` 让思源渲染填充（Go 模板 + Sprig：条件、循环、日期等）。
+模板以 `.md` **随插件打包**（位于 `data/plugins/${插件名}/templates/`，两份：`paper-meta.md` 元数据区、`paper-note.md` 笔记区），插件通过 `POST /api/template/render` 让思源渲染填充（Go 模板 + Sprig：条件、循环、日期等）。模板随插件安装/更新/卸载自动管理，用户无需也不应手动改动。
 
 > **触发机制**：隐藏字段的唯一修改入口是插件 UI，因此每次元数据改动都必然经过插件，由插件在写入隐藏字段后主动重渲染元数据模板区——实现**确定性纯自动更新**，无需依赖思源属性变更事件。
 
@@ -99,6 +99,7 @@ Zotero Connector 浏览器扩展
 - [docs/zotero-connector-protocol.md](docs/zotero-connector-protocol.md) — Zotero Connector 本地 HTTP 协议细节
 - [docs/siyuan-kernel-api.md](docs/siyuan-kernel-api.md) — 思源内核 API（创建文档等）
 - [docs/implementation-design.md](docs/implementation-design.md) — 插件实现设计（附件落盘 + 模板渲染 + 翻译）
+- [docs/ui-ux-design.md](docs/ui-ux-design.md) — 用户 UI/UX 设计（命令/设置/元数据页/对话框/交互）
 
 ### 官方 / 上游链接
 
