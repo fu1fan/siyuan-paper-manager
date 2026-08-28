@@ -1,112 +1,96 @@
 # siyuan-paper-manager
 
-一个思源笔记（SiYuan Note）插件，用于接收 Zotero 浏览器扩展（Zotero Connector）发送的文献信息，并将其保存为思源笔记中的指定文档。
+面向思源笔记桌面端的论文管理插件：接收 Zotero Connector 文献与附件、创建可维护的论文元数据页、导入本地 PDF 提取元数据，并调用本地 pdf2zh 生成翻译版本。
 
-核心思路参考 Obsidian 的 [BibLib](https://github.com/callumalpass/obsidian-biblib) 插件。
+## 功能
 
-## 核心目标
+- **Zotero Connector 接收**：仅监听 `127.0.0.1:23119`，支持 `ping`、`saveItems`、网页快照、附件、会话进度等端点。
+- **论文元数据页**：完整数据保存在 `custom-paper-data`，正文分为可自动刷新的元数据超级块和永不自动覆盖的阅读笔记超级块。
+- **重复导入合并**：优先按 DOI，其次按 citekey 与标题查重；默认保留现有非空字段，附件按 SHA-256 去重。
+- **本地 PDF 导入**：读取 PDF 信息/XMP 和前三页文本，依次尝试 DOI、Crossref、Citoid；识别失败仍用文件名创建。
+- **中文检索**：实验性 CNKI 候选检索，默认关闭，多候选由用户选择。
+- **pdf2zh 翻译**：单任务队列调用本地 CLI，生成 mono/dual PDF，上传思源并自动刷新元数据区。
+- **原生模板探针**：优先尝试思源 `/api/template/render`；字段绑定失败时提示并切换内置受限模板引擎。
 
-将自己**伪装成一个 Zotero 桌面客户端**，拦截 Zotero Connector 浏览器扩展发送的文献数据。
+## 系统要求
 
-在浏览器网页上点击 Zotero Connector 扩展按钮时，扩展会通过本地 HTTP 协议把抓取到的文献元数据 POST 到本机的 `23119` 端口。原本这个端口上是 Zotero 桌面版,本插件通过监听同一个端口、按同样的协议应答，从而"截获"这条数据流，将其解析后保存到思源笔记指定位置。
+- 思源笔记 `>= 3.1.16`
+- 桌面端或桌面窗口端；移动端、浏览器端不启动 Connector 和 pdf2zh
+- Node.js 22+ 与 pnpm（仅开发时需要）
+- 可选：Python 3.11–3.12 与 [pdf2zh](https://github.com/Byaidu/PDFMathTranslate)
 
-## 工作流程图
+> Zotero 桌面版与本插件默认使用同一个 `23119` 端口，接收 Connector 数据时需关闭 Zotero，或在插件设置中修改端口。
 
-```text
-浏览器网页
-   │  点击 Zotero Connector 扩展按钮
-   ▼
-Zotero Connector 浏览器扩展
-   │  POST http://127.0.0.1:23119/connector/saveItems  (JSON)
-   ▼
-本插件内置的本地 HTTP 服务器 (监听 23119 端口)
-   │  解析文献元数据 (item 数据)
-   ▼
-弹窗/直接创建
-   │  通过思源内核 API 调 createDocWithMd
-   ▼
-思源笔记 指定笔记本 + 指定路径 下的文档
+## 开发与构建
+
+```bash
+pnpm install
+pnpm run check          # 类型、Lint、测试、构建与产物校验
+pnpm run dev            # Vite watch 构建
+pnpm run make-link      # 将 dist 软链到默认思源插件目录
+pnpm run package        # 生成 package.zip
 ```
 
-> ⚠️ 关键约束：端口 `23119` 与 Zotero 桌面版冲突。使用本插件接收文献时，需要关闭 Zotero 桌面客户端（BibLib 同样如此）。
+构建产物位于 `dist/`，包含 `plugin.json`、`index.js`、`index.css`、i18n、图标、README 和两份模板。
 
-## 核心功能清单
+## 初次配置
 
-1. **伪装 Zotero 客户端**：在桌面版思源内监听 `127.0.0.1:23119`，实现 Zotero Connector 协议端点。
-2. **接收文献**：处理 `/connector/ping`、`/connector/saveItems`、`/connector/saveSnapshot`、`/connector/saveAttachment` 等端点。
-3. **解析元数据**：把 Zotero item 数据（itemType、title、creators、date、DOI 等）转换为思源可用的结构化数据。
-4. **保存到指定位置**：通过思源内核 API 将文献写入指定笔记本 + 路径下的新文档。
-5. **附件处理**：接收并保存 Zotero Connector 发来的 PDF 等附件（走 `/api/asset/upload` 转存）。
-6. **直接导入本地 PDF**：用户主动导入本地 PDF，插件自动提取元数据（含中文文献增强），再走模板流程保存。
-7. **论文翻译**：调用本地 `pdf2zh` 命令行工具，根据隐藏字段定位论文 PDF 附件，生成单语/双语翻译版，并更新元数据模板区的翻译文档链接。
+1. 在“设置 → 集市 → 已下载”启用“论文管理”。
+2. 打开插件设置，在“导入与接收”选择目标笔记本；插件不会静默选择第一个笔记本。
+3. 确认状态栏显示 `Zotero 23119`，然后在浏览器点击 Zotero Connector。
+4. 本地 PDF 可通过 `⌥I` 或顶栏“论文管理 → 导入本地 PDF”导入。
 
-## 论文翻译
+### 命令
 
-依赖用户本地额外安装的 **pdf2zh**（PDFMathTranslate）命令行工具（需 Python 3.11–3.12，`pip install pdf2zh`）。插件用 Node `child_process` 将其作为独立 CLI 进程调用：
+| 命令 | 默认快捷键 |
+|---|---|
+| 导入本地 PDF | `⌥I` |
+| 编辑当前论文元数据 | `⌥E` |
+| 翻译当前论文 | `⌥T` |
+| 环境自检 | 无 |
 
-- **定位 PDF**：从论文元数据页的隐藏字段 `custom-attachment-pdf` 读取原 PDF 附件地址；
-- **生成翻译版**：`pdf2zh document.pdf -o <dir>` 生成 `…-mono.pdf`（单语译版）与 `…-dual.pdf`（双语对照版），默认 Google 翻译服务，参数可配置（`-li/-lo/-s` 等）；
-- **回填并刷新**：翻译版经 `/api/asset/upload` 转存回思源，写隐藏字段 `custom-translation-mono` / `custom-translation-dual`，再重渲染元数据模板区的"翻译版本"区块。
+论文页右键菜单还提供编辑、翻译，以及失败页面的“修复导入”。
 
-> ⚠️ pdf2zh 首次运行需下载 AI 模型（DocLayout-YOLO），国内网络可设 `HF_ENDPOINT=https://hf-mirror.com`。翻译是长耗时异步任务，插件后台执行并显示进度。
+## 数据结构
 
-详见 [docs/implementation-design.md](docs/implementation-design.md) 能力 4。
+文档根块属性：
 
-## 存储设计：论文元数据页
+- `custom-paper-data`：base64 编码的 schema v1 JSON，包含 `canonical`、`sources[]`、`attachments[]`、`translation`、citekey 与时间戳。
+- `custom-paper-citekey` / `custom-paper-doi`：查重索引。
+- `custom-paper-attachment-pdf`：原始 PDF 索引。
+- `custom-paper-translation-mono` / `custom-paper-translation-dual`：翻译资源索引。
+- `custom-paper-state`：`ready` 或 `failed`。
 
-每篇文献 = 一个**论文元数据页（Metadata Page）**，自上而下三段结构，通过思源内核 API 创建与维护：
+元数据区与笔记区是两个顶层超级块，分别标记 `custom-section=meta/note`。编辑或翻译只更新 meta 超级块；note 超级块及其块 ID不参与刷新。
 
-- **隐藏字段区**：用思源块属性保存论文**所有**元数据（正文不渲染、天然隐藏）。采用**单字段 `custom-paper-data` 存 base64 编码的整包 JSON**（含 Zotero 全部字段、附件位置、插件辅助字段），另保留少量固定索引字段（`custom-citekey`/`custom-doi`/`custom-attachment-pdf`/`custom-translation-*`）供去重与快速定位。通过 `/api/attr/setBlockAttrs` 写入；隐藏字段**只能通过插件自己的"编辑元数据"对话框修改**（唯一修改入口）。
-- **元数据模板区**：可读的元数据摘要，用思源模板片段渲染；论文创建**或元数据被修改**时自动重渲染（用 `/api/block/updateBlock` 更新）。
-- **笔记模板区**：自由笔记区，仅在论文创建时由模板**一次性**格式化到文档末尾，之后不再被覆盖。
+## PDF 元数据策略
 
-模板以 `.md` **随插件打包**（位于 `data/plugins/${插件名}/templates/`，两份：`paper-meta.md` 元数据区、`paper-note.md` 笔记区），插件通过 `POST /api/template/render` 让思源渲染填充（Go 模板 + Sprig：条件、循环、日期等）。模板随插件安装/更新/卸载自动管理，用户无需也不应手动改动。
+1. 读取 PDF Document Info/XMP。
+2. 从前三页文本中识别 DOI。
+3. DOI 精确查询 Crossref；失败时使用 Citoid。
+4. 没有 DOI 时用标题查询 Crossref，并按标题、年份、作者评分。
+5. 可选 CNKI 候选检索。
+6. 全部失败时，以文件名作为标题创建元数据页。
 
-> **触发机制**：隐藏字段的唯一修改入口是插件 UI，因此每次元数据改动都必然经过插件，由插件在写入隐藏字段后主动重渲染元数据模板区——实现**确定性纯自动更新**，无需依赖思源属性变更事件。
+网络服务均有超时、有限重试和 429 退避；离线不会阻断 PDF 导入。第一版不包含 OCR。
 
-附件（PDF / HTML）通过内核 API `POST /api/asset/upload` 转存到思源仓库，禁止直接 `fs` 写 `data`。
+## pdf2zh
 
-## 直接导入 PDF 的元数据提取
+```bash
+uv tool install --python 3.12 pdf2zh
+# 国内首次下载模型时可设置：
+export HF_ENDPOINT=https://hf-mirror.com
+```
 
-参考 Zotero 原生与茉莉花插件的做法，采用多级回退策略。第一版以 **公开 API 为主 + 知网检索为可选（默认关闭）**：
+在插件“翻译”设置中配置可执行路径、语言、翻译服务和额外参数。插件使用 `spawn(..., { shell: false })`，中间文件只写系统临时目录；成功后才上传思源。重新翻译只替换链接，不自动删除旧资源。
 
-| 级别 | 方法 | 适用 | 合规性 |
-|---|---|---|---|
-| 1 | 读 PDF 内嵌 XMP / 文档属性 | 出版商 PDF | ✅ 本地读取 |
-| 2 | 提取前几页文本 → 找 DOI → 交叉引库（CrossRef / 维基 Citoid） | 大多文献（含部分中文） | ✅ 公开 API，免 key |
-| 3 | 文件名(标题_作者) → 中文检索（知网式） | 中文文献增强 | ⚠️ 无官方 API、有反爬，作为可选开关（默认关闭） |
+## 故障排查
 
-> **API 合规性**（核实自 BibLib 源码 `src/services/api/citoid.ts`）：BibLib 实际用的是 **维基 Citoid REST**（`en.wikipedia.org/api/rest_v1/data/citation/bibtex/`，公开免 key）+ **Citation.js**（内部组合 **CrossRef / PubMed / Open Library / Wikidata** 等公开 API）。这些全部对第三方开放。
-> 相反，**Zotero 官方的 PDF 识别 web 服务未公开、无开发者授权**，BibLib 也没用，不建议用；**知网 CNKI 无官方 API**（茉莉花靠爬虫模拟），置为可选且默认关闭。
+- **端口被占用**：关闭 Zotero，或修改插件端口。
+- **没有目标笔记本**：在插件设置中明确选择笔记本。
+- **模板回退提示**：打开“环境自检”查看当前引擎；回退引擎支持字段、`if/else` 和 `range`。
+- **找不到 pdf2zh**：填写绝对路径；macOS GUI 环境也会检查 `~/.local/bin/pdf2zh`。
+- **模型下载失败**：设置 `HF_ENDPOINT=https://hf-mirror.com` 后重试。
+- **导入状态为 failed**：在论文页右键选择“修复导入”。
 
-> 说明：Zotero 原生（5.0.36+）是"前几页文本 → DOI/ISBN 检测 → Crossref/web 服务补全"，**不读 XMP、不用 Google Scholar**。茉莉花则依赖"文件名反推 → 模拟知网检索 → 解析页面"，可参考其中文姓名拆分/合并。
-
-详细设计见 [docs/implementation-design.md](docs/implementation-design.md)。
-
-## 技术要点
-
-- **运行环境**：思源桌面版基于 Electron，插件内可用 `window.require` / 类似途径获取 Node 模块（`http`、`fs`、`path`、`crypto` 等），从而启动本地 HTTP 服务器。
-- **插件 API**：前端插件 API 通过 `require('siyuan')` 获取（`Plugin` 类、生命周期钩子、`fetchPost` 等）。
-- **创建文档**：必须走思源内核 API（`/api/filetree/*`），**禁止**直接用 `fs` 写 `data` 下的文件，否则会导致同步损坏。
-- **桌面端限定**：监听端口只在桌面版可行，移动端需禁用。
-
-## 参考资料
-
-详细研究笔记见 `docs/` 目录：
-
-- [docs/siyuan-plugin-dev-guide.md](docs/siyuan-plugin-dev-guide.md) — 思源插件开发指南要点
-- [docs/biblib-zotero-connector-core.md](docs/biblib-zotero-connector-core.md) — BibLib 插件的 Connector 实现逻辑
-- [docs/zotero-connector-protocol.md](docs/zotero-connector-protocol.md) — Zotero Connector 本地 HTTP 协议细节
-- [docs/siyuan-kernel-api.md](docs/siyuan-kernel-api.md) — 思源内核 API（创建文档等）
-- [docs/implementation-design.md](docs/implementation-design.md) — 插件实现设计（附件落盘 + 模板渲染 + 翻译）
-- [docs/ui-ux-design.md](docs/ui-ux-design.md) — 用户 UI/UX 设计（命令/设置/元数据页/对话框/交互）
-
-### 官方 / 上游链接
-
-- 思源插件示例：https://github.com/siyuan-note/plugin-sample
-- 思源插件 API 声明：https://github.com/siyuan-note/petal
-- 思源内核 API 文档（中文）：https://github.com/siyuan-note/siyuan/blob/master/API_zh_CN.md
-- BibLib 仓库：https://github.com/callumalpass/obsidian-biblib
-- Zotero Connector HTTP Server 文档：https://www.zotero.org/support/dev/client_coding/connector_http_server
-- 茉莉花（Zotero 中文文献增强插件）：https://github.com/l0o0/jasminum
-- pdf2zh（PDFMathTranslate，本地论文翻译）：https://github.com/Byaidu/PDFMathTranslate
+更完整的架构、测试和发布说明见 [docs/development.md](docs/development.md)。

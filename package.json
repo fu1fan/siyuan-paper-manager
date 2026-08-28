@@ -1,0 +1,43 @@
+{
+  "name": "siyuan-paper-manager",
+  "version": "0.3.0",
+  "description": "SiYuan plugin for Zotero Connector imports, paper metadata pages, PDF metadata extraction, and pdf2zh translation",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "vite build --watch --mode development",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src tests vite.config.ts",
+    "test": "vitest",
+    "test:run": "vitest run",
+    "build": "vite build && node scripts/copy-assets.mjs",
+    "build:prod": "vite build --mode production && node scripts/copy-assets.mjs",
+    "verify:package": "node scripts/verify-package.mjs",
+    "package": "pnpm run build:prod && node scripts/package.mjs && pnpm run verify:package",
+    "make-link": "node scripts/make-link.mjs",
+    "check": "pnpm run typecheck && pnpm run lint && pnpm run test:run && pnpm run build && pnpm run verify:package"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "keywords": [
+    "siyuan-plugin",
+    "zotero",
+    "paper",
+    "pdf2zh"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "@types/archiver": "^6.0.3",
+    "@types/node": "^24.0.0",
+    "archiver": "^7.0.1",
+    "eslint": "^9.0.0",
+    "pdfjs-dist": "^6.2.108",
+    "siyuan": "^1.2.5",
+    "typescript": "^5.9.0",
+    "typescript-eslint": "^8.0.0",
+    "vite": "^7.0.0",
+    "vitest": "^3.0.0"
+  }
+}

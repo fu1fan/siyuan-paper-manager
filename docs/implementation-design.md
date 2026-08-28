@@ -1,5 +1,9 @@
 # siyuan-paper-manager 实现设计
 
+> **实现状态（0.3.0）**：四项能力、UI、测试与构建门禁已在 `codex` 分支落地。本文保留最初的研究与设计推导；实际源码以 `src/` 为准，当前架构和验证方法见 `docs/development.md`。
+>
+> **模板实现修订**：运行时仍先对 `/api/template/render` 做真实数据绑定探针；若字段未解析或出现 `<no value>`，会向用户提示并切换到插件内置的受限模板引擎。两种引擎都输出单一超级块根节点，刷新时只替换 `custom-section=meta` 区域。
+
 > **模板方案决策**：采用 **思源原生模板片段**（方案 A，用户已确认）。
 > 模板**随插件打包**（位于 `data/plugins/{插件名}/templates/`），插件通过内核 API `POST /api/template/render` 让思源渲染填充，再调 `createDocWithMd` 创建文档。模板不写入 `data/templates`，随插件安装/更新/卸载自动管理。
 

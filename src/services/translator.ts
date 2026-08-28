@@ -1,0 +1,215 @@
+import type { ChildProcess } from "node:child_process";
+import { ATTR } from "../constants";
+import type { PaperData } from "../types/paper";
+import type { PluginSettings } from "../types/settings";
+import type { TranslationState } from "../types/status";
+import { getNodeRequire, type NodeRequire, requireNode } from "../core/env";
+import { KernelClient } from "../core/kernel";
+import { sanitizeDocumentName } from "../core/naming";
+
+export interface TranslationResult {
+  mono?: string;
+  dual?: string;
+  elapsedMs: number;
+}
+
+export interface TranslatorOptions {
+  requireFn?: NodeRequire;
+  onState?: (state: TranslationState) => void;
+  persist: (docId: string, paper: PaperData) => Promise<void>;
+}
+
+export class TranslatorService {
+  private readonly requireFn: NodeRequire;
+  private child: ChildProcess | null = null;
+  private activeDocId: string | null = null;
+
+  constructor(private readonly kernel: KernelClient, private readonly options: TranslatorOptions) {
+    const requireFn = options.requireFn ?? getNodeRequire();
+    if (!requireFn) throw new Error("Node 子进程不可用，仅支持思源桌面端");
+    this.requireFn = requireFn;
+  }
+
+  isRunning(): boolean {
+    return this.child !== null;
+  }
+
+  async translate(docId: string, settings: PluginSettings): Promise<TranslationResult> {
+    if (this.child) throw new Error(`已有翻译任务正在运行：${this.activeDocId}`);
+    const paper = await this.kernel.getPaperData(docId);
+    const pdf = paper.attachments.find((attachment) => attachment.mimeType === "application/pdf");
+    if (!pdf) throw new Error("当前论文没有可翻译的 PDF 附件");
+    const fs = requireNode<typeof import("node:fs")>("fs", this.requireFn);
+    const path = requireNode<typeof import("node:path")>("path", this.requireFn);
+    const os = requireNode<typeof import("node:os")>("os", this.requireFn);
+    const workspace = await this.kernel.getWorkspaceInfo();
+    const dataRoot = path.resolve(workspace.workspaceDir, "data");
+    const pdfPath = path.resolve(dataRoot, pdf.assetAddress);
+    if (!isWithin(dataRoot, pdfPath, path.sep)) throw new Error("PDF 资源路径越出工作空间");
+    if (!fs.existsSync(pdfPath)) throw new Error(`PDF 文件不存在：${pdf.assetAddress}`);
+    const executable = resolveExecutable(settings.pdf2zhPath, this.requireFn);
+    const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "siyuan-paper-translate-"));
+    const args = [
+      "-o", outputDir,
+      "-li", settings.translateFrom,
+      "-lo", settings.translateTo,
+      "-s", settings.translateService,
+      ...settings.pdf2zhArgs,
+      pdfPath,
+    ];
+    const startedAt = Date.now();
+    this.activeDocId = docId;
+    this.options.onState?.({ state: "running", docId, message: "正在启动 pdf2zh" });
+    try {
+      await this.spawn(executable, args, docId);
+      const outputs = locateOutputs(outputDir, path.basename(pdfPath, path.extname(pdfPath)), fs, path);
+      if (!outputs.mono) throw new Error("pdf2zh 未生成单语 PDF");
+      validatePdf(outputs.mono, fs);
+      if (outputs.dual) validatePdf(outputs.dual, fs);
+      const monoBytes = new Uint8Array(fs.readFileSync(outputs.mono));
+      const monoName = `${sanitizeDocumentName(paper.citekey)}-mono.pdf`;
+      const mono = await this.kernel.uploadAsset(settings.translationAssetsDir, monoBytes, monoName, "application/pdf");
+      let dual: string | undefined;
+      if (settings.translationDual && outputs.dual) {
+        const dualBytes = new Uint8Array(fs.readFileSync(outputs.dual));
+        const dualName = `${sanitizeDocumentName(paper.citekey)}-dual.pdf`;
+        dual = await this.kernel.uploadAsset(settings.translationAssetsDir, dualBytes, dualName, "application/pdf");
+      }
+      paper.translation = {
+        mono,
+        dual,
+        executable,
+        args,
+        completedAt: new Date().toISOString(),
+      };
+      paper.updatedAt = new Date().toISOString();
+      await this.options.persist(docId, paper);
+      const elapsedMs = Date.now() - startedAt;
+      this.options.onState?.({ state: "success", docId, elapsedMs });
+      return { mono, dual, elapsedMs };
+    } catch (error) {
+      const message = translationError(error);
+      this.options.onState?.({ state: "error", docId, message });
+      throw new Error(message);
+    } finally {
+      this.child = null;
+      this.activeDocId = null;
+      try { fs.rmSync(outputDir, { recursive: true, force: true }); } catch { /* system tmp cleanup */ }
+    }
+  }
+
+  cancel(): void {
+    if (!this.child) return;
+    this.child.kill("SIGTERM");
+  }
+
+  private spawn(executable: string, args: string[], docId: string): Promise<void> {
+    const childProcess = requireNode<typeof import("node:child_process")>("child_process", this.requireFn);
+    return new Promise((resolve, reject) => {
+      const child = childProcess.spawn(executable, args, {
+        shell: false,
+        windowsHide: true,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      this.child = child;
+      let stderr = "";
+      const handleOutput = (chunk: Uint8Array) => {
+        const line = new TextDecoder().decode(chunk);
+        const progress = parseProgress(line);
+        this.options.onState?.({
+          state: "running",
+          docId,
+          progress,
+          message: progress == null ? line.trim().slice(-160) || "翻译中" : `翻译中 ${progress}%`,
+        });
+      };
+      child.stdout?.on("data", handleOutput);
+      child.stderr?.on("data", (chunk: Uint8Array) => {
+        const text = new TextDecoder().decode(chunk);
+        stderr = `${stderr}${text}`.slice(-8_000);
+        handleOutput(chunk);
+      });
+      child.once("error", reject);
+      child.once("close", (code, signal) => {
+        if (signal) reject(new Error(`pdf2zh 已中止 (${signal})`));
+        else if (code === 0) resolve();
+        else reject(new Error(`pdf2zh 退出码 ${String(code)}：${stderr.trim().slice(-1000)}`));
+      });
+    });
+  }
+}
+
+export function parseProgress(output: string): number | undefined {
+  const values = [...output.matchAll(/(?:^|\D)(100|\d{1,2})(?:\.\d+)?%/g)].map((match) => Number(match[1]));
+  const last = values.at(-1);
+  return last != null && last >= 0 && last <= 100 ? last : undefined;
+}
+
+export function resolveExecutable(configured: string, requireFn: NodeRequire): string {
+  const fs = requireNode<typeof import("node:fs")>("fs", requireFn);
+  const path = requireNode<typeof import("node:path")>("path", requireFn);
+  const os = requireNode<typeof import("node:os")>("os", requireFn);
+  const childProcess = requireNode<typeof import("node:child_process")>("child_process", requireFn);
+  const value = configured.trim() || "pdf2zh";
+  if (path.isAbsolute(value) || value.includes(path.sep)) {
+    if (fs.existsSync(value)) return value;
+    throw new Error(`pdf2zh 可执行文件不存在：${value}`);
+  }
+  const lookup = process.platform === "win32" ? "where" : "which";
+  const found = childProcess.spawnSync(lookup, [value], { encoding: "utf8", shell: false, windowsHide: true });
+  const resolved = found.status === 0 ? found.stdout.trim().split(/\r?\n/)[0] : "";
+  if (resolved && fs.existsSync(resolved)) return resolved;
+  for (const candidate of [
+    path.join(os.homedir(), ".local", "bin", value),
+    path.join(os.homedir(), ".local", "bin", `${value}.exe`),
+  ]) {
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  throw new Error("未检测到 pdf2zh，请先安装并在设置中填写可执行路径");
+}
+
+function locateOutputs(
+  directory: string,
+  originalBase: string,
+  fs: typeof import("node:fs"),
+  path: typeof import("node:path"),
+): { mono?: string; dual?: string } {
+  const files = fs.readdirSync(directory).filter((file) => file.toLowerCase().endsWith(".pdf"));
+  const mono = files.find((file) => file === `${originalBase}-mono.pdf`)
+    ?? files.find((file) => /-mono\.pdf$/i.test(file));
+  const dual = files.find((file) => file === `${originalBase}-dual.pdf`)
+    ?? files.find((file) => /-dual\.pdf$/i.test(file));
+  return {
+    mono: mono ? path.join(directory, mono) : undefined,
+    dual: dual ? path.join(directory, dual) : undefined,
+  };
+}
+
+function validatePdf(pathname: string, fs: typeof import("node:fs")): void {
+  const descriptor = fs.openSync(pathname, "r");
+  try {
+    const buffer = Buffer.alloc(5);
+    const count = fs.readSync(descriptor, buffer, 0, 5, 0);
+    if (count !== 5 || buffer.toString("ascii") !== "%PDF-") throw new Error(`输出不是有效 PDF：${pathname}`);
+  } finally {
+    fs.closeSync(descriptor);
+  }
+}
+
+function isWithin(root: string, target: string, separator: string): boolean {
+  return target === root || target.startsWith(`${root}${separator}`);
+}
+
+function translationError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/ENOENT|未检测到|不存在/.test(message)) return `${message}；请检查 pdf2zh 安装与路径`;
+  if (/model|huggingface|download/i.test(message)) return `${message}；国内网络可设置 HF_ENDPOINT=https://hf-mirror.com`;
+  return message;
+}
+
+export function translationIndexAttrs(paper: PaperData): Record<string, string> {
+  return {
+    [ATTR.translationMono]: paper.translation.mono ?? "",
+    [ATTR.translationDual]: paper.translation.dual ?? "",
+  };
+}

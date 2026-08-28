@@ -1,0 +1,74 @@
+.paper-manager-status {
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.paper-manager-status[data-state="error"] {
+  color: var(--b3-card-error-color);
+}
+
+.paper-manager-tabs {
+  display: flex;
+  gap: 6px;
+  border-bottom: 1px solid var(--b3-border-color);
+  margin-bottom: 16px;
+}
+
+.paper-manager-tabs button {
+  border-radius: 4px 4px 0 0;
+}
+
+.paper-manager-tabs button[data-active="true"] {
+  color: var(--b3-theme-primary);
+  border-bottom: 2px solid var(--b3-theme-primary);
+}
+
+.paper-manager-form {
+  width: 100%;
+}
+
+.paper-manager-field {
+  display: grid;
+  grid-template-columns: minmax(130px, 180px) 1fr;
+  gap: 12px;
+  align-items: center;
+  margin: 12px 0;
+}
+
+.paper-manager-field--column {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.paper-manager-field input,
+.paper-manager-field select,
+.paper-manager-field textarea {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.paper-manager-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+.paper-manager-preview {
+  padding: 12px;
+  border: 1px solid var(--b3-border-color);
+  border-radius: 6px;
+  background: var(--b3-theme-surface);
+  white-space: pre-wrap;
+}
+
+.paper-manager-conflicts {
+  max-height: 300px;
+  overflow: auto;
+}
+
+.paper-manager-conflicts label {
+  display: block;
+  padding: 6px 0;
+}

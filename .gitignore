@@ -1,6 +1,8 @@
 # dependencies
 node_modules/
 *.log
+pnpm-debug.log*
+.pnpm-store/
 
 # build output
 dist/
@@ -17,3 +19,9 @@ data/
 
 # 临时文件
 *.tsbuildinfo
+
+# local planning/session artifacts
+.zcode/
+
+# test artifacts
+coverage/

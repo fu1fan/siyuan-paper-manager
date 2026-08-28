@@ -1,5 +1,7 @@
 # siyuan-paper-manager UI/UX 设计
 
+> **实现状态（0.3.0）**：命令、顶栏、状态栏、四组 Tab 设置、导入/编辑/重复合并对话框和论文页右键菜单已实现。具体操作见项目 README。
+
 > 本设计面向用户可感知的界面与交互。所有界面均基于思源插件 API（`Setting`/`Dialog`/`Menu`/`addCommand`/`addDock`/`addTopBar`/`addStatusBar`）实现，均为思源原生支持的交互形式，不引入自定义复杂框架。
 > 与功能设计对应：`../docs/implementation-design.md`。
 
