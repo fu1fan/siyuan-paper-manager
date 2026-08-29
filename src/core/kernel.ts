@@ -40,6 +40,46 @@ export interface SqlRow {
   [key: string]: unknown;
 }
 
+export type AttributeViewKeyType = "text" | "number" | "date" | "select" | "mSelect" | "url" | "email" | "phone" | "mAsset" | "template" | "created" | "updated" | "checkbox" | "relation" | "rollup" | "lineNumber";
+
+export interface AttributeViewValue {
+  id?: string;
+  keyID?: string;
+  blockID?: string;
+  type?: string;
+  block?: { id?: string; content?: string };
+  text?: { content?: string };
+  number?: { content?: number; isNotEmpty?: boolean };
+  date?: { content?: number; isNotEmpty?: boolean };
+  mSelect?: Array<{ content: string; color?: string }>;
+  url?: { content?: string };
+  checkbox?: { checked?: boolean };
+}
+
+export interface AttributeViewCell { id?: string; value: AttributeViewValue }
+export interface AttributeViewRow { id: string; cells: AttributeViewCell[] }
+export interface AttributeViewColumn { id: string; name: string; type: string }
+export interface RenderedAttributeView {
+  id: string;
+  name: string;
+  viewID: string;
+  viewType: string;
+  view: {
+    columns?: AttributeViewColumn[];
+    rows?: AttributeViewRow[];
+    rowCount?: number;
+  };
+}
+
+export interface AttributeViewDefinition {
+  av: {
+    id: string;
+    name: string;
+    keyValues: Array<{ key: { id: string; name: string; type: string }; values?: AttributeViewValue[] }>;
+    views?: Array<{ id: string; type: string; itemIds?: string[] }>;
+  };
+}
+
 export class KernelClient {
   private readonly postImpl: KernelPost;
   private readonly fetchImpl: typeof fetch;
@@ -100,6 +140,85 @@ export class KernelClient {
 
   async deleteBlock(id: string): Promise<void> {
     await this.postImpl("/api/block/deleteBlock", { id });
+  }
+
+  async appendAttributeViewBlock(parentID: string, blockID: string, avID: string): Promise<string> {
+    const dom = `<div class="av" data-node-id="${blockID}" data-av-id="${avID}" data-type="NodeAttributeView" data-av-type="table"></div>`;
+    const ids = await this.appendBlock(parentID, dom, "dom");
+    return ids.includes(blockID) ? blockID : ids[0] ?? blockID;
+  }
+
+  renderAttributeView(
+    avID: string,
+    blockID: string,
+    page = 1,
+    pageSize = 100,
+    createIfNotExist = false,
+  ): Promise<RenderedAttributeView> {
+    return this.postImpl("/api/av/renderAttributeView", {
+      id: avID, blockID, page, pageSize, query: "", groupPaging: {}, createIfNotExist,
+    });
+  }
+
+  getAttributeView(avID: string): Promise<AttributeViewDefinition> {
+    return this.postImpl("/api/av/getAttributeView", { id: avID });
+  }
+
+  async setAttributeViewName(avID: string, name: string): Promise<void> {
+    await this.postImpl("/api/transactions", {
+      session: "paper-manager",
+      app: "siyuan",
+      transactions: [{ doOperations: [{ action: "setAttrViewName", id: avID, data: name }], undoOperations: [] }],
+    });
+  }
+
+  async addAttributeViewKey(
+    avID: string,
+    keyID: string,
+    keyName: string,
+    keyType: AttributeViewKeyType,
+    previousKeyID = "",
+  ): Promise<void> {
+    await this.postImpl("/api/av/addAttributeViewKey", {
+      avID, keyID, keyName, keyType, keyIcon: "", previousKeyID,
+    });
+  }
+
+  async removeAttributeViewKey(avID: string, keyID: string): Promise<void> {
+    await this.postImpl("/api/av/removeAttributeViewKey", { avID, keyID, removeRelationDest: false });
+  }
+
+  async addAttributeViewBlocks(avID: string, blockID: string, sources: Array<{ id: string; content: string }>): Promise<void> {
+    await this.postImpl("/api/av/addAttributeViewBlocks", {
+      avID,
+      blockID,
+      viewID: "",
+      groupID: "",
+      previousID: "",
+      srcs: sources.map((source) => ({ ...source, isDetached: false })),
+      ignoreDefaultFill: true,
+    });
+  }
+
+  async removeAttributeViewBlocks(avID: string, itemIDs: string[]): Promise<void> {
+    if (!itemIDs.length) return;
+    await this.postImpl("/api/av/removeAttributeViewBlocks", { avID, srcIDs: itemIDs });
+  }
+
+  async setAttributeViewCell(avID: string, keyID: string, itemID: string, value: AttributeViewValue): Promise<void> {
+    await this.postImpl("/api/av/setAttributeViewBlockAttr", { avID, keyID, itemID, value });
+  }
+
+  async renameDocument(id: string, title: string): Promise<void> {
+    await this.postImpl("/api/filetree/renameDocByID", { id, title });
+  }
+
+  async listRowsByAttribute(name: string, value?: string): Promise<SqlRow[]> {
+    const condition = value === undefined ? "" : ` AND a.value = ${sqlString(value)}`;
+    return this.query(
+      `SELECT a.block_id AS id, a.value, b.content, b.hpath, b.box FROM attributes a `
+      + `JOIN blocks b ON b.id = a.block_id WHERE b.type = 'd' AND a.name = ${sqlString(name)}${condition}`,
+    );
   }
 
   query(stmt: string): Promise<SqlRow[]> {

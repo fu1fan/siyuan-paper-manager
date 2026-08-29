@@ -4,6 +4,7 @@ import type { PluginStatus } from "../types/status";
 import { KernelClient } from "./kernel";
 import { safeAssetUrl, safeExternalUrl } from "./normalize";
 import { renderTemplateText } from "./template-engine";
+import { newNodeId } from "./node-id";
 
 export type TemplateName = "paper-meta" | "paper-note";
 export type TemplateMode = PluginStatus["templateMode"];
@@ -125,7 +126,7 @@ export class TemplateService {
     name: TemplateName,
     data: PaperData,
   ): Promise<string> {
-    const requestedId = createNodeId();
+    const requestedId = newNodeId();
     const markdown = preserveRootIal(await this.renderFallback(name, data), requestedId, section);
     const operationIds = await this.kernel.appendBlock(docId, markdown, "markdown");
     const blockId = operationIds.includes(requestedId) ? requestedId : operationIds[0] ?? requestedId;
@@ -253,20 +254,4 @@ async function retry<T>(fn: () => Promise<T>, attempts: number, delayMs: number)
     await new Promise((resolve) => setTimeout(resolve, delayMs));
   }
   return last!;
-}
-
-function createNodeId(): string {
-  const now = new Date();
-  const timestamp = [
-    now.getFullYear(),
-    String(now.getMonth() + 1).padStart(2, "0"),
-    String(now.getDate()).padStart(2, "0"),
-    String(now.getHours()).padStart(2, "0"),
-    String(now.getMinutes()).padStart(2, "0"),
-    String(now.getSeconds()).padStart(2, "0"),
-  ].join("");
-  const bytes = new Uint8Array(7);
-  globalThis.crypto.getRandomValues(bytes);
-  const suffix = Array.from(bytes, (byte) => (byte % 36).toString(36)).join("");
-  return `${timestamp}-${suffix}`;
 }
