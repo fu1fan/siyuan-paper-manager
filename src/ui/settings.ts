@@ -6,6 +6,7 @@ import {
   FIXED_COLUMN_HINTS,
   columnLabel,
   isFixedColumn,
+  normalizeColumnOrder,
   type LibraryColumn,
   type LibraryMetadataField,
   type LibraryProject,
@@ -20,6 +21,8 @@ type TabName = "library" | "receiving" | "storage" | "metadata" | "translation";
 export class SettingsPanel {
   readonly setting: Setting;
   private draft: PluginSettings;
+  private activeLibrary: PaperLibraryInfo | undefined;
+  private libraryEditor: HTMLElement | undefined;
 
   constructor(
     private readonly pluginName: string,
@@ -150,7 +153,9 @@ export class SettingsPanel {
     const editor = container.querySelector<HTMLElement>("[data-library-editor]");
     if (!editor) return;
     const selected = libraries.find((library) => library.docId === this.draft.defaultLibraryDocId) ?? libraries[0];
-    if (!selected) { editor.innerHTML = ""; return; }
+    if (!selected) { editor.innerHTML = ""; this.activeLibrary = undefined; this.libraryEditor = undefined; return; }
+    this.activeLibrary = selected;
+    this.libraryEditor = editor;
     const projectDocumentLabels = new Map<string, string>();
     await Promise.all(selected.data.projects.map(async (project) => {
       if (!project.docId) return;
@@ -174,11 +179,10 @@ export class SettingsPanel {
         )).join("")}</div>
         <button type="button" class="b3-button b3-button--outline" data-project-add>添加项目</button>
       </section>
+      <div class="paper-manager-preview">项目与字段的修改会随右下角「保存」一起应用。</div>
       <div class="paper-manager-actions">
         <button type="button" class="b3-button b3-button--text" data-sync>重新同步</button>
         <button type="button" class="b3-button b3-button--text" data-repair>修复数据库</button>
-        <button type="button" class="b3-button b3-button--text" data-project-save>保存项目</button>
-        <button type="button" class="b3-button b3-button--primary" data-field-save>应用字段并重建</button>
       </div>`;
     bindFieldOrdering(editor.querySelector<HTMLElement>("[data-field-list]")!);
     const projectList = editor.querySelector<HTMLElement>("[data-project-list]")!;
@@ -199,19 +203,6 @@ export class SettingsPanel {
       const result = await this.libraries.repairLibrary(selected.docId);
       return `修复完成：同步 ${result.papers} 篇论文`;
     });
-    editor.querySelector<HTMLButtonElement>("[data-project-save]")!.onclick = () => void actionMessage(async () => {
-      await this.libraries.updateProjects(selected.docId, collectProjects(projectList));
-      return "项目定义已保存";
-    });
-    editor.querySelector<HTMLButtonElement>("[data-field-save]")!.onclick = () => void actionMessage(async () => {
-      const rows = Array.from(editor.querySelectorAll<HTMLElement>("[data-field-row]"));
-      const order = rows.map((row) => row.dataset.column as LibraryColumn);
-      const fields = rows
-        .filter((row) => !row.dataset.fixed && row.querySelector<HTMLInputElement>("[data-library-field]")?.checked)
-        .map((row) => row.dataset.column as LibraryMetadataField);
-      const result = await this.libraries.applySelectedFields(selected.docId, fields, order);
-      return `字段已应用并重建 ${result.papers} 篇论文`;
-    });
   }
 
   private async save(): Promise<void> {
@@ -220,8 +211,50 @@ export class SettingsPanel {
       settings.onboardingCompleted = Boolean(settings.defaultLibraryDocId);
       await this.onSave(settings);
       this.draft = structuredClone(settings);
-      showMessage("论文管理设置已保存", 3000, "info");
-    } catch (error) { showMessage(`设置保存失败：${message(error)}`, 5000, "error"); }
+    } catch (error) {
+      showMessage(`设置保存失败：${message(error)}`, 5000, "error");
+      return;
+    }
+    try {
+      const applied = await this.applyLibraryChanges();
+      showMessage(applied ? `设置已保存；${applied}` : "论文管理设置已保存", 5000, "info");
+    } catch (error) {
+      showMessage(`设置已保存，但文献库改动应用失败：${message(error)}`, 7000, "error");
+    }
+  }
+
+  /** 统一应用当前文献库编辑器的改动：项目定义、字段勾选与列顺序。 */
+  private async applyLibraryChanges(): Promise<string> {
+    const editor = this.libraryEditor;
+    const library = this.activeLibrary;
+    if (!editor || !library || !editor.isConnected) return "";
+    const parts: string[] = [];
+    const projectList = editor.querySelector<HTMLElement>("[data-project-list]");
+    if (projectList) {
+      const projects = collectProjects(projectList);
+      if (!projectsEqual(projects, library.data.projects)) {
+        await this.libraries.updateProjects(library.docId, projects);
+        library.data.projects = projects;
+        parts.push("项目已保存");
+      }
+    }
+    const rows = Array.from(editor.querySelectorAll<HTMLElement>("[data-field-row]"));
+    if (rows.length) {
+      const order = rows.map((row) => row.dataset.column as LibraryColumn);
+      const fields = rows
+        .filter((row) => !row.dataset.fixed && row.querySelector<HTMLInputElement>("[data-library-field]")?.checked)
+        .map((row) => row.dataset.column as LibraryMetadataField);
+      const selectionChanged = !sameMembers(fields, library.data.selectedFields);
+      const orderChanged = order.join(",") !== normalizeColumnOrder(library.data.columnOrder).join(",");
+      if (selectionChanged) {
+        const result = await this.libraries.applySelectedFields(library.docId, fields, order);
+        parts.push(`字段已应用并重建 ${result.papers} 篇论文`);
+      } else if (orderChanged) {
+        await this.libraries.applyColumnOrder(library.docId, order);
+        parts.push("列顺序已应用");
+      }
+    }
+    return parts.join("，");
   }
 }
 
@@ -362,6 +395,18 @@ function collectProjects(list: HTMLElement): LibraryProject[] {
 
 function documentLabel(document: DocumentSearchResult): string {
   return `${document.title}${document.hPath ? ` · ${document.hPath}` : ""}`;
+}
+
+function projectsEqual(left: LibraryProject[], right: LibraryProject[]): boolean {
+  return left.length === right.length && left.every((project, index) => {
+    const other = right[index];
+    return other && project.id === other.id && project.name === other.name
+      && (project.docId ?? "") === (other.docId ?? "");
+  });
+}
+
+function sameMembers<T>(left: T[], right: T[]): boolean {
+  return left.length === right.length && left.every((value) => right.includes(value));
 }
 async function actionMessage(action: () => Promise<string>): Promise<void> {
   try { showMessage(await action(), 5000, "info"); }

@@ -208,6 +208,15 @@ export class LibraryService {
     return result;
   }
 
+  /** 仅调整数据库列顺序：不增删字段、不重建论文行。 */
+  async applyColumnOrder(libraryDocId: string, columnOrder: LibraryColumn[]): Promise<void> {
+    const library = await this.getLibrary(libraryDocId);
+    library.data.columnOrder = normalizeColumnOrder(columnOrder);
+    library.data.updatedAt = new Date().toISOString();
+    await this.saveLibraryData(libraryDocId, library.data);
+    await this.reorderManagedFields(library);
+  }
+
   async syncPaper(docId: string, paper?: PaperData): Promise<string> {
     const current = paper ?? await this.kernel.getPaperData(docId);
     if (!current.libraryId) throw new Error("论文尚未归属文献库");
@@ -415,13 +424,23 @@ export class LibraryService {
 
   private async reorderManagedFields(library: PaperLibraryInfo): Promise<void> {
     const definition = await this.kernel.getAttributeView(library.data.avId);
-    let previousKeyId = definition.av.keyValues.find((entry) => entry.key.type === "block")?.key.id ?? "";
+    const blockKeyId = definition.av.keyValues.find((entry) => entry.key.type === "block")?.key.id ?? "";
     const keyIds = library.data.columnOrder
       .map((column) => columnKeyId(library.data, column))
       .filter((id): id is string => Boolean(id));
+    // 主表 keyIDs 顺序决定新建视图的默认列序
+    let previousKeyId = blockKeyId;
     for (const keyId of keyIds) {
       await this.kernel.sortAttributeViewKey(library.data.avId, keyId, previousKeyId);
       previousKeyId = keyId;
+    }
+    // 已有视图的表头顺序由各自的 columns 决定，需要逐视图排序
+    for (const view of definition.av.views ?? []) {
+      let previous = blockKeyId;
+      for (const keyId of keyIds) {
+        await this.kernel.sortAttributeViewViewKey(library.data.avId, view.id, keyId, previous);
+        previous = keyId;
+      }
     }
   }
 

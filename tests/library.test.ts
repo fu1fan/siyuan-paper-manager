@@ -1,6 +1,6 @@
 import { LibraryService, metadataFieldValue } from "../src/services/library-service";
 import { ATTR } from "../src/constants";
-import { encodeLibraryData } from "../src/core/codec";
+import { decodeLibraryData, encodeLibraryData } from "../src/core/codec";
 import type { KernelClient } from "../src/core/kernel";
 import type { PaperLibraryData } from "../src/types/library";
 import { paper } from "./fixtures";
@@ -120,5 +120,54 @@ describe("library database projection", () => {
       rating: "old-rating",
     });
     expect(savedAttrs[ATTR.libraryData]).toBeTruthy();
+  });
+
+  it("applies a new column order without rebuilding rows", async () => {
+    let savedAttrs: Record<string, string> = {};
+    const sorted: Array<{ keyID: string; previousKeyID: string }> = [];
+    const viewSorted: Array<{ viewID: string; keyID: string; previousKeyID: string }> = [];
+    const libraryData: PaperLibraryData = {
+      schemaVersion: 2,
+      avId: "av",
+      avBlockId: "av-block",
+      selectedFields: ["citekey"],
+      fieldKeyIds: { citekey: "cite-key" },
+      projectKeyId: "project-key",
+      databaseKeyIds: { addedAt: "added-key", readingStatus: "status-key", rating: "rating-key" },
+      columnOrder: ["project", "addedAt", "readingStatus", "rating", "citekey"],
+      projects: [],
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    };
+    const fake = {
+      getBlockAttrs: async () => ({ [ATTR.libraryData]: encodeLibraryData(libraryData) }),
+      query: async () => [{ content: "库", hpath: "/库", box: "box" }],
+      getAttributeView: async () => ({ av: { id: "av", name: "库", keyValues: [
+        { key: { id: "block-key", name: "文档", type: "block" } },
+      ], views: [{ id: "view-1", type: "table" }] } }),
+      sortAttributeViewKey: async (_avId: string, keyID: string, previousKeyID: string) => {
+        sorted.push({ keyID, previousKeyID });
+      },
+      sortAttributeViewViewKey: async (_avId: string, viewID: string, keyID: string, previousKeyID: string) => {
+        viewSorted.push({ viewID, keyID, previousKeyID });
+      },
+      setBlockAttrs: async (_id: string, attrs: Record<string, string>) => { savedAttrs = attrs; },
+    } as unknown as KernelClient;
+
+    await new LibraryService(fake).applyColumnOrder(
+      "library-doc",
+      ["rating", "readingStatus", "project", "addedAt", "citekey"],
+    );
+
+    const expected = [
+      { keyID: "rating-key", previousKeyID: "block-key" },
+      { keyID: "status-key", previousKeyID: "rating-key" },
+      { keyID: "project-key", previousKeyID: "status-key" },
+      { keyID: "added-key", previousKeyID: "project-key" },
+      { keyID: "cite-key", previousKeyID: "added-key" },
+    ];
+    expect(sorted).toEqual(expected);
+    expect(viewSorted).toEqual(expected.map((entry) => ({ viewID: "view-1", ...entry })));
+    expect(decodeLibraryData(savedAttrs[ATTR.libraryData]!).columnOrder[0]).toBe("rating");
   });
 });

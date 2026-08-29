@@ -212,6 +212,10 @@ export class KernelClient {
     await this.postImpl("/api/av/sortAttributeViewKey", { avID, keyID, previousKeyID });
   }
 
+  async sortAttributeViewViewKey(avID: string, viewID: string, keyID: string, previousKeyID: string): Promise<void> {
+    await this.postImpl("/api/av/sortAttributeViewViewKey", { avID, viewID, keyID, previousKeyID });
+  }
+
   async addAttributeViewBlocks(avID: string, blockID: string, sources: Array<{ id: string; content: string }>): Promise<void> {
     await this.postImpl("/api/av/addAttributeViewBlocks", {
       avID,
