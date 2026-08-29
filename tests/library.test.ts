@@ -155,6 +155,9 @@ describe("library database projection", () => {
     const libraryData = fullLibraryData();
     const fake = {
       parentDocumentId: async (id: string) => id === "paper-doc" ? "library-doc" : "",
+      listRowsByAttribute: async (name: string) => name === ATTR.libraryData
+        ? [{ id: "library-doc", content: "库", hpath: "/库", box: "box", value: encodeLibraryData(libraryData) }]
+        : [],
       getBlockAttrs: async (id: string) => id === "library-doc"
         ? { [ATTR.libraryData]: encodeLibraryData(libraryData) }
         : {
@@ -189,6 +192,41 @@ describe("library database projection", () => {
     expect(paperData.attachments[0]?.assetAddress).toBe("assets/p.pdf");
     expect(paperData.translation.mono).toBe("assets/mono.pdf");
     await expect(service.readPaper("other-doc")).rejects.toThrow(/不是论文页/);
+  });
+
+  it("falls back to scanning every library when the paper was moved out of the library doc", async () => {
+    const libraryData = fullLibraryData();
+    const fake = {
+      parentDocumentId: async () => "random-parent",
+      listRowsByAttribute: async (name: string) => name === ATTR.libraryData
+        ? [{ id: "library-doc", content: "库", hpath: "/库", box: "box", value: encodeLibraryData(libraryData) }]
+        : [],
+      getBlockAttrs: async () => ({}),
+      query: async () => [{ content: "库", hpath: "/库", box: "box" }],
+      getAttributeViewItemIDsByBoundIDs: async () => ({ "paper-doc": "item-9" }),
+      renderAttributeView: async () => ({ id: "av", name: "库", viewID: "view", viewType: "table", view: {
+        rowCount: 1,
+        rows: [{ id: "item-9", cells: [
+          { value: { block: { id: "paper-doc", content: "被移动的论文" } } },
+          { value: { keyID: "citekey-key", text: { content: "moved-ck" } } },
+        ] }],
+      } }),
+    } as unknown as KernelClient;
+    const service = new LibraryService(fake);
+
+    const paperData = await service.readPaper("paper-doc");
+    expect(paperData.canonical.title).toBe("被移动的论文");
+    expect(paperData.citekey).toBe("moved-ck");
+  });
+
+  it("reports the concrete lookup stage when detection fails", async () => {
+    const fake = {
+      parentDocumentId: async () => "random-parent",
+      listRowsByAttribute: async () => [],
+      getBlockAttrs: async () => ({}),
+    } as unknown as KernelClient;
+    const service = new LibraryService(fake);
+    await expect(service.requirePaperEntry("paper-doc")).rejects.toThrow(/还没有论文文献库/);
   });
 
   it("migrates legacy base64 data into empty cells only, then clears legacy attrs", async () => {

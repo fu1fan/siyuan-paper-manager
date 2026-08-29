@@ -52,22 +52,29 @@ export class LibraryService {
   }
 
   async discoverLibraries(): Promise<PaperLibraryInfo[]> {
+    const output = await this.listLibraryRefs();
+    for (const library of output) {
+      try { await this.ensureSchemaFields(library); }
+      catch (error) { console.warn("[paper-manager] 数据库字段初始化失败，可在设置中重试修复", library.docId, error); }
+      try { await this.migrateLegacyPapers(library); }
+      catch (error) { console.warn("[paper-manager] 旧版论文数据迁移失败", library.docId, error); }
+    }
+    return output;
+  }
+
+  /** 轻量列举全部文献库（仅解码，无对齐/迁移副作用），供论文页识别兜底扫描。 */
+  private async listLibraryRefs(): Promise<PaperLibraryInfo[]> {
     const rows = await this.kernel.listRowsByAttribute(ATTR.libraryData);
     const output: PaperLibraryInfo[] = [];
     for (const row of rows) {
       try {
-        const library: PaperLibraryInfo = {
+        output.push({
           docId: String(row.id ?? ""),
           title: String(row.content ?? "文献库"),
           hPath: String(row.hpath ?? ""),
           notebookId: String(row.box ?? ""),
           data: decodeLibraryData(String(row.value ?? "")),
-        };
-        try { await this.ensureSchemaFields(library); }
-        catch (error) { console.warn("[paper-manager] 数据库字段初始化失败，可在设置中重试修复", library.docId, error); }
-        try { await this.migrateLegacyPapers(library); }
-        catch (error) { console.warn("[paper-manager] 旧版论文数据迁移失败", library.docId, error); }
-        output.push(library);
+        });
       } catch (error) {
         console.warn("[paper-manager] 跳过损坏的文献库", row.id, error);
       }
@@ -135,7 +142,9 @@ export class LibraryService {
       databaseFields().some((field) => !library.data.databaseKeyIds[field])
       || LIBRARY_METADATA_FIELDS.some((field) => !library.data.fieldKeyIds[field])
     ) {
-      await this.ensureSchemaFields(library);
+      // 对齐失败不应拖垮论文页识别等只读路径，设置页「修复数据库」可重试。
+      try { await this.ensureSchemaFields(library); }
+      catch (error) { console.warn("[paper-manager] 数据库字段对齐失败，可在设置中修复", docId, error); }
     }
     return library;
   }
@@ -174,29 +183,74 @@ export class LibraryService {
   }
 
   /**
-   * 判断文档是否为论文页：父文档是文献库，且父文档数据库中存在
-   * 绑定到该文档的条目（块 ↔ 条目的直接关联）。
+   * 判断文档是否为论文页：优先查父文档的数据库；父文档不是文献库或
+   * 库里没有条目时，兜底扫描所有文献库（论文可能被移动过位置）。
+   * 条目与页面的关联通过内核 getAttributeViewItemIDsByBoundIDs 直接查询。
    */
   async findPaperEntry(docId: string): Promise<PaperEntry | null> {
-    const parentId = await this.kernel.parentDocumentId(docId);
-    if (!parentId) return null;
-    let library: PaperLibraryInfo;
+    const { entry, reason } = await this.lookupPaperEntry(docId);
+    if (!entry) console.debug("[paper-manager] 论文页识别未命中", docId, reason);
+    return entry;
+  }
+
+  /** 同 findPaperEntry，但未命中时抛出带具体环节原因的错误。 */
+  async requirePaperEntry(docId: string): Promise<PaperEntry> {
+    const { entry, reason } = await this.lookupPaperEntry(docId);
+    if (!entry) throw new Error(`当前文档不是论文页：${reason}`);
+    return entry;
+  }
+
+  private async lookupPaperEntry(docId: string): Promise<{ entry: PaperEntry | null; reason: string }> {
+    let parentId = "";
     try {
-      library = await this.getLibrary(parentId);
-    } catch {
-      return null;
+      parentId = await this.kernel.parentDocumentId(docId);
+    } catch (error) {
+      console.warn("[paper-manager] 读取文档层级失败", docId, error);
     }
+    let parentChecked = false;
+    if (parentId) {
+      try {
+        const parentAttrs = await this.kernel.getBlockAttrs(parentId);
+        if (parentAttrs[ATTR.libraryData]) {
+          parentChecked = true;
+          const library = await this.getLibrary(parentId);
+          const entry = await this.entryInLibrary(library, docId);
+          if (entry) return { entry, reason: "" };
+        }
+      } catch (error) {
+        console.warn("[paper-manager] 父页数据库查询失败，转为全库扫描", parentId, error);
+      }
+    }
+    try {
+      const libraries = await this.listLibraryRefs();
+      for (const library of libraries) {
+        if (parentChecked && library.docId === parentId) continue;
+        const entry = await this.entryInLibrary(library, docId);
+        if (entry) return { entry, reason: "" };
+      }
+      return {
+        entry: null,
+        reason: libraries.length
+          ? "所有文献库数据库中都没有绑定该文档的条目（若刚导入，请先在设置中对文献库点一次「重新同步」）"
+          : "工作空间中还没有论文文献库",
+      };
+    } catch (error) {
+      return { entry: null, reason: `文献库扫描失败：${message(error)}` };
+    }
+  }
+
+  private async entryInLibrary(library: PaperLibraryInfo, docId: string): Promise<PaperEntry | null> {
     const itemId = await this.findItemId(library.data, docId);
-    if (!itemId) return null;
-    const row = (await this.allRows(library.data)).find((candidate) => candidate.id === itemId);
+    const rows = await this.allRows(library.data);
+    const row = (itemId ? rows.find((candidate) => candidate.id === itemId) : undefined)
+      ?? findBoundRow(rows, docId);
     if (!row) return null;
-    return { library, itemId, row };
+    return { library, itemId: row.id, row };
   }
 
   /** 从数据库行重建论文数据；附件与翻译产物等机器状态读文档属性。 */
-  async readPaper(docId: string): Promise<PaperData> {
-    const entry = await this.findPaperEntry(docId);
-    if (!entry) throw new Error("当前文档不是论文页：父页数据库中没有对应条目");
+  async readPaper(docId: string, knownEntry?: PaperEntry): Promise<PaperData> {
+    const entry = knownEntry ?? await this.requirePaperEntry(docId);
     const attrs = await this.kernel.getBlockAttrs(docId);
     return paperFromRow(entry.library, entry.row, docId, attrs);
   }
@@ -500,10 +554,10 @@ export class LibraryService {
     try {
       const mapping = await this.kernel.getAttributeViewItemIDsByBoundIDs(data.avId, [docId]);
       return mapping[docId] ?? "";
-    } catch {
-      // 老内核没有该端点时回退到整表扫描绑定块。
-      const row = findBoundRow(await this.allRows(data), docId);
-      return row?.id ?? "";
+    } catch (error) {
+      // 老内核（< 3.3.1）没有该端点；entryInLibrary 会再按绑定块整表扫描兜底。
+      console.debug("[paper-manager] 条目关联查询不可用，回退到整表扫描", error);
+      return "";
     }
   }
 

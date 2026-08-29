@@ -184,10 +184,9 @@ export default class PaperManagerPlugin extends Plugin {
 
   private async translate(docId: string): Promise<void> {
     if (!this.translator) throw new Error("当前环境不支持调用 pdf2zh 子进程");
-    if (!(await this.libraries.findPaperEntry(docId))) {
-      throw new Error("当前文档不是论文页：父页数据库中没有对应条目");
-    }
-    const paper = await this.libraries.readPaper(docId);
+    // 识别失败时抛出带具体环节原因的错误
+    const entry = await this.libraries.requirePaperEntry(docId);
+    const paper = await this.libraries.readPaper(docId, entry);
     if (paper.translation.mono || paper.translation.dual) {
       const cleanup = this.settings.autoDeleteOldTranslations
         ? "新版本及元数据保存成功后，插件会删除旧翻译资源。"
