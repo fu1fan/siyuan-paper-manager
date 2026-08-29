@@ -213,3 +213,20 @@
   display: block;
   padding: 6px 0;
 }
+
+.paper-manager-statusbar {
+  padding: 0 8px;
+  font-size: 12px;
+  color: var(--b3-theme-on-surface-light);
+  cursor: default;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.paper-manager-statusbar[data-state="running"] {
+  color: var(--b3-theme-primary);
+}
+
+.paper-manager-statusbar[data-state="error"] {
+  color: var(--b3-theme-error);
+}

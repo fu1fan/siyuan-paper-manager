@@ -16,6 +16,7 @@ import { openImportPdfDialog } from "./ui/dialogs/import-pdf";
 import { registerPaperUi } from "./ui/commands";
 import { escapeHtml } from "./ui/dom";
 import { SettingsPanel } from "./ui/settings";
+import { mountTranslationStatusBar } from "./ui/statusbar";
 import { openOnboardingDialog } from "./ui/dialogs/onboarding";
 import { openCitationExportDialog } from "./ui/dialogs/export-citations";
 
@@ -74,6 +75,7 @@ export default class PaperManagerPlugin extends Plugin {
       getStatus: () => this.statusStore.get(),
       detectDocKind: (docId) => this.detectDocKind(docId),
     }));
+    this.cleanup.push(mountTranslationStatusBar(this, this.statusStore));
     if (this.settings.autoListen) void this.startConnector();
   }
 
