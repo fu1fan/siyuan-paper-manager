@@ -1,6 +1,6 @@
 {
   "import-local-pdf": "Import local PDF",
-  "edit-paper-metadata": "Edit current paper metadata",
+  "refresh-paper-meta": "Refresh current paper metadata summary",
   "translate-current-paper": "Translate current paper",
   "paper-manager-status": "Paper Manager: environment check",
   "export-library-citations": "Export current library citations"

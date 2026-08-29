@@ -102,42 +102,10 @@
   margin: 0 0 6px;
 }
 
-.paper-manager-field-list,
 .paper-manager-project-list {
   display: grid;
   gap: 6px;
   margin: 10px 0;
-}
-
-.paper-manager-field-row {
-  display: grid;
-  grid-template-columns: 24px 24px minmax(0, 1fr) 34px 34px;
-  align-items: center;
-  gap: 6px;
-  min-height: 38px;
-  padding: 3px 6px;
-  border: 1px solid var(--b3-border-color);
-  border-radius: 6px;
-  background: var(--b3-theme-background);
-}
-
-.paper-manager-field-row[data-dragging="true"] {
-  opacity: .45;
-}
-
-.paper-manager-drag-handle {
-  cursor: grab;
-  color: var(--b3-theme-on-surface-light);
-  text-align: center;
-  user-select: none;
-}
-
-.paper-manager-field-label {
-  min-width: 0;
-}
-
-.paper-manager-field-hint {
-  color: var(--b3-theme-on-surface-light);
 }
 
 .paper-manager-project-row {
@@ -190,35 +158,10 @@
   white-space: nowrap;
 }
 
-.paper-manager-metadata-editor {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 18px;
-}
-
-.paper-manager-form-section {
-  min-width: 0;
-  padding: 12px;
-  border: 1px solid var(--b3-border-color);
-  border-radius: var(--b3-border-radius);
-}
-
-.paper-manager-form-section h3 {
-  margin: 0 0 10px;
-}
-
-.paper-manager-metadata-editor > .paper-manager-actions {
-  grid-column: 1 / -1;
-}
-
 @media (max-width: 760px) {
   .paper-manager-field {
     grid-template-columns: minmax(0, 1fr);
     gap: 6px;
-  }
-
-  .paper-manager-metadata-editor {
-    grid-template-columns: 1fr;
   }
 
   .paper-manager-project-row {

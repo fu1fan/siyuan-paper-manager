@@ -1,8 +1,6 @@
 import { fetchSyncPost } from "siyuan";
 import type { IWebSocketData } from "siyuan";
-import type { PaperData } from "../types/paper";
 import { ATTR } from "../constants";
-import { decodePaperData } from "./codec";
 import { normalizeAssetsDir } from "../types/settings";
 
 export interface KernelPost {
@@ -120,13 +118,6 @@ export class KernelClient {
     return this.postImpl<Record<string, string>>("/api/attr/getBlockAttrs", { id });
   }
 
-  async getPaperData(id: string): Promise<PaperData> {
-    const attrs = await this.getBlockAttrs(id);
-    const encoded = attrs[ATTR.data];
-    if (!encoded) throw new Error("当前文档不是论文元数据页");
-    return decodePaperData(encoded);
-  }
-
   getBlockKramdown(id: string): Promise<{ id: string; kramdown: string }> {
     return this.postImpl("/api/block/getBlockKramdown", { id });
   }
@@ -208,12 +199,12 @@ export class KernelClient {
     await this.postImpl("/api/av/removeAttributeViewKey", { avID, keyID, removeRelationDest: false });
   }
 
-  async sortAttributeViewKey(avID: string, keyID: string, previousKeyID: string): Promise<void> {
-    await this.postImpl("/api/av/sortAttributeViewKey", { avID, keyID, previousKeyID });
-  }
-
-  async sortAttributeViewViewKey(avID: string, viewID: string, keyID: string, previousKeyID: string): Promise<void> {
-    await this.postImpl("/api/av/sortAttributeViewViewKey", { avID, viewID, keyID, previousKeyID });
+  /**
+   * 块 → 数据库条目的直接关联查询（思源 3.3.1+）。
+   * 返回 blockID → itemID 映射，非条目时对应值为空串。
+   */
+  getAttributeViewItemIDsByBoundIDs(avID: string, blockIDs: string[]): Promise<Record<string, string>> {
+    return this.postImpl("/api/av/getAttributeViewItemIDsByBoundIDs", { avID, blockIDs });
   }
 
   async addAttributeViewBlocks(avID: string, blockID: string, sources: Array<{ id: string; content: string }>): Promise<void> {
@@ -291,15 +282,15 @@ export class KernelClient {
     return rows.map((row) => string(row.id)).filter(Boolean);
   }
 
-  async findPaperDocIdsByIndex(name: string, value: string, limit = 20): Promise<string[]> {
-    if (!Object.values(ATTR).includes(name as never)) throw new Error("未知索引属性");
-    const safeLimit = Math.max(1, Math.min(100, Math.trunc(limit)));
+  /** 返回文档的父文档 ID（依据 blocks.path 的层级段），无父文档时返回空串。 */
+  async parentDocumentId(docId: string): Promise<string> {
     const rows = await this.query(
-      `SELECT a.block_id AS id FROM attributes a JOIN blocks b ON b.id = a.block_id `
-      + `WHERE b.type = 'd' AND a.name = ${sqlString(name)} AND a.value = ${sqlString(value)} `
-      + `LIMIT ${safeLimit}`,
+      `SELECT path FROM blocks WHERE type = 'd' AND id = ${sqlString(docId)} LIMIT 1`,
     );
-    return rows.map((row) => string(row.id)).filter(Boolean);
+    const path = string(rows[0]?.path);
+    const segments = path.split("/").filter(Boolean);
+    if (segments.length < 2) return "";
+    return (segments[segments.length - 2] ?? "").replace(/\.sy$/, "");
   }
 
   getWorkspaceInfo(): Promise<WorkspaceInfo> {

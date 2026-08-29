@@ -1,17 +1,49 @@
-import { decodePaperData, encodePaperData, paperIndexAttrs } from "../src/core/codec";
+import { decodeLegacyPaperData, paperStateAttrs } from "../src/core/codec";
 import { generateCitekey, normalizeDoi, sanitizeDocumentName, titleSimilarity, uniqueCitekey } from "../src/core/naming";
 import { ATTR } from "../src/constants";
 import { paper } from "./fixtures";
 
+/** 与旧版 encodePaperData 等价的测试编码器（UTF-8 安全）。 */
+function legacyEncode(value: unknown): string {
+  const bytes = new TextEncoder().encode(JSON.stringify(value));
+  let binary = "";
+  for (let index = 0; index < bytes.length; index += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
+  }
+  return btoa(binary);
+}
+
 describe("paper codec and naming", () => {
-  it("round-trips UTF-8 metadata through base64", () => {
-    const input = paper();
-    expect(decodePaperData(encodePaperData(input))).toEqual(input);
+  it("decodes legacy base64 paper data for one-time migration", () => {
+    const legacy = decodeLegacyPaperData(legacyEncode({
+      schemaVersion: 3,
+      canonical: paper().canonical,
+      citekey: "张2026示例论文",
+      libraryId: "library-doc",
+      attachments: [{ title: "PDF", mimeType: "application/pdf", assetAddress: "assets/paper.pdf", sha256: "abc" }],
+      translation: { mono: "assets/mono.pdf" },
+    }));
+    expect(legacy.citekey).toBe("张2026示例论文");
+    expect(legacy.libraryId).toBe("library-doc");
+    expect(legacy.attachments[0]?.assetAddress).toBe("assets/paper.pdf");
+    expect(legacy.translation.mono).toBe("assets/mono.pdf");
+    expect(legacy.projectIds).toEqual([]);
   });
 
-  it("rejects unsupported schema versions", () => {
+  it("reads schema v2 project assignments during migration", () => {
+    const legacy = decodeLegacyPaperData(legacyEncode({
+      schemaVersion: 2,
+      canonical: paper().canonical,
+      citekey: "ck",
+      libraryId: "library-doc",
+      projectIds: ["p1", 2, "p2"],
+    }));
+    expect(legacy.projectIds).toEqual(["p1", "p2"]);
+  });
+
+  it("rejects unsupported legacy schema versions", () => {
     const encoded = btoa(JSON.stringify({ schemaVersion: 99, canonical: { title: "x" } }));
-    expect(() => decodePaperData(encoded)).toThrow(/schemaVersion/);
+    expect(() => decodeLegacyPaperData(encoded)).toThrow(/schemaVersion/);
   });
 
   it("normalizes DOI URLs and trailing punctuation", () => {
@@ -33,14 +65,16 @@ describe("paper codec and naming", () => {
       .toBe("smith2026paperb");
   });
 
-  it("keeps index attributes synchronized", () => {
+  it("writes only machine-state attributes for paper documents", () => {
     const data = paper({
       attachments: [{ title: "PDF", mimeType: "application/pdf", assetAddress: "assets/paper.pdf", sha256: "abc" }],
       translation: { mono: "assets/mono.pdf" },
     });
-    const attrs = paperIndexAttrs(data);
-    expect(attrs[ATTR.doi]).toBe("10.1234/example");
-    expect(attrs[ATTR.attachmentPdf]).toBe("assets/paper.pdf");
+    const attrs = paperStateAttrs(data);
+    expect(JSON.parse(attrs[ATTR.attachments]!)).toEqual(data.attachments);
     expect(attrs[ATTR.translationMono]).toBe("assets/mono.pdf");
+    expect(attrs[ATTR.state]).toBe("ready");
+    expect(attrs[ATTR.libraryId]).toBe("library-doc");
+    expect(Object.keys(attrs)).toHaveLength(6);
   });
 });

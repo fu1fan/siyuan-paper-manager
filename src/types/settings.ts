@@ -9,7 +9,6 @@ export interface PluginSettings {
   defaultLibraryDocId: string;
   onboardingCompleted: boolean;
   assetsDir: string;
-  enableEditUI: boolean;
   enableCnki: boolean;
   pdf2zhPath: string;
   translateFrom: string;
@@ -27,7 +26,6 @@ export const DEFAULT_SETTINGS: PluginSettings = {
   defaultLibraryDocId: "",
   onboardingCompleted: false,
   assetsDir: DEFAULT_ASSETS_DIR,
-  enableEditUI: true,
   enableCnki: false,
   pdf2zhPath: "pdf2zh",
   translateFrom: "en",
@@ -52,7 +50,6 @@ export function normalizeSettings(input: unknown): PluginSettings {
     defaultLibraryDocId: optionalString(raw.defaultLibraryDocId),
     onboardingCompleted: bool(raw.onboardingCompleted, DEFAULT_SETTINGS.onboardingCompleted),
     assetsDir: normalizeAssetsDir(string(raw.assetsDir, DEFAULT_SETTINGS.assetsDir)),
-    enableEditUI: bool(raw.enableEditUI, DEFAULT_SETTINGS.enableEditUI),
     enableCnki: bool(raw.enableCnki, DEFAULT_SETTINGS.enableCnki),
     pdf2zhPath: string(raw.pdf2zhPath, DEFAULT_SETTINGS.pdf2zhPath),
     translateFrom: string(raw.translateFrom, DEFAULT_SETTINGS.translateFrom),

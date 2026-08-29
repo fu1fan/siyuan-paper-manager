@@ -30,14 +30,6 @@ export interface PaperCanonical {
   tags: string[];
 }
 
-export interface PaperSourceRecord {
-  source: PaperSourceKind;
-  importedAt: string;
-  sourceUrl?: string;
-  sessionId?: string;
-  raw: Record<string, unknown>;
-}
-
 export interface PaperAttachment {
   title: string;
   mimeType: string;
@@ -54,22 +46,18 @@ export interface PaperTranslation {
   completedAt?: string;
 }
 
-export interface PaperDataV3 {
-  schemaVersion: 3;
+/**
+ * 论文的运行时表示：元数据以文献库数据库行为权威，此处仅用于导入、
+ * 合并、摘要渲染等流程内的组装。附件与翻译产物等机器状态存于文档
+ * 自定义属性（非 base64）。
+ */
+export interface PaperData {
   canonical: PaperCanonical;
-  sources: PaperSourceRecord[];
-  attachments: PaperAttachment[];
-  translation: PaperTranslation;
   citekey: string;
   libraryId: string;
-  source: PaperSourceKind;
-  importedAt: string;
-  updatedAt: string;
-  /** Runtime-only bridge for moving schema v2 project assignments into the AV row. */
-  legacyProjectIds?: string[];
+  attachments: PaperAttachment[];
+  translation: PaperTranslation;
 }
-
-export type PaperData = PaperDataV3;
 
 export type CanonicalField = Exclude<keyof PaperCanonical, "creators" | "tags"> | "creators" | "tags";
 

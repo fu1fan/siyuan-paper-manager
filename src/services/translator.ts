@@ -1,5 +1,4 @@
 import type { ChildProcess } from "node:child_process";
-import { ATTR } from "../constants";
 import type { PaperData } from "../types/paper";
 import type { PluginSettings } from "../types/settings";
 import type { TranslationState } from "../types/status";
@@ -18,6 +17,8 @@ export interface TranslationResult {
 export interface TranslatorOptions {
   requireFn?: NodeRequire;
   onState?: (state: TranslationState) => void;
+  /** 从数据库行重建论文数据（数据库权威）。 */
+  readPaper: (docId: string) => Promise<PaperData>;
   persist: (docId: string, paper: PaperData) => Promise<void>;
 }
 
@@ -38,7 +39,7 @@ export class TranslatorService {
 
   async translate(docId: string, settings: PluginSettings): Promise<TranslationResult> {
     if (this.child) throw new Error(`已有翻译任务正在运行：${this.activeDocId}`);
-    const paper = await this.kernel.getPaperData(docId);
+    const paper = await this.options.readPaper(docId);
     const previousTranslation = { ...paper.translation };
     const pdf = paper.attachments.find((attachment) => attachment.mimeType === "application/pdf");
     if (!pdf) throw new Error("当前论文没有可翻译的 PDF 附件");
@@ -85,7 +86,6 @@ export class TranslatorService {
         args,
         completedAt: new Date().toISOString(),
       };
-      paper.updatedAt = new Date().toISOString();
       await this.options.persist(docId, paper);
       const cleanup = settings.autoDeleteOldTranslations
         ? await this.cleanupOldTranslations(previousTranslation, paper.translation)
@@ -256,11 +256,4 @@ function translationError(error: unknown): string {
   if (/ENOENT|未检测到|不存在/.test(message)) return `${message}；请检查 pdf2zh 安装与路径`;
   if (/model|huggingface|download/i.test(message)) return `${message}；国内网络可设置 HF_ENDPOINT=https://hf-mirror.com`;
   return message;
-}
-
-export function translationIndexAttrs(paper: PaperData): Record<string, string> {
-  return {
-    [ATTR.translationMono]: paper.translation.mono ?? "",
-    [ATTR.translationDual]: paper.translation.dual ?? "",
-  };
 }

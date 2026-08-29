@@ -1,24 +1,20 @@
-import { ATTR, LIBRARY_SCHEMA_VERSION } from "../constants";
-import { decodeLibraryData, encodeLibraryData, encodePaperData } from "../core/codec";
+import { ATTR, LEGACY_ATTR, LIBRARY_SCHEMA_VERSION } from "../constants";
+import { decodeLegacyPaperData, decodeLibraryData, encodeLibraryData } from "../core/codec";
 import type { AttributeViewRow, AttributeViewValue, KernelClient } from "../core/kernel";
 import { newNodeId } from "../core/node-id";
 import type {
-  LibraryColumn,
+  LibraryDatabaseField,
   LibraryMetadataField,
   LibraryProject,
-  LibraryDatabaseField,
   PaperLibraryData,
 } from "../types/library";
 import {
-  DEFAULT_LIBRARY_FIELDS,
   LIBRARY_DATABASE_FIELD_LABELS,
   LIBRARY_FIELD_LABELS,
+  LIBRARY_METADATA_FIELDS,
   READING_STATUSES,
-  defaultColumnOrder,
-  isFixedColumn,
-  normalizeColumnOrder,
 } from "../types/library";
-import type { PaperCanonical, PaperData } from "../types/paper";
+import type { PaperCanonical, PaperCreator, PaperData } from "../types/paper";
 
 export interface PaperLibraryInfo {
   docId: string;
@@ -36,6 +32,12 @@ export interface LibrarySyncResult {
 }
 
 export interface LibraryPaperRecord { docId: string; paper: PaperData; projectIds: string[] }
+
+export interface PaperEntry {
+  library: PaperLibraryInfo;
+  itemId: string;
+  row: AttributeViewRow;
+}
 
 export class LibraryService {
   private readonly libraryLocks = new Map<string, Promise<unknown>>();
@@ -61,8 +63,10 @@ export class LibraryService {
           notebookId: String(row.box ?? ""),
           data: decodeLibraryData(String(row.value ?? "")),
         };
-        try { await this.ensureDatabaseFields(library); }
-        catch (error) { console.warn("[paper-manager] 阅读字段初始化失败，可在设置中重试修复", library.docId, error); }
+        try { await this.ensureSchemaFields(library); }
+        catch (error) { console.warn("[paper-manager] 数据库字段初始化失败，可在设置中重试修复", library.docId, error); }
+        try { await this.migrateLegacyPapers(library); }
+        catch (error) { console.warn("[paper-manager] 旧版论文数据迁移失败", library.docId, error); }
         output.push(library);
       } catch (error) {
         console.warn("[paper-manager] 跳过损坏的文献库", row.id, error);
@@ -92,7 +96,7 @@ export class LibraryService {
       previousKeyId = keyId;
     }
     const fieldKeyIds: Partial<Record<LibraryMetadataField, string>> = {};
-    for (const field of DEFAULT_LIBRARY_FIELDS) {
+    for (const field of LIBRARY_METADATA_FIELDS) {
       const keyId = newNodeId();
       await this.kernel.addAttributeViewKey(avId, keyId, LIBRARY_FIELD_LABELS[field], fieldKeyType(field), previousKeyId);
       fieldKeyIds[field] = keyId;
@@ -103,11 +107,9 @@ export class LibraryService {
       schemaVersion: LIBRARY_SCHEMA_VERSION,
       avId,
       avBlockId,
-      selectedFields: [...DEFAULT_LIBRARY_FIELDS],
       fieldKeyIds,
       projectKeyId,
       databaseKeyIds,
-      columnOrder: defaultColumnOrder(),
       projects: [],
       createdAt: now,
       updatedAt: now,
@@ -129,8 +131,11 @@ export class LibraryService {
       notebookId: String(row.box ?? ""),
       data: decodeLibraryData(encoded),
     };
-    if (databaseFields().some((field) => !library.data.databaseKeyIds[field])) {
-      await this.ensureDatabaseFields(library);
+    if (
+      databaseFields().some((field) => !library.data.databaseKeyIds[field])
+      || LIBRARY_METADATA_FIELDS.some((field) => !library.data.fieldKeyIds[field])
+    ) {
+      await this.ensureSchemaFields(library);
     }
     return library;
   }
@@ -168,59 +173,42 @@ export class LibraryService {
     }
   }
 
-  async applySelectedFields(
-    libraryDocId: string,
-    selected: LibraryMetadataField[],
-    columnOrder?: LibraryColumn[],
-  ): Promise<LibrarySyncResult> {
-    const library = await this.getLibrary(libraryDocId);
-    const desired = Array.from(new Set(selected));
-    library.data.columnOrder = normalizeColumnOrder(columnOrder ?? library.data.columnOrder);
-    let previousKeyId = library.data.databaseKeyIds.rating ?? library.data.projectKeyId;
-    for (const field of desired) {
-      let keyId = library.data.fieldKeyIds[field];
-      if (!keyId) {
-        keyId = newNodeId();
-        await this.kernel.addAttributeViewKey(
-          library.data.avId,
-          keyId,
-          LIBRARY_FIELD_LABELS[field],
-          fieldKeyType(field),
-          previousKeyId,
-        );
-        library.data.fieldKeyIds[field] = keyId;
-      }
-      previousKeyId = keyId;
+  /**
+   * 判断文档是否为论文页：父文档是文献库，且父文档数据库中存在
+   * 绑定到该文档的条目（块 ↔ 条目的直接关联）。
+   */
+  async findPaperEntry(docId: string): Promise<PaperEntry | null> {
+    const parentId = await this.kernel.parentDocumentId(docId);
+    if (!parentId) return null;
+    let library: PaperLibraryInfo;
+    try {
+      library = await this.getLibrary(parentId);
+    } catch {
+      return null;
     }
-    const previous = [...library.data.selectedFields];
-    library.data.selectedFields = desired;
-    library.data.updatedAt = new Date().toISOString();
-    await this.saveLibraryData(libraryDocId, library.data);
-    const result = await this.syncLibrary(libraryDocId);
-    for (const field of previous) {
-      if (desired.includes(field)) continue;
-      const keyId = library.data.fieldKeyIds[field];
-      if (keyId) await this.kernel.removeAttributeViewKey(library.data.avId, keyId);
-      delete library.data.fieldKeyIds[field];
-    }
-    await this.saveLibraryData(libraryDocId, library.data);
-    await this.reorderManagedFields(library);
-    return result;
+    const itemId = await this.findItemId(library.data, docId);
+    if (!itemId) return null;
+    const row = (await this.allRows(library.data)).find((candidate) => candidate.id === itemId);
+    if (!row) return null;
+    return { library, itemId, row };
   }
 
-  /** 仅调整数据库列顺序：不增删字段、不重建论文行。 */
-  async applyColumnOrder(libraryDocId: string, columnOrder: LibraryColumn[]): Promise<void> {
-    const library = await this.getLibrary(libraryDocId);
-    library.data.columnOrder = normalizeColumnOrder(columnOrder);
-    library.data.updatedAt = new Date().toISOString();
-    await this.saveLibraryData(libraryDocId, library.data);
-    await this.reorderManagedFields(library);
+  /** 从数据库行重建论文数据；附件与翻译产物等机器状态读文档属性。 */
+  async readPaper(docId: string): Promise<PaperData> {
+    const entry = await this.findPaperEntry(docId);
+    if (!entry) throw new Error("当前文档不是论文页：父页数据库中没有对应条目");
+    const attrs = await this.kernel.getBlockAttrs(docId);
+    return paperFromRow(entry.library, entry.row, docId, attrs);
   }
 
-  async syncPaper(docId: string, paper?: PaperData): Promise<string> {
-    const current = paper ?? await this.kernel.getPaperData(docId);
-    if (!current.libraryId) throw new Error("论文尚未归属文献库");
-    const library = await this.getLibrary(current.libraryId);
+  /**
+   * 导入/合并时同步论文行：建行（如缺失）、写入元数据列、初始化阅读字段。
+   * writeMetadata 为 false 时只确保行存在，不回写元数据列——数据库是
+   * 元数据权威，修复与翻译后刷新不得覆盖用户在数据库中的编辑。
+   */
+  async syncPaper(docId: string, paper: PaperData, writeMetadata = false): Promise<string> {
+    if (!paper.libraryId) throw new Error("论文尚未归属文献库");
+    const library = await this.getLibrary(paper.libraryId);
     try {
       let rows = await this.allRows(library.data);
       let row = findBoundRow(rows, docId);
@@ -228,20 +216,22 @@ export class LibraryService {
       if (!row) {
         await this.kernel.addAttributeViewBlocks(library.data.avId, library.data.avBlockId, [{
           id: docId,
-          content: current.canonical.title,
+          content: paper.canonical.title,
         }]);
         rows = await retry(() => this.allRows(library.data), (value) => Boolean(findBoundRow(value, docId)));
         row = findBoundRow(rows, docId);
       }
       if (!row) throw new Error("数据库添加论文行后未返回条目 ID");
-      for (const field of library.data.selectedFields) {
-        const keyId = library.data.fieldKeyIds[field];
-        if (keyId) await this.kernel.setAttributeViewCell(
-          library.data.avId,
-          keyId,
-          row.id,
-          metadataFieldValue(field, current),
-        );
+      if (writeMetadata) {
+        for (const field of LIBRARY_METADATA_FIELDS) {
+          const keyId = library.data.fieldKeyIds[field];
+          if (keyId) await this.kernel.setAttributeViewCell(
+            library.data.avId,
+            keyId,
+            row.id,
+            metadataFieldValue(field, paper),
+          );
+        }
       }
       if (createdRow) {
         const statusKeyId = library.data.databaseKeyIds.readingStatus;
@@ -253,21 +243,11 @@ export class LibraryService {
           library.data.avId, ratingKeyId, row.id, selectValue(["0"], "select"),
         );
       }
-      if (current.legacyProjectIds?.length && !selectContents(row, library.data.projectKeyId).length) {
-        await this.kernel.setAttributeViewCell(
-          library.data.avId,
-          library.data.projectKeyId,
-          row.id,
-          projectFieldValue(current.legacyProjectIds, library.data.projects),
-        );
-      }
-      const syncAttrs: Record<string, string> = {
-        [ATTR.libraryItemId]: row.id,
+      await this.kernel.setBlockAttrs(docId, {
+        [ATTR.libraryId]: paper.libraryId,
         [ATTR.librarySync]: "ready",
         [ATTR.librarySyncError]: "",
-      };
-      if (current.legacyProjectIds) syncAttrs[ATTR.data] = encodePaperData(current);
-      await this.kernel.setBlockAttrs(docId, syncAttrs);
+      });
       return row.id;
     } catch (error) {
       await this.kernel.setBlockAttrs(docId, {
@@ -281,13 +261,10 @@ export class LibraryService {
   async syncLibrary(libraryDocId: string): Promise<LibrarySyncResult> {
     const library = await this.getLibrary(libraryDocId);
     const memberRows = await this.kernel.listRowsByAttribute(ATTR.libraryId, libraryDocId);
-    const members = new Map<string, PaperData>();
-    const failed: LibrarySyncResult["failed"] = [];
+    const members = new Map<string, string>();
     for (const member of memberRows) {
       const id = String(member.id ?? "");
-      if (!id) continue;
-      try { members.set(id, await this.kernel.getPaperData(id)); }
-      catch (error) { failed.push({ docId: id, message: message(error) }); }
+      if (id) members.set(id, String(member.content ?? ""));
     }
     const rows = await this.allRows(library.data);
     const stale = rows.filter((row) => {
@@ -296,10 +273,13 @@ export class LibraryService {
     });
     await this.kernel.removeAttributeViewBlocks(library.data.avId, stale.map((row) => row.id));
     let restoredRows = 0;
-    for (const [docId, paper] of members) {
-      if (!findBoundRow(rows, docId)) restoredRows += 1;
-      try { await this.syncPaper(docId, paper); }
-      catch (error) { failed.push({ docId, message: message(error) }); }
+    const failed: LibrarySyncResult["failed"] = [];
+    for (const [docId, content] of members) {
+      if (findBoundRow(rows, docId)) continue;
+      try {
+        await this.kernel.addAttributeViewBlocks(library.data.avId, library.data.avBlockId, [{ id: docId, content }]);
+        restoredRows += 1;
+      } catch (error) { failed.push({ docId, message: message(error) }); }
     }
     return { papers: members.size, restoredRows, removedRows: stale.length, failed };
   }
@@ -312,6 +292,8 @@ export class LibraryService {
       valid = true;
     } catch { /* recreate below */ }
     if (valid) return this.syncLibrary(libraryDocId);
+    // 数据库文件损坏时重建：列结构可恢复，行由成员文档补回，
+    // 但原有单元格内容随损坏的数据库一并丢失，无法找回。
     const avId = newNodeId();
     const avBlockId = await this.kernel.appendAttributeViewBlock(libraryDocId, newNodeId(), avId);
     await this.kernel.renderAttributeView(avId, avBlockId, 1, 100, true);
@@ -333,7 +315,7 @@ export class LibraryService {
       previousKeyId = keyId;
     }
     library.data.fieldKeyIds = {};
-    for (const field of library.data.selectedFields) {
+    for (const field of LIBRARY_METADATA_FIELDS) {
       const keyId = newNodeId();
       await this.kernel.addAttributeViewKey(avId, keyId, LIBRARY_FIELD_LABELS[field], fieldKeyType(field), previousKeyId);
       library.data.fieldKeyIds[field] = keyId;
@@ -345,44 +327,45 @@ export class LibraryService {
   }
 
   async citekeys(libraryDocId: string, exceptDocId?: string): Promise<string[]> {
-    const rows = await this.kernel.listRowsByAttribute(ATTR.libraryId, libraryDocId);
+    const library = await this.getLibrary(libraryDocId);
+    const keyId = library.data.fieldKeyIds.citekey;
+    if (!keyId) return [];
+    const rows = await this.allRows(library.data);
     const keys: string[] = [];
     for (const row of rows) {
-      const id = String(row.id ?? "");
-      if (!id || id === exceptDocId) continue;
-      try { keys.push((await this.kernel.getPaperData(id)).citekey); } catch { /* ignored */ }
+      const docId = boundBlockId(row);
+      if (!docId || docId === exceptDocId) continue;
+      const value = row.cells.find((cell) => cell.value.keyID === keyId)?.value.text?.content?.trim();
+      if (value) keys.push(value);
     }
     return keys;
   }
 
   async listPapers(libraryDocId: string): Promise<LibraryPaperRecord[]> {
     const library = await this.getLibrary(libraryDocId);
-    const rows = await this.kernel.listRowsByAttribute(ATTR.libraryId, libraryDocId);
-    const avRows = await this.allRows(library.data);
-    const avRowsByDoc = new Map(avRows.map((row) => [boundBlockId(row), row]));
+    const rows = await this.allRows(library.data);
     const projectIdsByName = new Map(library.data.projects.map((project) => [project.name, project.id]));
     const output: LibraryPaperRecord[] = [];
     for (const row of rows) {
-      const docId = String(row.id ?? "");
+      const docId = boundBlockId(row);
       if (!docId) continue;
-      try {
-        const projectIds = selectContents(avRowsByDoc.get(docId), library.data.projectKeyId)
-          .map((name) => projectIdsByName.get(name)).filter((id): id is string => Boolean(id));
-        output.push({ docId, paper: await this.kernel.getPaperData(docId), projectIds });
-      }
-      catch (error) { console.warn("[paper-manager] 导出时跳过损坏的论文页", docId, error); }
+      const projectIds = selectContents(row, library.data.projectKeyId)
+        .map((name) => projectIdsByName.get(name)).filter((id): id is string => Boolean(id));
+      output.push({ docId, paper: paperFromRow(library, row, docId), projectIds });
     }
-    return output.sort((left, right) => left.paper.importedAt.localeCompare(right.paper.importedAt));
+    return output;
   }
 
   private saveLibraryData(docId: string, data: PaperLibraryData): Promise<void> {
     return this.kernel.setBlockAttrs(docId, { [ATTR.libraryData]: encodeLibraryData(data) });
   }
 
-  private async ensureDatabaseFields(library: PaperLibraryInfo): Promise<void> {
+  /**
+   * 以数据库实际列为准对齐全部管理列（阅读字段 + 全部元数据字段）：
+   * 同名已有列直接复用，同名重复列删除，缺失才建。
+   */
+  private async ensureSchemaFields(library: PaperLibraryInfo): Promise<void> {
     await this.withLibraryLock(library.docId, async () => {
-      // 以数据库实际列为准对齐：同名已有列直接复用，同名重复列删除，
-      // 避免旧数据、并发调用或中途失败导致的重复建列。
       const definition = await this.kernel.getAttributeView(library.data.avId);
       const keysByName = new Map<string, string[]>();
       for (const entry of definition.av.keyValues) {
@@ -392,10 +375,12 @@ export class LibraryService {
       }
       let changed = false;
       let previousKeyId = library.data.projectKeyId;
-      for (const field of databaseFields()) {
-        const label = LIBRARY_DATABASE_FIELD_LABELS[field];
+      const align = async (
+        label: string,
+        type: AttributeViewKeyTypeLike,
+        recorded: string | undefined,
+      ): Promise<string> => {
         const matches = keysByName.get(label) ?? [];
-        const recorded = library.data.databaseKeyIds[field];
         let keyId = recorded && matches.includes(recorded) ? recorded : matches[0];
         for (const duplicate of matches.filter((id) => id !== keyId)) {
           await this.kernel.removeAttributeViewKey(library.data.avId, duplicate);
@@ -403,44 +388,122 @@ export class LibraryService {
         }
         if (!keyId) {
           keyId = newNodeId();
-          await this.kernel.addAttributeViewKey(
-            library.data.avId, keyId, label, databaseFieldKeyType(field), previousKeyId,
-          );
+          await this.kernel.addAttributeViewKey(library.data.avId, keyId, label, type, previousKeyId);
           changed = true;
         }
+        previousKeyId = keyId;
+        return keyId;
+      };
+      for (const field of databaseFields()) {
+        const keyId = await align(LIBRARY_DATABASE_FIELD_LABELS[field], databaseFieldKeyType(field), library.data.databaseKeyIds[field]);
         await this.configureDatabaseFieldOptions(library.data.avId, keyId, field);
         if (library.data.databaseKeyIds[field] !== keyId) {
           library.data.databaseKeyIds[field] = keyId;
           changed = true;
         }
-        previousKeyId = keyId;
+      }
+      for (const field of LIBRARY_METADATA_FIELDS) {
+        const keyId = await align(LIBRARY_FIELD_LABELS[field], fieldKeyType(field), library.data.fieldKeyIds[field]);
+        if (library.data.fieldKeyIds[field] !== keyId) {
+          library.data.fieldKeyIds[field] = keyId;
+          changed = true;
+        }
       }
       if (!changed) return;
       library.data.updatedAt = new Date().toISOString();
       await this.saveLibraryData(library.docId, library.data);
-      await this.reorderManagedFields(library);
     });
   }
 
-  private async reorderManagedFields(library: PaperLibraryInfo): Promise<void> {
-    const definition = await this.kernel.getAttributeView(library.data.avId);
-    const blockKeyId = definition.av.keyValues.find((entry) => entry.key.type === "block")?.key.id ?? "";
-    const keyIds = library.data.columnOrder
-      .map((column) => columnKeyId(library.data, column))
-      .filter((id): id is string => Boolean(id));
-    // 主表 keyIDs 顺序决定新建视图的默认列序
-    let previousKeyId = blockKeyId;
-    for (const keyId of keyIds) {
-      await this.kernel.sortAttributeViewKey(library.data.avId, keyId, previousKeyId);
-      previousKeyId = keyId;
-    }
-    // 已有视图的表头顺序由各自的 columns 决定，需要逐视图排序
-    for (const view of definition.av.views ?? []) {
-      let previous = blockKeyId;
-      for (const keyId of keyIds) {
-        await this.kernel.sortAttributeViewViewKey(library.data.avId, view.id, keyId, previous);
-        previous = keyId;
+  /**
+   * 一次性迁移：把仍带旧版 base64 数据的论文文档搬进数据库。
+   * 只回填空单元格——用户在数据库中的手动编辑优先；完成后清除全部
+   * 旧版属性，此后 legacy 解码不再被触发。
+   */
+  private async migrateLegacyPapers(library: PaperLibraryInfo): Promise<void> {
+    const legacyRows = await this.kernel.listRowsByAttribute(LEGACY_ATTR.data);
+    const candidates = legacyRows
+      .map((row) => ({ docId: String(row.id ?? ""), encoded: String(row.value ?? "") }))
+      .filter((candidate) => candidate.docId && candidate.encoded);
+    if (!candidates.length) return;
+    await this.withLibraryLock(library.docId, async () => {
+      let rows = await this.allRows(library.data);
+      for (const candidate of candidates) {
+        let legacy;
+        try {
+          legacy = decodeLegacyPaperData(candidate.encoded);
+        } catch (error) {
+          console.warn("[paper-manager] 跳过无法解码的旧版论文数据", candidate.docId, error);
+          continue;
+        }
+        if (legacy.libraryId && legacy.libraryId !== library.docId) continue;
+        try {
+          let row = findBoundRow(rows, candidate.docId);
+          if (!row) {
+            await this.kernel.addAttributeViewBlocks(library.data.avId, library.data.avBlockId, [{
+              id: candidate.docId,
+              content: legacy.canonical.title,
+            }]);
+            rows = await retry(() => this.allRows(library.data), (value) => Boolean(findBoundRow(value, candidate.docId)));
+            row = findBoundRow(rows, candidate.docId);
+          }
+          if (!row) throw new Error("迁移时未能建立数据库条目");
+          const paper: PaperData = {
+            canonical: legacy.canonical,
+            citekey: legacy.citekey,
+            libraryId: library.docId,
+            attachments: legacy.attachments,
+            translation: legacy.translation,
+          };
+          for (const field of LIBRARY_METADATA_FIELDS) {
+            const keyId = library.data.fieldKeyIds[field];
+            if (!keyId) continue;
+            const cell = row.cells.find((item) => item.value.keyID === keyId)?.value;
+            if (cellIsEmpty(cell)) {
+              await this.kernel.setAttributeViewCell(library.data.avId, keyId, row.id, metadataFieldValue(field, paper));
+            }
+          }
+          if (legacy.projectIds.length && !selectContents(row, library.data.projectKeyId).length) {
+            await this.kernel.setAttributeViewCell(
+              library.data.avId,
+              library.data.projectKeyId,
+              row.id,
+              projectFieldValue(legacy.projectIds, library.data.projects),
+            );
+          }
+          const statusKeyId = library.data.databaseKeyIds.readingStatus;
+          const ratingKeyId = library.data.databaseKeyIds.rating;
+          if (statusKeyId && cellIsEmpty(row.cells.find((cell) => cell.value.keyID === statusKeyId)?.value)) {
+            await this.kernel.setAttributeViewCell(library.data.avId, statusKeyId, row.id, selectValue([READING_STATUSES[0]], "select"));
+          }
+          if (ratingKeyId && cellIsEmpty(row.cells.find((cell) => cell.value.keyID === ratingKeyId)?.value)) {
+            await this.kernel.setAttributeViewCell(library.data.avId, ratingKeyId, row.id, selectValue(["0"], "select"));
+          }
+          const attrs = await this.kernel.getBlockAttrs(candidate.docId);
+          await this.kernel.setBlockAttrs(candidate.docId, {
+            [ATTR.libraryId]: library.docId,
+            ...(attrs[ATTR.attachments] ? {} : { [ATTR.attachments]: JSON.stringify(legacy.attachments) }),
+            [LEGACY_ATTR.data]: "",
+            [LEGACY_ATTR.citekey]: "",
+            [LEGACY_ATTR.doi]: "",
+            [LEGACY_ATTR.assets]: "",
+            [LEGACY_ATTR.libraryItemId]: "",
+          });
+        } catch (error) {
+          console.warn("[paper-manager] 旧版论文数据迁移失败，保留原数据等待重试", candidate.docId, error);
+        }
       }
+    });
+  }
+
+  private async findItemId(data: PaperLibraryData, docId: string): Promise<string> {
+    try {
+      const mapping = await this.kernel.getAttributeViewItemIDsByBoundIDs(data.avId, [docId]);
+      return mapping[docId] ?? "";
+    } catch {
+      // 老内核没有该端点时回退到整表扫描绑定块。
+      const row = findBoundRow(await this.allRows(data), docId);
+      return row?.id ?? "";
     }
   }
 
@@ -482,6 +545,8 @@ export class LibraryService {
   }
 }
 
+type AttributeViewKeyTypeLike = "created" | "select" | "mSelect" | "text" | "url";
+
 export function metadataFieldValue(field: LibraryMetadataField, paper: PaperData): AttributeViewValue {
   const c = paper.canonical;
   if (field === "tags") return selectValue(c.tags, "mSelect");
@@ -509,6 +574,98 @@ function metadataText(field: LibraryMetadataField, c: PaperCanonical, paper: Pap
     case "itemType": return c.itemType;
     case "tags": return c.tags.join("；");
     case "url": return c.url ?? "";
+  }
+}
+
+/** 从数据库行重建运行时论文数据。 */
+export function paperFromRow(
+  library: PaperLibraryInfo,
+  row: AttributeViewRow,
+  docId: string,
+  attrs: Record<string, string> = {},
+): PaperData {
+  return {
+    canonical: canonicalFromRow(library.data, row),
+    citekey: fieldText(library.data, row, "citekey"),
+    libraryId: attrs[ATTR.libraryId] || library.docId,
+    attachments: parseAttachments(attrs[ATTR.attachments]),
+    translation: {
+      mono: attrs[ATTR.translationMono] || undefined,
+      dual: attrs[ATTR.translationDual] || undefined,
+    },
+  };
+}
+
+/** 从数据库行重建 canonical；标题取绑定块内容，缺失列跳过。 */
+export function canonicalFromRow(data: PaperLibraryData, row: AttributeViewRow): PaperCanonical {
+  const text = (field: LibraryMetadataField): string => fieldText(data, row, field);
+  const creators = text("authors").split(/[;；]/).map((name) => name.trim()).filter(Boolean)
+    .map((name): PaperCreator => {
+      const [family = "", ...given] = name.split(/[,，]/).map((part) => part.trim());
+      return { family, given: given.join(" "), creatorType: "author" };
+    });
+  const tags = fieldSelects(data, row, "tags");
+  return {
+    itemType: fieldSelects(data, row, "itemType")[0] || text("itemType") || "journalArticle",
+    title: row.cells.find((cell) => cell.value.block?.content)?.value.block?.content ?? "",
+    creators,
+    date: text("year") || undefined,
+    abstract: text("abstract") || undefined,
+    doi: text("doi") || undefined,
+    isbn: text("isbn") || undefined,
+    issn: text("issn") || undefined,
+    url: fieldUrl(data, row, "url") || undefined,
+    journal: text("journal") || undefined,
+    volume: text("volume") || undefined,
+    issue: text("issue") || undefined,
+    pages: text("pages") || undefined,
+    publisher: text("publisher") || undefined,
+    publisherPlace: text("publisherPlace") || undefined,
+    language: text("language") || undefined,
+    tags,
+  };
+}
+
+function fieldText(data: PaperLibraryData, row: AttributeViewRow, field: LibraryMetadataField): string {
+  const keyId = data.fieldKeyIds[field];
+  if (!keyId) return "";
+  return row.cells.find((cell) => cell.value.keyID === keyId)?.value.text?.content?.trim() ?? "";
+}
+
+function fieldSelects(data: PaperLibraryData, row: AttributeViewRow, field: LibraryMetadataField): string[] {
+  const keyId = data.fieldKeyIds[field];
+  if (!keyId) return [];
+  return selectContents(row, keyId);
+}
+
+function fieldUrl(data: PaperLibraryData, row: AttributeViewRow, field: LibraryMetadataField): string {
+  const keyId = data.fieldKeyIds[field];
+  if (!keyId) return "";
+  const value = row.cells.find((cell) => cell.value.keyID === keyId)?.value;
+  return value?.url?.content?.trim() ?? value?.text?.content?.trim() ?? "";
+}
+
+function cellIsEmpty(value: AttributeViewValue | undefined): boolean {
+  if (!value) return true;
+  if (value.text) return !value.text.content?.trim();
+  if (value.mSelect) return value.mSelect.length === 0;
+  if (value.url) return !value.url.content?.trim();
+  if (value.number) return !value.number.isNotEmpty;
+  if (value.date) return !value.date.isNotEmpty;
+  if (value.checkbox) return false;
+  return true;
+}
+
+function parseAttachments(encoded: string | undefined): PaperData["attachments"] {
+  if (!encoded) return [];
+  try {
+    const parsed = JSON.parse(encoded) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((item): item is PaperData["attachments"][number] =>
+      Boolean(item) && typeof item === "object"
+      && typeof (item as { assetAddress?: unknown }).assetAddress === "string");
+  } catch {
+    return [];
   }
 }
 
@@ -542,12 +699,6 @@ function selectContents(row: AttributeViewRow | undefined, keyId: string): strin
 
 function databaseFields(): LibraryDatabaseField[] {
   return ["addedAt", "readingStatus", "rating"];
-}
-
-function columnKeyId(data: PaperLibraryData, column: LibraryColumn): string | undefined {
-  if (column === "project") return data.projectKeyId;
-  if (isFixedColumn(column)) return data.databaseKeyIds[column];
-  return data.fieldKeyIds[column];
 }
 
 function databaseFieldKeyType(field: LibraryDatabaseField): "created" | "select" {

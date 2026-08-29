@@ -12,7 +12,6 @@ import { TranslatorService } from "./services/translator";
 import { LibraryService } from "./services/library-service";
 import type { PluginSettings } from "./types/settings";
 import { resolveDuplicateDialog } from "./ui/dialogs/duplicate";
-import { openEditMetadataDialog } from "./ui/dialogs/edit-metadata";
 import { openImportPdfDialog } from "./ui/dialogs/import-pdf";
 import { registerPaperUi } from "./ui/commands";
 import { escapeHtml } from "./ui/dom";
@@ -52,6 +51,7 @@ export default class PaperManagerPlugin extends Plugin {
     if (canUseNode()) {
       this.translator = new TranslatorService(this.kernelClient, {
         onState: (translation) => this.statusStore.update({ translation }),
+        readPaper: (docId) => this.libraries.readPaper(docId),
         persist: (docId, paper) => this.processor.persistAndRefresh(docId, paper),
       });
     }
@@ -63,9 +63,8 @@ export default class PaperManagerPlugin extends Plugin {
       (settings) => this.updateSettings(settings),
     );
     this.setting = this.settingsPanel.setting;
-    this.cleanup.push(registerPaperUi(this, this.kernelClient, {
+    this.cleanup.push(registerPaperUi(this, {
       importPdf: () => openImportPdfDialog(this.kernelClient, this.processor, () => this.settings),
-      editMetadata: (docId) => this.editMetadata(docId),
       translate: (docId) => this.translate(docId),
       repair: (docId) => this.repair(docId),
       exportLibrary: (docId) => openCitationExportDialog(docId, this.libraries),
@@ -73,6 +72,7 @@ export default class PaperManagerPlugin extends Plugin {
       selfCheck: () => this.selfCheck(),
       toggleConnector: () => this.toggleConnector(),
       getStatus: () => this.statusStore.get(),
+      detectDocKind: (docId) => this.detectDocKind(docId),
     }));
     if (this.settings.autoListen) void this.startConnector();
   }
@@ -171,21 +171,23 @@ export default class PaperManagerPlugin extends Plugin {
       .catch((error) => showMessage(`论文导入失败：${error instanceof Error ? error.message : String(error)}`, 7000, "error"));
   }
 
-  private async editMetadata(docId: string): Promise<void> {
-    if (!this.settings.enableEditUI) throw new Error("编辑元数据 UI 已在设置中关闭");
-    await openEditMetadataDialog(docId, this.kernelClient, this.processor);
+  private async detectDocKind(docId: string): Promise<"library" | "paper" | null> {
+    const attrs = await this.kernelClient.getBlockAttrs(docId);
+    if (attrs[ATTR.libraryData]) return "library";
+    return (await this.libraries.findPaperEntry(docId)) ? "paper" : null;
   }
 
   private async repair(docId: string): Promise<void> {
     await this.processor.repair(docId);
-    showMessage("论文元数据页已修复", 4000, "info");
+    showMessage("论文元数据摘要已刷新", 4000, "info");
   }
 
   private async translate(docId: string): Promise<void> {
     if (!this.translator) throw new Error("当前环境不支持调用 pdf2zh 子进程");
-    const attrs = await this.kernelClient.getBlockAttrs(docId);
-    if (!attrs[ATTR.data]) throw new Error("当前文档不是论文元数据页");
-    const paper = await this.kernelClient.getPaperData(docId);
+    if (!(await this.libraries.findPaperEntry(docId))) {
+      throw new Error("当前文档不是论文页：父页数据库中没有对应条目");
+    }
+    const paper = await this.libraries.readPaper(docId);
     if (paper.translation.mono || paper.translation.dual) {
       const cleanup = this.settings.autoDeleteOldTranslations
         ? "新版本及元数据保存成功后，插件会删除旧翻译资源。"

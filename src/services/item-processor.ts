@@ -1,21 +1,18 @@
 import { ATTR } from "../constants";
 import type { ImportAttachment, ImportCandidate } from "../types/import";
 import type {
-  CanonicalField,
   DuplicateMatch,
   DuplicateResolution,
   PaperAttachment,
-  PaperCanonical,
   PaperData,
 } from "../types/paper";
 import type { PluginSettings } from "../types/settings";
-import { paperIndexAttrs } from "../core/codec";
+import { paperStateAttrs } from "../core/codec";
 import { readFileBytes, sha256, unlinkIfExists } from "../core/env";
 import { KernelClient } from "../core/kernel";
 import { findCanonicalConflicts, mergePaperData } from "../core/merge";
-import { paperDataFromCandidate, manualSource } from "../core/normalize";
+import { paperDataFromCandidate } from "../core/normalize";
 import {
-  generateCitekey,
   normalizeTitle,
   paperDocumentTitle,
   sanitizeDocumentName,
@@ -51,7 +48,7 @@ export class ItemProcessor {
     const incoming = paperDataFromCandidate(candidate);
     incoming.libraryId = library.docId;
     incoming.citekey = uniqueCitekey(incoming.citekey, await this.libraries.citekeys(library.docId));
-    const match = await this.findDuplicate(incoming);
+    const match = await this.findDuplicate(incoming, library);
     let resolution: DuplicateResolution | null = null;
     if (match) {
       resolution = await this.resolveDuplicate(match, incoming);
@@ -65,7 +62,7 @@ export class ItemProcessor {
       incoming.attachments = await this.uploadAttachments(candidate.attachments, settings.assetsDir, incoming.citekey);
       if (match && resolution?.action === "merge") {
         const merged = mergePaperData(match.existing, incoming, resolution.overwrite);
-        await this.persistAndRefresh(match.docId, merged);
+        await this.persistAndRefresh(match.docId, merged, undefined, true);
         return { action: "merged", docId: match.docId, title: merged.canonical.title };
       }
       const copy = match && resolution?.action === "copy";
@@ -76,34 +73,25 @@ export class ItemProcessor {
     }
   }
 
-  async updateCanonical(
-    docId: string,
-    canonical: PaperCanonical,
-    overwriteFields?: CanonicalField[],
-    requestedCitekey?: string,
-  ): Promise<void> {
-    const paper = await this.kernel.getPaperData(docId);
-    paper.canonical = canonical;
-    const citekeyBase = requestedCitekey?.trim() || paper.citekey || generateCitekey(canonical);
-    paper.citekey = uniqueCitekey(citekeyBase, await this.libraries.citekeys(paper.libraryId, docId));
-    paper.sources.push(manualSource({
-      action: "edit-metadata",
-      fields: overwriteFields ?? Object.keys(canonical),
-      canonical,
-    }));
-    paper.updatedAt = new Date().toISOString();
-    await this.persistAndRefresh(docId, paper);
-    await this.kernel.renameDocument(docId, paperDocumentTitle(canonical, paper.citekey));
-  }
-
+  /** 修复/刷新论文页：以数据库行为权威重建元数据摘要。 */
   async repair(docId: string): Promise<void> {
-    const paper = await this.kernel.getPaperData(docId);
+    const paper = await this.libraries.readPaper(docId);
     const sections = await this.templates.ensureSections(docId, paper);
     await this.persistAndRefresh(docId, paper, sections.meta);
   }
 
-  async persistAndRefresh(docId: string, paper: PaperData, knownMetaBlockId?: string): Promise<void> {
-    await this.kernel.setBlockAttrs(docId, paperIndexAttrs(paper));
+  /**
+   * 回写机器状态属性并刷新元数据摘要。writeMetadata 仅导入/合并时为
+   * true：此时 paper 来自外部数据源，需要写入数据库列；其余场景数据库
+   * 是权威，不得反向覆盖。
+   */
+  async persistAndRefresh(
+    docId: string,
+    paper: PaperData,
+    knownMetaBlockId?: string,
+    writeMetadata = false,
+  ): Promise<void> {
+    await this.kernel.setBlockAttrs(docId, paperStateAttrs(paper));
     try {
       await this.templates.refreshMeta(docId, paper, knownMetaBlockId);
     } catch (error) {
@@ -113,8 +101,8 @@ export class ItemProcessor {
       });
       throw error;
     }
-    try { await this.libraries.syncPaper(docId, paper); }
-    catch (error) { console.warn("[paper-manager] 论文元数据已保存，但文献库数据库同步失败", docId, error); }
+    try { await this.libraries.syncPaper(docId, paper, writeMetadata); }
+    catch (error) { console.warn("[paper-manager] 论文状态已保存，但文献库数据库同步失败", docId, error); }
   }
 
   private async createPaper(paper: PaperData, copy: boolean, library: PaperLibraryInfo): Promise<string> {
@@ -125,10 +113,10 @@ export class ItemProcessor {
     const hPath = `${base}/${sanitizeDocumentName(finalTitle)}`;
     const created = await this.kernel.createDocument(library.notebookId, hPath, markdown, finalTitle);
     try {
-      await this.kernel.setBlockAttrs(created.id, paperIndexAttrs(paper));
+      await this.kernel.setBlockAttrs(created.id, paperStateAttrs(paper));
       const sections = await this.templates.ensureSections(created.id, paper);
       await this.templates.refreshMeta(created.id, paper, sections.meta);
-      try { await this.libraries.syncPaper(created.id, paper); }
+      try { await this.libraries.syncPaper(created.id, paper, true); }
       catch (error) { console.warn("[paper-manager] 论文页已创建，等待文献库修复同步", created.id, error); }
       return created.id;
     } catch (error) {
@@ -138,51 +126,36 @@ export class ItemProcessor {
           [ATTR.error]: String(error instanceof Error ? error.message : error).slice(0, 1000),
         });
       } catch { /* keep the original failure */ }
-      throw new Error(`论文页已创建但初始化失败，可使用“修复导入”：${error instanceof Error ? error.message : String(error)}`);
+      throw new Error(`论文页已创建但初始化失败，可使用“刷新元数据摘要”重试：${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
-  private async findDuplicate(incoming: PaperData): Promise<DuplicateMatch | null> {
+  /** 查重直接读当前文献库的数据库行：DOI 列优先，其次引用键 + 标题相似度。 */
+  private async findDuplicate(incoming: PaperData, library: PaperLibraryInfo): Promise<DuplicateMatch | null> {
+    const candidates = await this.libraries.listPapers(library.docId);
     const doi = incoming.canonical.doi;
     if (doi) {
-      const ids = await this.kernel.findPaperDocIdsByIndex(ATTR.doi, doi);
-      const match = await this.firstReadable(ids, incoming.libraryId);
+      const match = candidates.find((candidate) => candidate.paper.canonical.doi === doi);
       if (match) return {
-        docId: match.id,
+        docId: match.docId,
         reason: "doi",
         existing: match.paper,
         conflicts: findCanonicalConflicts(match.paper.canonical, incoming.canonical),
       };
     }
-    const ids = await this.kernel.findPaperDocIdsByIndex(ATTR.citekey, incoming.citekey);
-    for (const id of ids) {
-      try {
-        const existing = await this.kernel.getPaperData(id);
-        if (existing.libraryId !== incoming.libraryId) continue;
-        const sameTitle = titleSimilarity(existing.canonical.title, incoming.canonical.title) >= 0.92
-          || normalizeTitle(existing.canonical.title) === normalizeTitle(incoming.canonical.title);
-        const doiConflict = existing.canonical.doi && incoming.canonical.doi
-          && existing.canonical.doi !== incoming.canonical.doi;
-        return {
-          docId: id,
-          reason: doiConflict || !sameTitle ? "citekey-conflict" : "citekey-title",
-          existing,
-          conflicts: findCanonicalConflicts(existing.canonical, incoming.canonical),
-        };
-      } catch (error) {
-        console.warn("[paper-manager] 跳过损坏的重复候选", id, error);
-      }
-    }
-    return null;
-  }
-
-  private async firstReadable(ids: string[], libraryId: string): Promise<{ id: string; paper: PaperData } | null> {
-    for (const id of ids) {
-      try {
-        const paper = await this.kernel.getPaperData(id);
-        if (paper.libraryId === libraryId) return { id, paper };
-      }
-      catch (error) { console.warn("[paper-manager] 无法读取重复候选", id, error); }
+    for (const candidate of candidates) {
+      const existing = candidate.paper;
+      if (existing.citekey !== incoming.citekey) continue;
+      const sameTitle = titleSimilarity(existing.canonical.title, incoming.canonical.title) >= 0.92
+        || normalizeTitle(existing.canonical.title) === normalizeTitle(incoming.canonical.title);
+      const doiConflict = existing.canonical.doi && incoming.canonical.doi
+        && existing.canonical.doi !== incoming.canonical.doi;
+      return {
+        docId: candidate.docId,
+        reason: doiConflict || !sameTitle ? "citekey-conflict" : "citekey-title",
+        existing,
+        conflicts: findCanonicalConflicts(existing.canonical, incoming.canonical),
+      };
     }
     return null;
   }

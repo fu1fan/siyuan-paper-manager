@@ -2,7 +2,6 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRequire } from "node:module";
-import { encodePaperData } from "../src/core/codec";
 import { KernelClient } from "../src/core/kernel";
 import { MetadataExtractor, parseCnkiHtml } from "../src/services/metadata-extractor";
 import { parseProgress, translationWorkspacePath, TranslatorService } from "../src/services/translator";
@@ -52,7 +51,6 @@ describe.skipIf(process.platform === "win32")("translator integration", () => {
     const removals: string[] = [];
     const events: string[] = [];
     const post = async (endpoint: string, payload?: Record<string, unknown>) => {
-      if (endpoint === "/api/attr/getBlockAttrs") return { "custom-paper-data": encodePaperData(current) };
       if (endpoint === "/api/system/getWorkspaceInfo") return { workspaceDir: root };
       if (endpoint === "/api/file/removeFile") {
         events.push("remove");
@@ -73,6 +71,7 @@ describe.skipIf(process.platform === "win32")("translator integration", () => {
     let persisted = false;
     const translator = new TranslatorService(new KernelClient(post as any, fakeFetch as typeof fetch), {
       requireFn: createRequire(import.meta.url),
+      readPaper: async () => current,
       persist: async (_docId, updated) => {
         events.push("persist");
         persisted = true;
@@ -84,7 +83,7 @@ describe.skipIf(process.platform === "win32")("translator integration", () => {
       const result = await translator.translate("doc", {
         zoteroPort: 23119, autoListen: true,
         defaultLibraryDocId: "library-doc", onboardingCompleted: true, assetsDir: "/assets/",
-        enableEditUI: true, enableCnki: false, pdf2zhPath: executable, translateFrom: "en", translateTo: "zh",
+        enableCnki: false, pdf2zhPath: executable, translateFrom: "en", translateTo: "zh",
         translateService: "google", translationDual: true, autoDeleteOldTranslations: true,
         pdf2zhArgs: [], translationAssetsDir: "/assets/",
       });

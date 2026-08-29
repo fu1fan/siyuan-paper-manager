@@ -14,7 +14,7 @@ describe("merge policy", () => {
     expect(merged.canonical.title).toBe("示例论文 Example Paper");
     expect(merged.canonical.publisher).toBe("出版社");
     expect(merged.attachments).toHaveLength(1);
-    expect(merged.sources).toHaveLength(2);
+    expect(merged.citekey).toBe(existing.citekey);
   });
 
   it("overwrites only explicitly selected conflict fields", () => {

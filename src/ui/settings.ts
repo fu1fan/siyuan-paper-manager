@@ -2,15 +2,7 @@ import { Setting, showMessage } from "siyuan";
 import { newNodeId } from "../core/node-id";
 import type { DocumentSearchResult, KernelClient } from "../core/kernel";
 import type { LibraryService, PaperLibraryInfo } from "../services/library-service";
-import {
-  FIXED_COLUMN_HINTS,
-  columnLabel,
-  isFixedColumn,
-  normalizeColumnOrder,
-  type LibraryColumn,
-  type LibraryMetadataField,
-  type LibraryProject,
-} from "../types/library";
+import type { LibraryProject } from "../types/library";
 import type { PluginSettings } from "../types/settings";
 import { normalizeSettings, splitArgString } from "../types/settings";
 import { escapeHtml } from "./dom";
@@ -90,7 +82,6 @@ export class SettingsPanel {
       <div class="paper-manager-preview">Connector 与本地 PDF 始终导入默认文献库。</div>`;
     panels.get("storage")!.innerHTML = `
       ${textField("附件目录", "assetsDir", this.draft.assetsDir)}
-      ${switchField("启用编辑元数据 UI", "enableEditUI", this.draft.enableEditUI)}
       <div class="paper-manager-preview">元数据模板与笔记模板随插件打包，不写入 data/templates。</div>`;
     panels.get("metadata")!.innerHTML = `
       ${switchField("中文检索（实验性）", "enableCnki", this.draft.enableCnki)}
@@ -166,12 +157,6 @@ export class SettingsPanel {
     }));
     editor.innerHTML = `<hr class="b3-hr"><h3>${escapeHtml(selected.title)}</h3>
       <div class="paper-manager-preview">${escapeHtml(selected.hPath)} · 数据库 ${escapeHtml(selected.data.avId)}</div>
-      <section class="paper-manager-library-section"><h4>数据库字段</h4>
-        <p class="b3-label__text">勾选需要展示的字段，拖动左侧手柄或使用上下按钮调整数据库列顺序。</p>
-        <div class="paper-manager-field-list" data-field-list>${selected.data.columnOrder.map((column) => columnRowHtml(
-          column, selected.data.selectedFields,
-        )).join("")}</div>
-      </section>
       <section class="paper-manager-library-section"><h4>项目定义</h4>
         <p class="b3-label__text">项目名称用于数据库多选；可搜索并绑定一个思源项目文档。</p>
         <div class="paper-manager-project-list" data-project-list>${selected.data.projects.map((project) => projectRowHtml(
@@ -179,12 +164,11 @@ export class SettingsPanel {
         )).join("")}</div>
         <button type="button" class="b3-button b3-button--outline" data-project-add>添加项目</button>
       </section>
-      <div class="paper-manager-preview">项目与字段的修改会随右下角「保存」一起应用。</div>
+      <div class="paper-manager-preview">项目的修改会随右下角「保存」一起应用；列的显示与排序请直接在数据库视图中操作。</div>
       <div class="paper-manager-actions">
         <button type="button" class="b3-button b3-button--text" data-sync>重新同步</button>
         <button type="button" class="b3-button b3-button--text" data-repair>修复数据库</button>
       </div>`;
-    bindFieldOrdering(editor.querySelector<HTMLElement>("[data-field-list]")!);
     const projectList = editor.querySelector<HTMLElement>("[data-project-list]")!;
     for (const row of projectList.querySelectorAll<HTMLElement>("[data-project-row]")) bindProjectRow(row, this.kernel);
     editor.querySelector<HTMLButtonElement>("[data-project-add]")!.onclick = () => {
@@ -223,38 +207,18 @@ export class SettingsPanel {
     }
   }
 
-  /** 统一应用当前文献库编辑器的改动：项目定义、字段勾选与列顺序。 */
+  /** 统一应用当前文献库编辑器的改动：项目定义。 */
   private async applyLibraryChanges(): Promise<string> {
     const editor = this.libraryEditor;
     const library = this.activeLibrary;
     if (!editor || !library || !editor.isConnected) return "";
-    const parts: string[] = [];
     const projectList = editor.querySelector<HTMLElement>("[data-project-list]");
-    if (projectList) {
-      const projects = collectProjects(projectList);
-      if (!projectsEqual(projects, library.data.projects)) {
-        await this.libraries.updateProjects(library.docId, projects);
-        library.data.projects = projects;
-        parts.push("项目已保存");
-      }
-    }
-    const rows = Array.from(editor.querySelectorAll<HTMLElement>("[data-field-row]"));
-    if (rows.length) {
-      const order = rows.map((row) => row.dataset.column as LibraryColumn);
-      const fields = rows
-        .filter((row) => !row.dataset.fixed && row.querySelector<HTMLInputElement>("[data-library-field]")?.checked)
-        .map((row) => row.dataset.column as LibraryMetadataField);
-      const selectionChanged = !sameMembers(fields, library.data.selectedFields);
-      const orderChanged = order.join(",") !== normalizeColumnOrder(library.data.columnOrder).join(",");
-      if (selectionChanged) {
-        const result = await this.libraries.applySelectedFields(library.docId, fields, order);
-        parts.push(`字段已应用并重建 ${result.papers} 篇论文`);
-      } else if (orderChanged) {
-        await this.libraries.applyColumnOrder(library.docId, order);
-        parts.push("列顺序已应用");
-      }
-    }
-    return parts.join("，");
+    if (!projectList) return "";
+    const projects = collectProjects(projectList);
+    if (projectsEqual(projects, library.data.projects)) return "";
+    await this.libraries.updateProjects(library.docId, projects);
+    library.data.projects = projects;
+    return "项目已保存";
   }
 }
 
@@ -273,49 +237,6 @@ function textareaField(label: string, key: keyof PluginSettings, value: string):
 function librarySelector(libraries: PaperLibraryInfo[], selected: string): string {
   return `<label class="paper-manager-field"><span>默认文献库</span><select class="b3-select" data-default-library>${libraries.map((library) =>
     `<option value="${escapeHtml(library.docId)}" ${library.docId === selected ? "selected" : ""}>${escapeHtml(library.title)}</option>`).join("")}</select></label>`;
-}
-
-function columnRowHtml(column: LibraryColumn, selectedFields: LibraryMetadataField[]): string {
-  const fixed = isFixedColumn(column);
-  const checked = fixed || selectedFields.includes(column as LibraryMetadataField);
-  const hint = fixed ? ` <small class="paper-manager-field-hint">${escapeHtml(FIXED_COLUMN_HINTS[column])}</small>` : "";
-  return `<div class="paper-manager-field-row" draggable="true" data-field-row data-column="${column}"${fixed ? ` data-fixed="true"` : ""}>
-    <span class="paper-manager-drag-handle" title="上下拖动排序" aria-hidden="true">⋮⋮</span>
-    <input type="checkbox" data-library-field="${column}" ${checked ? "checked" : ""} ${fixed ? "disabled" : ""} aria-label="${escapeHtml(columnLabel(column))}">
-    <span class="paper-manager-field-label">${escapeHtml(columnLabel(column))}${hint}</span>
-    <button type="button" class="b3-button b3-button--text" data-move-up title="上移">↑</button>
-    <button type="button" class="b3-button b3-button--text" data-move-down title="下移">↓</button>
-  </div>`;
-}
-
-function bindFieldOrdering(list: HTMLElement): void {
-  let dragged: HTMLElement | null = null;
-  for (const row of list.querySelectorAll<HTMLElement>("[data-field-row]")) {
-    row.addEventListener("dragstart", (event) => {
-      dragged = row;
-      row.dataset.dragging = "true";
-      event.dataTransfer?.setData("text/plain", row.dataset.column ?? "");
-      if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
-    });
-    row.addEventListener("dragend", () => {
-      delete row.dataset.dragging;
-      dragged = null;
-    });
-    row.addEventListener("dragover", (event) => {
-      if (!dragged || dragged === row) return;
-      event.preventDefault();
-      const rect = row.getBoundingClientRect();
-      list.insertBefore(dragged, event.clientY < rect.top + rect.height / 2 ? row : row.nextSibling);
-    });
-    row.querySelector<HTMLButtonElement>("[data-move-up]")!.onclick = () => {
-      const previous = row.previousElementSibling;
-      if (previous) list.insertBefore(row, previous);
-    };
-    row.querySelector<HTMLButtonElement>("[data-move-down]")!.onclick = () => {
-      const next = row.nextElementSibling;
-      if (next) list.insertBefore(next, row);
-    };
-  }
 }
 
 function projectRowHtml(project: LibraryProject, document: string): string {
@@ -405,9 +326,6 @@ function projectsEqual(left: LibraryProject[], right: LibraryProject[]): boolean
   });
 }
 
-function sameMembers<T>(left: T[], right: T[]): boolean {
-  return left.length === right.length && left.every((value) => right.includes(value));
-}
 async function actionMessage(action: () => Promise<string>): Promise<void> {
   try { showMessage(await action(), 5000, "info"); }
   catch (error) { showMessage(`文献库操作失败：${message(error)}`, 7000, "error"); }

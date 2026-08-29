@@ -1,12 +1,11 @@
 import { Menu, Plugin, showMessage } from "siyuan";
-import type { KernelClient } from "../core/kernel";
-import { ATTR } from "../constants";
 import type { PluginStatus } from "../types/status";
 import { currentDocumentId } from "./dom";
 
+export type DocKind = "library" | "paper" | null;
+
 export interface PaperUiActions {
   importPdf: () => Promise<void>;
-  editMetadata: (docId: string) => Promise<void>;
   translate: (docId: string) => Promise<void>;
   repair: (docId: string) => Promise<void>;
   exportLibrary: (docId: string) => Promise<void>;
@@ -14,11 +13,12 @@ export interface PaperUiActions {
   selfCheck: () => Promise<void>;
   toggleConnector: () => Promise<void>;
   getStatus: () => PluginStatus;
+  /** 文献库页返回 "library"；论文页（父页数据库中有条目）返回 "paper"。 */
+  detectDocKind: (docId: string) => Promise<DocKind>;
 }
 
 export function registerPaperUi(
   plugin: Plugin,
-  kernel: KernelClient,
   actions: PaperUiActions,
 ): () => void {
   plugin.addCommand({
@@ -33,10 +33,10 @@ export function registerPaperUi(
     callback: () => { void withCurrentDoc(actions.exportLibrary); },
   });
   plugin.addCommand({
-    langKey: "edit-paper-metadata",
-    langText: "论文管理：编辑当前论文元数据",
+    langKey: "refresh-paper-meta",
+    langText: "论文管理：刷新当前论文元数据摘要",
     hotkey: "⌥E",
-    callback: () => { void withCurrentDoc(actions.editMetadata); },
+    callback: () => { void withCurrentDoc(actions.repair); },
   });
   plugin.addCommand({
     langKey: "translate-current-paper",
@@ -59,12 +59,12 @@ export function registerPaperUi(
 
   const contentListener = (event: CustomEvent<any>) => {
     const docId = event.detail.protyle?.block?.rootID as string | undefined;
-    if (docId) void addPaperItems(event.detail.menu, docId, kernel, actions);
+    if (docId) void addPaperItems(event.detail.menu, docId, actions);
   };
   const treeListener = (event: CustomEvent<any>) => {
     if (event.detail.type !== "doc" || event.detail.items?.length !== 1) return;
     const docId = event.detail.items[0]?.id as string | undefined;
-    if (docId) void addPaperItems(event.detail.menu, docId, kernel, actions);
+    if (docId) void addPaperItems(event.detail.menu, docId, actions);
   };
   plugin.eventBus.on("open-menu-content", contentListener);
   plugin.eventBus.on("open-menu-doctree", treeListener);
@@ -77,8 +77,8 @@ export function registerPaperUi(
 function openQuickMenu(event: MouseEvent, actions: PaperUiActions): void {
   const menu = new Menu("paper-manager-quick-menu");
   menu.addItem({ icon: "iconUpload", label: "导入本地 PDF", click: () => run(actions.importPdf) });
-  menu.addItem({ icon: "iconEdit", label: "编辑当前论文元数据", click: () => withCurrentDoc(actions.editMetadata) });
   menu.addItem({ icon: "iconLanguage", label: "翻译当前论文", click: () => withCurrentDoc(actions.translate) });
+  menu.addItem({ icon: "iconRefresh", label: "刷新当前论文元数据摘要", click: () => withCurrentDoc(actions.repair) });
   menu.addItem({ icon: "iconDownload", label: "导出当前文献库引用", click: () => withCurrentDoc(actions.exportLibrary) });
   menu.addSeparator();
   const status = actions.getStatus().connector;
@@ -113,21 +113,22 @@ export function topBarMenuPosition(event: MouseEvent): {
   return { x: event.clientX, y: event.clientY, isLeft: true };
 }
 
-async function addPaperItems(menu: { addItem: (item: any) => unknown; addSeparator?: () => unknown }, docId: string, kernel: KernelClient, actions: PaperUiActions): Promise<void> {
+async function addPaperItems(
+  menu: { addItem: (item: any) => unknown; addSeparator?: () => unknown },
+  docId: string,
+  actions: PaperUiActions,
+): Promise<void> {
   try {
-    const attrs = await kernel.getBlockAttrs(docId);
-    if (attrs[ATTR.libraryData]) {
+    const kind = await actions.detectDocKind(docId);
+    if (kind === "library") {
       menu.addSeparator?.();
       menu.addItem({ icon: "iconDownload", label: "导出文献库引用", click: () => run(() => actions.exportLibrary(docId)) });
       return;
     }
-    if (!attrs[ATTR.data]) return;
+    if (kind !== "paper") return;
     menu.addSeparator?.();
-    menu.addItem({ icon: "iconEdit", label: "编辑论文元数据", click: () => run(() => actions.editMetadata(docId)) });
     menu.addItem({ icon: "iconLanguage", label: "翻译本文档", click: () => run(() => actions.translate(docId)) });
-    if (attrs[ATTR.state] === "failed") {
-      menu.addItem({ icon: "iconRefresh", label: "修复导入", click: () => run(() => actions.repair(docId)) });
-    }
+    menu.addItem({ icon: "iconRefresh", label: "刷新元数据摘要", click: () => run(() => actions.repair(docId)) });
   } catch (error) {
     console.debug("[paper-manager] 右键菜单论文识别失败", error);
   }
@@ -136,7 +137,7 @@ async function addPaperItems(menu: { addItem: (item: any) => unknown; addSeparat
 async function withCurrentDoc(action: (docId: string) => Promise<void>): Promise<void> {
   const docId = currentDocumentId();
   if (!docId) {
-    showMessage("请先打开一篇论文元数据页", 4000, "error");
+    showMessage("请先打开一篇论文页", 4000, "error");
     return;
   }
   await run(() => action(docId));

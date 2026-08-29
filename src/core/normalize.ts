@@ -1,6 +1,5 @@
-import { PAPER_SCHEMA_VERSION, SOURCE } from "../constants";
 import type { ImportCandidate, ZoteroCreator } from "../types/import";
-import type { PaperCanonical, PaperCreator, PaperData, PaperSourceKind } from "../types/paper";
+import type { PaperCanonical, PaperCreator, PaperData } from "../types/paper";
 import { generateCitekey, normalizeDoi } from "./naming";
 
 export function canonicalFromRaw(raw: Record<string, unknown>): PaperCanonical {
@@ -66,30 +65,14 @@ export function cleanCanonical(input: PaperCanonical): PaperCanonical {
 }
 
 export function paperDataFromCandidate(candidate: ImportCandidate): PaperData {
-  const now = new Date().toISOString();
   const canonical = cleanCanonical(candidate.canonical);
   return {
-    schemaVersion: PAPER_SCHEMA_VERSION,
     canonical,
-    sources: [{
-      source: candidate.source,
-      importedAt: now,
-      sourceUrl: safeExternalUrl(candidate.sourceUrl),
-      sessionId: optionalText(candidate.sessionId, 200),
-      raw: structuredCloneSafe(candidate.raw),
-    }],
-    attachments: [],
-    translation: {},
     citekey: generateCitekey(canonical),
     libraryId: "",
-    source: candidate.source,
-    importedAt: now,
-    updatedAt: now,
+    attachments: [],
+    translation: {},
   };
-}
-
-export function manualSource(raw: Record<string, unknown>): { source: PaperSourceKind; importedAt: string; raw: Record<string, unknown> } {
-  return { source: SOURCE.manual, importedAt: new Date().toISOString(), raw: structuredCloneSafe(raw) };
 }
 
 export function safeAssetUrl(value: string | undefined): string | undefined {
@@ -131,10 +114,3 @@ function sanitizeText(value: string, max: number): string {
   return value.replace(/[\u0000\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "").trim().slice(0, max);
 }
 
-function structuredCloneSafe(value: Record<string, unknown>): Record<string, unknown> {
-  try {
-    return structuredClone(value);
-  } catch {
-    return JSON.parse(JSON.stringify(value)) as Record<string, unknown>;
-  }
-}

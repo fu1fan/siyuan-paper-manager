@@ -48,12 +48,7 @@ export function mergePaperData(
   return {
     ...existing,
     canonical: cleanCanonical(canonical),
-    sources: [...existing.sources, ...incoming.sources],
     attachments,
-    translation: existing.translation,
-    libraryId: existing.libraryId,
-    legacyProjectIds: existing.legacyProjectIds,
-    updatedAt: new Date().toISOString(),
   };
 }
 
