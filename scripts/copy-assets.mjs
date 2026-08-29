@@ -6,7 +6,7 @@ const dist = resolve(root, "dist");
 await mkdir(resolve(dist, "templates"), { recursive: true });
 await mkdir(resolve(dist, "i18n"), { recursive: true });
 
-for (const file of ["plugin.json", "README.md", "index.css", "icon.png"]) {
+for (const file of ["plugin.json", "README.md", "index.css", "icon.png", "preview.png"]) {
   await cp(resolve(root, file), resolve(dist, file));
 }
 for (const file of ["paper-meta.md", "paper-note.md"]) {

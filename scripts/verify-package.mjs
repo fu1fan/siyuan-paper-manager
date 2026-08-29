@@ -9,6 +9,7 @@ const required = [
   "index.css",
   "README.md",
   "icon.png",
+  "preview.png",
   "templates/paper-meta.md",
   "templates/paper-note.md",
   "i18n/zh_CN.json",
