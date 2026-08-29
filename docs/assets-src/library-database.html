@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<link rel="stylesheet" href="style.css">
+<style>
+  html, body { width: 1100px; height: 680px; }
+  .editor { padding: 18px 24px; }
+  .c-title { width: 280px; }
+  .c-author { width: 110px; }
+  .c-year { width: 56px; }
+  .c-source { width: 130px; }
+  .c-doi { width: 185px; }
+  .c-tag { width: 118px; }
+  .c-project { flex: 1; min-width: 90px; }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="topbar">
+    <span class="dot" style="background:#ff5f57"></span>
+    <span class="dot" style="background:#febc2e"></span>
+    <span class="dot" style="background:#28c840"></span>
+    <span class="ticons"><span>🔍</span><span>⇄</span><span class="active">🗂</span><span>⚙</span></span>
+  </div>
+  <div class="editor">
+    <div class="breadcrumb">论文库 / 博士论文文献库</div>
+    <div class="doc-title">博士论文文献库</div>
+    <div class="av">
+      <div class="av-head">
+        <div class="av-cell c-title"><span class="col-icon">🅣</span>标题</div>
+        <div class="av-cell c-author"><span class="col-icon">🅣</span>作者</div>
+        <div class="av-cell c-year"><span class="col-icon">#</span>年份</div>
+        <div class="av-cell c-source"><span class="col-icon">🅣</span>来源</div>
+        <div class="av-cell c-doi"><span class="col-icon">🔗</span>DOI</div>
+        <div class="av-cell c-tag"><span class="col-icon">🏷</span>标签</div>
+        <div class="av-cell c-project"><span class="col-icon">▦</span>项目</div>
+      </div>
+      <div class="av-row">
+        <div class="av-cell c-title cell-title">Attention is all you need</div>
+        <div class="av-cell c-author">Vaswani 等</div>
+        <div class="av-cell c-year">2017</div>
+        <div class="av-cell c-source">NeurIPS</div>
+        <div class="av-cell c-doi mono">10.48550/arXiv.1706.03762</div>
+        <div class="av-cell c-tag"><span class="chip blue">Transformer</span><span class="chip green">NLP</span></div>
+        <div class="av-cell c-project"><span class="chip purple">综述写作</span></div>
+      </div>
+      <div class="av-row">
+        <div class="av-cell c-title cell-title">BERT: Pre-training of deep bidirectional transformers for language understanding</div>
+        <div class="av-cell c-author">Devlin 等</div>
+        <div class="av-cell c-year">2019</div>
+        <div class="av-cell c-source">NAACL</div>
+        <div class="av-cell c-doi mono">10.18653/v1/N19-1423</div>
+        <div class="av-cell c-tag"><span class="chip blue">预训练</span><span class="chip green">NLP</span></div>
+        <div class="av-cell c-project"><span class="chip purple">综述写作</span></div>
+      </div>
+      <div class="av-row">
+        <div class="av-cell c-title cell-title">Language models are few-shot learners</div>
+        <div class="av-cell c-author">Brown 等</div>
+        <div class="av-cell c-year">2020</div>
+        <div class="av-cell c-source">NeurIPS</div>
+        <div class="av-cell c-doi mono">10.48550/arXiv.2005.14165</div>
+        <div class="av-cell c-tag"><span class="chip orange">LLM</span></div>
+        <div class="av-cell c-project"><span class="chip grey">章节草稿</span></div>
+      </div>
+      <div class="av-row">
+        <div class="av-cell c-title cell-title">Deep residual learning for image recognition</div>
+        <div class="av-cell c-author">He 等</div>
+        <div class="av-cell c-year">2016</div>
+        <div class="av-cell c-source">CVPR</div>
+        <div class="av-cell c-doi mono">10.1109/CVPR.2016.90</div>
+        <div class="av-cell c-tag"><span class="chip green">CNN</span></div>
+        <div class="av-cell c-project"></div>
+      </div>
+      <div class="av-row">
+        <div class="av-cell c-title cell-title">基于 Transformer 的中文文本摘要研究</div>
+        <div class="av-cell c-author">王磊 等</div>
+        <div class="av-cell c-year">2023</div>
+        <div class="av-cell c-source">中文信息学报</div>
+        <div class="av-cell c-doi mono">10.3969/j.issn.1003-0077.2023.05.008</div>
+        <div class="av-cell c-tag"><span class="chip blue">摘要</span><span class="chip orange">中文</span></div>
+        <div class="av-cell c-project"><span class="chip grey">章节草稿</span></div>
+      </div>
+      <div class="av-add">＋ 添加行</div>
+    </div>
+  </div>
+  <div class="statusbar">
+    <span class="pill">🌐 翻译中 42% · 队列 1 <span class="track"><span class="fill" style="width:42%"></span></span></span>
+  </div>
+</div>
+</body>
+</html>

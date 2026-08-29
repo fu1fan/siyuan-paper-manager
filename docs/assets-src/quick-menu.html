@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<link rel="stylesheet" href="style.css">
+<style>
+  html, body { width: 760px; height: 480px; }
+  .window { display: flex; flex-direction: column; height: 100vh; background: var(--bg); }
+  .canvas { flex: 1; position: relative; background:
+      repeating-linear-gradient(0deg, #eceff3 0 26px, #f4f6f9 26px 52px); }
+  .menu { position: absolute; top: 8px; right: 24px; }
+  .topbar .right-icons { margin-left: auto; display: flex; gap: 4px; align-items: center; }
+  .ticon { width: 30px; height: 26px; border-radius: 6px; display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 14px; }
+  .ticon.active { background: var(--primary-soft); color: var(--primary); }
+</style>
+</head>
+<body>
+<div class="window">
+  <div class="topbar">
+    <span class="dot" style="background:#ff5f57"></span>
+    <span class="dot" style="background:#febc2e"></span>
+    <span class="dot" style="background:#28c840"></span>
+    <span class="right-icons">
+      <span class="ticon">🗒</span>
+      <span class="ticon">🔍</span>
+      <span class="ticon">⇄</span>
+      <span class="ticon active">🗂</span>
+      <span class="ticon">⚙</span>
+    </span>
+  </div>
+  <div class="canvas">
+    <div class="menu">
+      <div class="menu-item"><span class="micon">📥</span>导入本地 PDF</div>
+      <div class="menu-item"><span class="micon">🌐</span>翻译当前论文</div>
+      <div class="menu-item hover"><span class="micon">⟳</span>刷新当前论文元数据摘要</div>
+      <div class="menu-item"><span class="micon">📤</span>导出文献库引用</div>
+      <div class="menu-sep"></div>
+      <div class="menu-item"><span class="micon">⏸</span>停止 Zotero 接收</div>
+      <div class="menu-item"><span class="micon">ℹ️</span>环境自检</div>
+      <div class="menu-item"><span class="micon">⚙️</span>插件设置</div>
+    </div>
+  </div>
+  <div class="statusbar">
+    <span class="pill">🎧 Zotero 接收中 · 127.0.0.1:23119</span>
+    <span class="pill" style="margin-left:14px;">🌐 翻译中 42% · 队列 1 <span class="track"><span class="fill" style="width:42%"></span></span></span>
+  </div>
+</div>
+</body>
+</html>

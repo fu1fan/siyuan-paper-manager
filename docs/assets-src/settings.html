@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<link rel="stylesheet" href="style.css">
+<style>
+  html, body { width: 900px; height: 700px; }
+  .dialog { width: 820px; height: 640px; }
+</style>
+</head>
+<body>
+<div class="overlay">
+  <div class="dialog">
+    <div class="dialog-header">
+      <span class="dialog-title">论文管理</span>
+      <span class="dialog-close">✕</span>
+    </div>
+    <div class="dialog-content" style="gap:14px;">
+      <div class="tabs">
+        <span class="tab active">文献库</span>
+        <span class="tab">导入与接收</span>
+        <span class="tab">论文存储</span>
+        <span class="tab">PDF 元数据</span>
+        <span class="tab">翻译</span>
+      </div>
+      <div class="field">
+        <span>默认文献库</span>
+        <div class="select" style="max-width:280px;">博士论文文献库 ▾</div>
+        <span class="btn outline">新建文献库</span>
+      </div>
+      <hr class="hr">
+      <div class="h3">博士论文文献库</div>
+      <div class="label-text">/论文库/博士论文文献库 · 数据库 20260305120000-a1b2c3d</div>
+      <div class="section">
+        <div class="h4">项目定义</div>
+        <div class="label-text">项目名称用于数据库多选；可搜索并绑定一个思源项目文档。</div>
+        <div class="project-row">
+          <div class="input">综述写作</div>
+          <div class="input wide" style="color:var(--muted);">综述写作 · /论文库/项目/综述写作</div>
+          <span class="btn text">↗</span><span class="btn text">清除</span><span class="btn text">删除</span>
+        </div>
+        <div class="project-row">
+          <div class="input">章节草稿</div>
+          <div class="input wide" style="color:#b6bcc5;">搜索并绑定项目文档（可选）</div>
+          <span class="btn text" style="visibility:hidden;">↗</span><span class="btn text">清除</span><span class="btn text">删除</span>
+        </div>
+        <span class="btn outline">添加项目</span>
+      </div>
+      <div class="label-text">项目的修改会随右下角「保存」一起应用；列的显示与排序请直接在数据库视图中操作。</div>
+      <div class="actions">
+        <span class="btn text">重新同步</span>
+        <span class="btn text">修复数据库</span>
+      </div>
+    </div>
+    <div class="dialog-footer">
+      <span class="btn">取消</span>
+      <span class="btn primary">保存</span>
+    </div>
+  </div>
+</div>
+</body>
+</html>

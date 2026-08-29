@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<link rel="stylesheet" href="style.css">
+<style>
+  html, body { width: 1020px; height: 640px; }
+  .meta-block {
+    border: 1px solid var(--border); border-radius: 8px; background: #fafbfc;
+    padding: 14px 18px; font-size: 13px; line-height: 2.0; margin-bottom: 18px;
+  }
+  .meta-block .mrow { display: flex; gap: 12px; }
+  .meta-block .mkey { width: 72px; flex-shrink: 0; color: var(--muted); }
+  .meta-block .mval { color: var(--text2); }
+  .meta-head {
+    display: flex; align-items: center; justify-content: space-between;
+    font-size: 12px; color: var(--muted); margin-bottom: 8px;
+  }
+  .h2 { font-size: 18px; font-weight: 700; margin: 10px 0 8px; }
+  .li { padding-left: 20px; position: relative; margin-bottom: 4px; }
+  .li::before { content: "•"; position: absolute; left: 4px; color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="topbar">
+    <span class="dot" style="background:#ff5f57"></span>
+    <span class="dot" style="background:#febc2e"></span>
+    <span class="dot" style="background:#28c840"></span>
+    <span class="ticons"><span>🔍</span><span>⇄</span><span class="active">🗂</span><span>⚙</span></span>
+  </div>
+  <div class="editor">
+    <div class="breadcrumb">论文库 / 博士论文文献库 / 2023 / Attention is all you need</div>
+    <div class="doc-title">Attention is all you need</div>
+    <div class="meta-block">
+      <div class="meta-head"><span>📄 论文元数据 · vaswani2017attention</span><span>由数据库内容生成，请勿直接编辑</span></div>
+      <div class="mrow"><span class="mkey">作者</span><span class="mval">Vaswani, Ashish；Shazeer, Noam；Parmar, Niki；Uszkoreit, Jakob 等</span></div>
+      <div class="mrow"><span class="mkey">来源</span><span class="mval">Advances in Neural Information Processing Systems 30（NeurIPS 2017）</span></div>
+      <div class="mrow"><span class="mkey">日期</span><span class="mval">2017</span></div>
+      <div class="mrow"><span class="mkey">DOI</span><span class="mval mono">10.48550/arXiv.1706.03762</span></div>
+      <div class="mrow"><span class="mkey">标签</span><span class="mval"><span class="chip blue">Transformer</span><span class="chip green">NLP</span></span></div>
+      <div class="mrow"><span class="mkey">项目</span><span class="mval"><span class="chip purple">综述写作</span></span></div>
+      <div class="mrow"><span class="mkey">附件</span><span class="mval">📎 1706.03762v7.pdf · 📎 1706.03762v7-dual.pdf（双语翻译）</span></div>
+    </div>
+    <div class="h2">阅读笔记</div>
+    <div class="doc-body">
+      <div class="li">提出完全基于注意力机制的 Transformer 架构，摒弃循环与卷积。</div>
+      <div class="li">缩放点积注意力 + 多头机制，8 个头并行学习不同子空间表示。</div>
+      <div class="li">WMT 2014 英德翻译 BLEU 28.4，训练成本显著低于同期循环模型。</div>
+    </div>
+  </div>
+  <div class="statusbar">
+    <span class="pill">✅ 翻译完成 · 用时 86.3 秒</span>
+  </div>
+</div>
+</body>
+</html>

@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<link rel="stylesheet" href="style.css">
+<style>
+  html, body { width: 760px; height: 600px; }
+  .dialog { width: 700px; height: 540px; }
+</style>
+</head>
+<body>
+<div class="overlay">
+  <div class="dialog">
+    <div class="dialog-header">
+      <span class="dialog-title">导入本地 PDF</span>
+      <span class="dialog-close">✕</span>
+    </div>
+    <div class="dialog-content">
+      <div class="field">
+        <span>PDF 文件</span>
+        <div class="input">📄 1706.03762v7.pdf</div>
+      </div>
+      <div class="field">
+        <span>自动提取元数据</span>
+        <span class="switch"></span>
+      </div>
+      <div class="hint-box">将导入当前默认论文文献库。</div>
+      <div class="field">
+        <span>识别候选</span>
+        <div class="select">Crossref · Attention is all you need · 0.95 ▾</div>
+      </div>
+      <div class="hint-box" style="flex:1; color: var(--text2);">来源：Crossref · 置信度 0.95
+标题：Attention is all you need
+作者：Vaswani, Ashish；Shazeer, Noam；Parmar, Niki；Uszkoreit, Jakob
+期刊：Advances in Neural Information Processing Systems 30
+日期：2017
+DOI：10.48550/arXiv.1706.03762
+DOI 命中 Crossref 记录，字段完整</div>
+    </div>
+    <div class="dialog-footer">
+      <span class="btn">取消</span>
+      <span class="btn primary">导入并创建</span>
+    </div>
+  </div>
+</div>
+</body>
+</html>

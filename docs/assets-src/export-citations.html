@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<link rel="stylesheet" href="style.css">
+<style>
+  html, body { width: 1024px; height: 720px; }
+  .dialog { width: 920px; height: 640px; }
+  .toolbar { display: flex; gap: 8px; }
+  .toolbar .select { max-width: none; min-width: 130px; flex: none; }
+  .toolbar .input.grow { flex: 1; }
+  .projects { font-size: 12px; color: var(--primary); }
+  .body2 { flex: 1; display: flex; gap: 12px; min-height: 0; }
+  .side {
+    width: 340px; display: flex; flex-direction: column;
+    border: 1px solid var(--border); border-radius: 8px; overflow: hidden;
+  }
+  .side-bar {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 8px 12px; border-bottom: 1px solid var(--border);
+    background: var(--bg); font-size: 12px; color: var(--text2);
+  }
+  .side-bar .actions2 { color: var(--primary); font-size: 12px; }
+  .list { flex: 1; overflow: hidden; }
+  .row {
+    display: flex; gap: 10px; align-items: flex-start;
+    padding: 9px 12px; border-bottom: 1px solid #f0f2f5;
+  }
+  .row.checked { background: var(--primary-soft); }
+  .checkbox {
+    width: 14px; height: 14px; margin-top: 3px; border-radius: 4px;
+    border: 1.5px solid var(--primary); background: var(--primary);
+    position: relative; flex-shrink: 0;
+  }
+  .checkbox::after {
+    content: ""; position: absolute; left: 3.5px; top: 1px;
+    width: 4px; height: 8px; border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(45deg);
+  }
+  .checkbox.off { background: #fff; border-color: #c7ccd1; }
+  .checkbox.off::after { display: none; }
+  .row strong { display: block; font-size: 12.5px; font-weight: 500; line-height: 1.45; }
+  .row small { display: block; font-size: 11px; color: var(--muted); margin-top: 2px; }
+  .output {
+    flex: 1; border: 1px solid var(--border); border-radius: 8px;
+    background: #fbfbfd; padding: 12px 14px; overflow: hidden;
+    font-family: Menlo, "JetBrains Mono", monospace; font-size: 11.5px; line-height: 1.75;
+    color: var(--text2); white-space: pre-wrap;
+  }
+  .foot { display: flex; justify-content: space-between; align-items: center; width: 100%; }
+  .dialog-footer { justify-content: space-between; }
+</style>
+</head>
+<body>
+<div class="overlay">
+  <div class="dialog">
+    <div class="dialog-header">
+      <span class="dialog-title">导出引用</span>
+      <span class="dialog-close">✕</span>
+    </div>
+    <div class="dialog-content">
+      <div class="toolbar">
+        <div class="select">博士论文文献库 ▾</div>
+        <div class="input grow" style="color: var(--muted);">搜索标题、作者、DOI 或引用键</div>
+        <div class="select">全部项目 ▾</div>
+        <div class="select">GB/T 7714—2015 ▾</div>
+      </div>
+      <div class="projects">章节草稿 ↗ &nbsp;·&nbsp; 综述写作 ↗</div>
+      <div class="body2">
+        <div class="side">
+          <div class="side-bar">
+            <span>已选 3 / 4 篇</span>
+            <span class="actions2">选择当前结果&nbsp;&nbsp;清空</span>
+          </div>
+          <div class="list">
+            <div class="row checked">
+              <span class="checkbox"></span>
+              <span><strong>Attention is all you need</strong><small>vaswani2017attention · 2017</small></span>
+            </div>
+            <div class="row checked">
+              <span class="checkbox"></span>
+              <span><strong>BERT: Pre-training of deep bidirectional transformers for language understanding</strong><small>devlin2019bert · 2019</small></span>
+            </div>
+            <div class="row checked">
+              <span class="checkbox"></span>
+              <span><strong>Language models are few-shot learners</strong><small>brown2020language · 2020</small></span>
+            </div>
+            <div class="row">
+              <span class="checkbox off"></span>
+              <span><strong>Deep residual learning for image recognition</strong><small>he2016deep · 2016</small></span>
+            </div>
+          </div>
+        </div>
+        <div class="output">[1] VASWANI A, SHAZEER N, PARMAR N, et al. Attention is all you
+    need[C]//Advances in Neural Information Processing
+    Systems 30. Long Beach: Curran Associates, 2017: 5998-6008.
+
+[2] DEVLIN J, CHANG M W, LEE K, et al. BERT: Pre-training
+    of deep bidirectional transformers for language
+    understanding[C]//Proceedings of NAACL-HLT 2019.
+    Minneapolis: ACL, 2019: 4171-4186.
+
+[3] BROWN T B, MANN B, RYDER N, et al. Language models are
+    few-shot learners[C]//Advances in Neural Information
+    Processing Systems 33. 2020: 1877-1901.</div>
+      </div>
+    </div>
+    <div class="dialog-footer">
+      <span class="foot"><span style="font-size:12px;color:var(--muted);">3 篇文献已就绪</span>
+      <span style="display:flex;gap:8px;">
+        <span class="btn">关闭</span>
+        <span class="btn">复制</span>
+        <span class="btn primary">下载文件</span>
+      </span></span>
+    </div>
+  </div>
+</div>
+</body>
+</html>
