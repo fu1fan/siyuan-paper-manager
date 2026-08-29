@@ -82,7 +82,28 @@ function openQuickMenu(event: MouseEvent, actions: PaperUiActions): void {
   });
   menu.addItem({ icon: "iconInfo", label: "环境自检", click: () => run(actions.selfCheck) });
   menu.addItem({ icon: "iconSettings", label: "插件设置", click: actions.openSettings });
-  menu.open({ x: event.clientX, y: event.clientY });
+  menu.open(topBarMenuPosition(event));
+}
+
+/**
+ * Anchor a right-side top-bar menu to the button rather than the pointer.
+ *
+ * SiYuan positions a menu's left edge at `x` by default.  A menu opened near
+ * the right viewport edge can therefore be moved to an incorrect fallback
+ * position.  `isLeft` makes `x` the menu's right edge, while the button bounds
+ * keep the placement stable regardless of where inside the icon was clicked.
+ */
+export function topBarMenuPosition(event: MouseEvent): {
+  x: number;
+  y: number;
+  isLeft: true;
+} {
+  const anchor = event.currentTarget as Partial<HTMLElement> | null;
+  const rect = anchor?.getBoundingClientRect?.();
+  if (rect && Number.isFinite(rect.right) && Number.isFinite(rect.bottom)) {
+    return { x: rect.right, y: rect.bottom, isLeft: true };
+  }
+  return { x: event.clientX, y: event.clientY, isLeft: true };
 }
 
 async function addPaperItems(menu: { addItem: (item: any) => unknown; addSeparator?: () => unknown }, docId: string, kernel: KernelClient, actions: PaperUiActions): Promise<void> {

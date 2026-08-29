@@ -48,10 +48,17 @@ export class SettingsPanel {
       tab.className = "b3-button b3-button--outline";
       tab.textContent = label;
       tab.dataset.tab = name;
-      tab.addEventListener("click", () => activate(name));
+      tab.setAttribute("role", "tab");
+      tab.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        activate(name);
+      });
       tabs.append(tab);
       const panel = document.createElement("section");
+      panel.className = "paper-manager-panel";
       panel.dataset.panel = name;
+      panel.setAttribute("role", "tabpanel");
       panels.set(name, panel);
       root.append(panel);
     }
@@ -80,8 +87,18 @@ export class SettingsPanel {
     root.addEventListener("input", (event) => this.capture(event));
     root.addEventListener("change", (event) => this.capture(event));
     const activate = (name: TabName) => {
-      for (const panel of panels.values()) panel.hidden = panel.dataset.panel !== name;
-      for (const tab of tabs.querySelectorAll<HTMLButtonElement>("button")) tab.dataset.active = String(tab.dataset.tab === name);
+      for (const panel of panels.values()) {
+        const active = panel.dataset.panel === name;
+        panel.dataset.active = String(active);
+        panel.hidden = !active;
+        panel.setAttribute("aria-hidden", String(!active));
+      }
+      for (const tab of tabs.querySelectorAll<HTMLButtonElement>("button")) {
+        const active = tab.dataset.tab === name;
+        tab.dataset.active = String(active);
+        tab.setAttribute("aria-selected", String(active));
+        tab.tabIndex = active ? 0 : -1;
+      }
     };
     activate("receiving");
     void this.populateNotebooks(root.querySelector<HTMLSelectElement>("[data-key=notebookId]")!);

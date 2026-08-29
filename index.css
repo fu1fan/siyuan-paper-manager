@@ -1,12 +1,3 @@
-.paper-manager-status {
-  cursor: pointer;
-  white-space: nowrap;
-}
-
-.paper-manager-status[data-state="error"] {
-  color: var(--b3-card-error-color);
-}
-
 .paper-manager-tabs {
   display: flex;
   gap: 6px;
@@ -25,6 +16,16 @@
 
 .paper-manager-form {
   width: 100%;
+}
+
+/* SiYuan's settings styles override the browser's native [hidden] rule in
+   some releases. Keep tab visibility under the plugin's own explicit state. */
+.paper-manager-panel {
+  display: none !important;
+}
+
+.paper-manager-panel[data-active="true"] {
+  display: block !important;
 }
 
 .paper-manager-field {

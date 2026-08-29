@@ -16,7 +16,6 @@ import { openImportPdfDialog } from "./ui/dialogs/import-pdf";
 import { registerPaperUi } from "./ui/commands";
 import { escapeHtml } from "./ui/dom";
 import { SettingsPanel } from "./ui/settings";
-import { installStatusBar } from "./ui/status-bar";
 
 export default class PaperManagerPlugin extends Plugin {
   private readonly kernelClient = new KernelClient();
@@ -58,7 +57,6 @@ export default class PaperManagerPlugin extends Plugin {
       (settings) => this.updateSettings(settings),
     );
     this.setting = this.settingsPanel.setting;
-    this.cleanup.push(installStatusBar(this, this.statusStore, () => { void this.selfCheck(); }));
     this.cleanup.push(registerPaperUi(this, this.kernelClient, {
       importPdf: () => openImportPdfDialog(this.kernelClient, this.processor, () => this.settings),
       editMetadata: (docId) => this.editMetadata(docId),
