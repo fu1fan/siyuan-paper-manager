@@ -1,14 +1,11 @@
 import {
   DEFAULT_ASSETS_DIR,
-  DEFAULT_DEST_PATH,
   DEFAULT_ZOTERO_PORT,
 } from "../constants";
 
 export interface PluginSettings {
   zoteroPort: number;
   autoListen: boolean;
-  notebookId: string;
-  destPath: string;
   defaultLibraryDocId: string;
   onboardingCompleted: boolean;
   assetsDir: string;
@@ -26,8 +23,6 @@ export interface PluginSettings {
 export const DEFAULT_SETTINGS: PluginSettings = {
   zoteroPort: DEFAULT_ZOTERO_PORT,
   autoListen: true,
-  notebookId: "",
-    destPath: DEFAULT_DEST_PATH,
   defaultLibraryDocId: "",
   onboardingCompleted: false,
   assetsDir: DEFAULT_ASSETS_DIR,
@@ -52,8 +47,6 @@ export function normalizeSettings(input: unknown): PluginSettings {
   return {
     zoteroPort: validPort(raw.zoteroPort) ? Number(raw.zoteroPort) : DEFAULT_SETTINGS.zoteroPort,
     autoListen: bool(raw.autoListen, DEFAULT_SETTINGS.autoListen),
-    notebookId: string(raw.notebookId, ""),
-    destPath: normalizeHPath(string(raw.destPath, DEFAULT_SETTINGS.destPath)),
     defaultLibraryDocId: optionalString(raw.defaultLibraryDocId),
     onboardingCompleted: bool(raw.onboardingCompleted, DEFAULT_SETTINGS.onboardingCompleted),
     assetsDir: normalizeAssetsDir(string(raw.assetsDir, DEFAULT_SETTINGS.assetsDir)),
@@ -103,12 +96,6 @@ export function normalizeAssetsDir(value: string): string {
   const clean = value.trim().replace(/\\/g, "/").replace(/\.{2,}/g, "");
   const withLeading = clean.startsWith("/") ? clean : `/${clean}`;
   return `${withLeading.replace(/\/+$/, "") || "/assets"}/`;
-}
-
-export function normalizeHPath(value: string): string {
-  const clean = value.trim().replace(/\\/g, "/").replace(/\.{2,}/g, "");
-  const withLeading = clean.startsWith("/") ? clean : `/${clean}`;
-  return withLeading.replace(/\/+$/, "") || DEFAULT_DEST_PATH;
 }
 
 function bool(value: unknown, fallback: boolean): boolean {

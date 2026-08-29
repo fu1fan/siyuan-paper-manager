@@ -5,7 +5,7 @@ import type { ItemProcessor } from "../../services/item-processor";
 import { MetadataExtractor } from "../../services/metadata-extractor";
 import type { MetadataCandidate } from "../../types/import";
 import type { PluginSettings } from "../../types/settings";
-import { button, escapeHtml, inputValue } from "../dom";
+import { button, escapeHtml } from "../dom";
 
 export async function openImportPdfDialog(
   kernel: KernelClient,
@@ -13,18 +13,14 @@ export async function openImportPdfDialog(
   getSettings: () => PluginSettings,
 ): Promise<void> {
   const settings = getSettings();
-  const notebooks = await kernel.listNotebooks();
+  void kernel;
   const dialog = new Dialog({
     title: "导入本地 PDF",
     width: "720px",
     content: `<div class="b3-dialog__content paper-manager-form">
       <label class="paper-manager-field"><span>PDF 文件</span><input type="file" accept="application/pdf" data-file></label>
       <label class="paper-manager-field"><span>自动提取元数据</span><input type="checkbox" data-extract checked></label>
-      <label class="paper-manager-field"><span>目标笔记本</span><select class="b3-select" data-notebook>
-        <option value="">请选择笔记本</option>
-        ${notebooks.map((notebook) => `<option value="${escapeHtml(notebook.id)}" ${notebook.id === settings.notebookId ? "selected" : ""}>${escapeHtml(notebook.name)}</option>`).join("")}
-      </select></label>
-      <label class="paper-manager-field"><span>存放路径</span><input class="b3-text-field" data-path value="${escapeHtml(settings.destPath)}"></label>
+      <div class="paper-manager-preview">将导入当前默认论文文献库。</div>
       <label class="paper-manager-field"><span>识别候选</span><select class="b3-select" data-candidates disabled><option>选择 PDF 后开始识别</option></select></label>
       <div class="paper-manager-preview" data-preview>尚未选择 PDF。</div>
       <div class="paper-manager-actions" data-actions></div>
@@ -92,14 +88,8 @@ export async function openImportPdfDialog(
   importButton.addEventListener("click", async () => {
     const file = fileInput.files?.[0];
     const selected = candidates[Number(candidateSelect.value)] ?? candidates[0];
-    const notebookId = inputValue(dialog.element, "[data-notebook]");
-    const destPath = inputValue(dialog.element, "[data-path]");
     if (!file || !bytes || !selected) {
       showMessage("请先选择 PDF 并等待元数据提取完成", 4000, "error");
-      return;
-    }
-    if (!notebookId) {
-      showMessage("请选择目标笔记本", 4000, "error");
       return;
     }
     importButton.disabled = true;
@@ -111,7 +101,7 @@ export async function openImportPdfDialog(
         canonical: selected.canonical,
         raw: selected.raw ?? { provider: selected.provider, filename: file.name },
         attachments: [{ title: file.name, mimeType: "application/pdf", bytes }],
-      }, { notebookId, destPath });
+      });
       showMessage(`PDF 导入完成：${result.title}`, 5000, "info");
       dialog.destroy();
     } catch (error) {

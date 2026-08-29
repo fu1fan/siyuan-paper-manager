@@ -22,6 +22,8 @@ import {
   titleSimilarity,
 } from "../core/naming";
 import { TemplateService } from "../core/templates";
+import { LibraryService, type PaperLibraryInfo } from "./library-service";
+import { uniqueCitekey } from "../core/naming";
 
 export interface ProcessResult {
   action: "created" | "merged" | "copied" | "cancelled";
@@ -37,19 +39,18 @@ export class ItemProcessor {
     private readonly templates: TemplateService,
     private readonly getSettings: () => PluginSettings,
     private readonly resolveDuplicate: DuplicateResolver,
+    private readonly libraries: LibraryService,
   ) {}
 
   async process(
     candidate: ImportCandidate,
-    location?: { notebookId?: string; destPath?: string },
   ): Promise<ProcessResult> {
-    const settings = { ...this.getSettings(), ...location };
-    if (!settings.notebookId) throw new Error("请先在插件设置中选择目标笔记本");
-    const notebooks = await this.kernel.listNotebooks();
-    if (!notebooks.some((notebook) => notebook.id === settings.notebookId)) {
-      throw new Error("配置的目标笔记本不存在或已关闭，请重新选择");
-    }
+    const settings = this.getSettings();
+    if (!settings.defaultLibraryDocId) throw new Error("请先完成初始化并设置默认论文文献库");
+    const library = await this.libraries.getLibrary(settings.defaultLibraryDocId);
     const incoming = paperDataFromCandidate(candidate);
+    incoming.libraryId = library.docId;
+    incoming.citekey = uniqueCitekey(incoming.citekey, await this.libraries.citekeys(library.docId));
     const match = await this.findDuplicate(incoming);
     let resolution: DuplicateResolution | null = null;
     if (match) {
@@ -68,7 +69,7 @@ export class ItemProcessor {
         return { action: "merged", docId: match.docId, title: merged.canonical.title };
       }
       const copy = match && resolution?.action === "copy";
-      const docId = await this.createPaper(incoming, copy ?? false, settings);
+      const docId = await this.createPaper(incoming, copy ?? false, library);
       return { action: copy ? "copied" : "created", docId, title: incoming.canonical.title };
     } finally {
       this.cleanupCandidate(candidate);
@@ -105,19 +106,23 @@ export class ItemProcessor {
       });
       throw error;
     }
+    try { await this.libraries.syncPaper(docId, paper); }
+    catch (error) { console.warn("[paper-manager] 论文元数据已保存，但文献库数据库同步失败", docId, error); }
   }
 
-  private async createPaper(paper: PaperData, copy: boolean, settings: PluginSettings): Promise<string> {
+  private async createPaper(paper: PaperData, copy: boolean, library: PaperLibraryInfo): Promise<string> {
     const title = paperDocumentTitle(paper.canonical, paper.citekey);
     const finalTitle = copy ? `${title} - 副本 ${timestampSuffix()}` : title;
     const markdown = `# ${escapeHeading(finalTitle)}\n`;
-    const base = settings.destPath.replace(/\/+$/, "");
+    const base = library.hPath.replace(/\/+$/, "");
     const hPath = `${base}/${sanitizeDocumentName(finalTitle)}`;
-    const created = await this.kernel.createDocument(settings.notebookId, hPath, markdown, finalTitle);
+    const created = await this.kernel.createDocument(library.notebookId, hPath, markdown, finalTitle);
     try {
       await this.kernel.setBlockAttrs(created.id, paperIndexAttrs(paper));
       const sections = await this.templates.ensureSections(created.id, paper);
       await this.templates.refreshMeta(created.id, paper, sections.meta);
+      try { await this.libraries.syncPaper(created.id, paper); }
+      catch (error) { console.warn("[paper-manager] 论文页已创建，等待文献库修复同步", created.id, error); }
       return created.id;
     } catch (error) {
       try {
@@ -134,7 +139,7 @@ export class ItemProcessor {
     const doi = incoming.canonical.doi;
     if (doi) {
       const ids = await this.kernel.findPaperDocIdsByIndex(ATTR.doi, doi);
-      const match = await this.firstReadable(ids);
+      const match = await this.firstReadable(ids, incoming.libraryId);
       if (match) return {
         docId: match.id,
         reason: "doi",
@@ -146,6 +151,7 @@ export class ItemProcessor {
     for (const id of ids) {
       try {
         const existing = await this.kernel.getPaperData(id);
+        if (existing.libraryId !== incoming.libraryId) continue;
         const sameTitle = titleSimilarity(existing.canonical.title, incoming.canonical.title) >= 0.92
           || normalizeTitle(existing.canonical.title) === normalizeTitle(incoming.canonical.title);
         const doiConflict = existing.canonical.doi && incoming.canonical.doi
@@ -163,9 +169,12 @@ export class ItemProcessor {
     return null;
   }
 
-  private async firstReadable(ids: string[]): Promise<{ id: string; paper: PaperData } | null> {
+  private async firstReadable(ids: string[], libraryId: string): Promise<{ id: string; paper: PaperData } | null> {
     for (const id of ids) {
-      try { return { id, paper: await this.kernel.getPaperData(id) }; }
+      try {
+        const paper = await this.kernel.getPaperData(id);
+        if (paper.libraryId === libraryId) return { id, paper };
+      }
       catch (error) { console.warn("[paper-manager] 无法读取重复候选", id, error); }
     }
     return null;

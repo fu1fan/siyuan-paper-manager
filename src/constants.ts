@@ -36,5 +36,4 @@ export const SOURCE = {
 } as const;
 
 export const DEFAULT_ASSETS_DIR = "/assets/";
-export const DEFAULT_DEST_PATH = "/文献库";
 export const DEFAULT_ZOTERO_PORT = 23119;

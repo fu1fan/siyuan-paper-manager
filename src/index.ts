@@ -47,6 +47,7 @@ export default class PaperManagerPlugin extends Plugin {
       this.templates,
       () => this.settings,
       resolveDuplicateDialog,
+      this.libraries,
     );
     if (canUseNode()) {
       this.translator = new TranslatorService(this.kernelClient, {

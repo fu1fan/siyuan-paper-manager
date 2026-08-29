@@ -34,15 +34,13 @@ describe("merge policy", () => {
 });
 
 describe("settings", () => {
-  it("migrates string CLI args and normalizes paths", () => {
+  it("migrates string CLI args and normalizes asset paths", () => {
     const settings = normalizeSettings({
       pdf2zhArgs: "-t 4 --config 'my file.json'",
       assetsDir: "assets/library",
-      destPath: "文献库/论文",
     });
     expect(settings.pdf2zhArgs).toEqual(["-t", "4", "--config", "my file.json"]);
     expect(settings.assetsDir).toBe("/assets/library/");
-    expect(settings.destPath).toBe("/文献库/论文");
   });
 
   it("parses escaped argument strings without shell execution", () => {
