@@ -5,7 +5,7 @@ export type ConnectorState =
 
 export type TranslationState =
   | { state: "idle" }
-  | { state: "running"; docId: string; progress?: number; message?: string }
+  | { state: "running"; docId: string; progress?: number; message?: string; queued?: number }
   | { state: "success"; docId: string; elapsedMs: number }
   | { state: "error"; docId?: string; message: string };
 

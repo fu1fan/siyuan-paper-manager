@@ -22,10 +22,19 @@ export interface TranslatorOptions {
   persist: (docId: string, paper: PaperData) => Promise<void>;
 }
 
+interface QueuedTranslation {
+  docId: string;
+  settings: PluginSettings;
+  resolve: (result: TranslationResult) => void;
+  reject: (error: Error) => void;
+}
+
 export class TranslatorService {
   private readonly requireFn: NodeRequire;
   private child: ChildProcess | null = null;
   private activeDocId: string | null = null;
+  private readonly queue: QueuedTranslation[] = [];
+  private pumping = false;
 
   constructor(private readonly kernel: KernelClient, private readonly options: TranslatorOptions) {
     const requireFn = options.requireFn ?? getNodeRequire();
@@ -34,11 +43,52 @@ export class TranslatorService {
   }
 
   isRunning(): boolean {
-    return this.child !== null;
+    return this.child !== null || this.queue.length > 0;
   }
 
-  async translate(docId: string, settings: PluginSettings): Promise<TranslationResult> {
-    if (this.child) throw new Error(`已有翻译任务正在运行：${this.activeDocId}`);
+  /** 多篇论文同时触发翻译时排队串行执行，状态栏显示当前进度与队列长度。 */
+  translate(docId: string, settings: PluginSettings): Promise<TranslationResult> {
+    if (this.activeDocId === docId || this.queue.some((task) => task.docId === docId)) {
+      return Promise.reject(new Error("该论文已在翻译队列中"));
+    }
+    return new Promise<TranslationResult>((resolve, reject) => {
+      this.queue.push({ docId, settings, resolve, reject });
+      // 让状态栏立即反映新的队列长度；沿用最近一次进度，避免清空百分比
+      if (this.activeDocId && this.lastRunning) this.emit({ state: "running", ...this.lastRunning });
+      void this.pump();
+    });
+  }
+
+  private async pump(): Promise<void> {
+    if (this.pumping) return;
+    this.pumping = true;
+    try {
+      while (this.queue.length) {
+        const task = this.queue.shift()!;
+        try {
+          task.resolve(await this.runTranslation(task.docId, task.settings));
+        } catch (error) {
+          task.reject(error instanceof Error ? error : new Error(String(error)));
+        }
+      }
+    } finally {
+      this.pumping = false;
+    }
+  }
+
+  private lastRunning: { docId: string; progress?: number; message?: string } | null = null;
+
+  private emit(state: TranslationState): void {
+    if (state.state === "running") {
+      this.lastRunning = { docId: state.docId, progress: state.progress, message: state.message };
+      this.options.onState?.({ ...state, queued: this.queue.length });
+      return;
+    }
+    this.lastRunning = null;
+    this.options.onState?.(state);
+  }
+
+  private async runTranslation(docId: string, settings: PluginSettings): Promise<TranslationResult> {
     const paper = await this.options.readPaper(docId);
     const previousTranslation = { ...paper.translation };
     const pdf = paper.attachments.find((attachment) => attachment.mimeType === "application/pdf");
@@ -63,7 +113,7 @@ export class TranslatorService {
     ];
     const startedAt = Date.now();
     this.activeDocId = docId;
-    this.options.onState?.({ state: "running", docId, message: "正在启动 pdf2zh" });
+    this.emit({ state: "running", docId, message: "正在启动 pdf2zh" });
     try {
       await this.spawn(executable, args, docId);
       const outputs = locateOutputs(outputDir, path.basename(pdfPath, path.extname(pdfPath)), fs, path);
@@ -91,7 +141,7 @@ export class TranslatorService {
         ? await this.cleanupOldTranslations(previousTranslation, paper.translation)
         : { deleted: [], warnings: [] };
       const elapsedMs = Date.now() - startedAt;
-      this.options.onState?.({ state: "success", docId, elapsedMs });
+      this.emit({ state: "success", docId, elapsedMs });
       return {
         mono,
         dual,
@@ -101,7 +151,7 @@ export class TranslatorService {
       };
     } catch (error) {
       const message = translationError(error);
-      this.options.onState?.({ state: "error", docId, message });
+      this.emit({ state: "error", docId, message });
       throw new Error(message);
     } finally {
       this.child = null;
@@ -111,6 +161,7 @@ export class TranslatorService {
   }
 
   cancel(): void {
+    for (const task of this.queue.splice(0)) task.reject(new Error("翻译已取消"));
     if (!this.child) return;
     this.child.kill("SIGTERM");
   }

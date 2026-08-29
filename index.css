@@ -215,16 +215,48 @@
 }
 
 .paper-manager-statusbar {
-  padding: 0 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: var(--b3-theme-surface);
   font-size: 12px;
-  color: var(--b3-theme-on-surface-light);
+  color: var(--b3-theme-on-surface);
   cursor: default;
   user-select: none;
   white-space: nowrap;
 }
 
-.paper-manager-statusbar[data-state="running"] {
-  color: var(--b3-theme-primary);
+.paper-manager-statusbar[hidden] {
+  display: none;
+}
+
+.paper-manager-statusbar-track {
+  width: 72px;
+  height: 4px;
+  border-radius: 2px;
+  overflow: hidden;
+  background: var(--b3-border-color);
+}
+
+.paper-manager-statusbar-fill {
+  display: block;
+  width: 0;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--b3-theme-primary);
+  transition: width .3s ease;
+}
+
+.paper-manager-statusbar-fill[data-indeterminate="true"] {
+  width: 40%;
+  animation: paper-manager-statusbar-slide 1.2s ease-in-out infinite;
+}
+
+@keyframes paper-manager-statusbar-slide {
+  0% { margin-left: -40%; }
+  100% { margin-left: 100%; }
 }
 
 .paper-manager-statusbar[data-state="error"] {
