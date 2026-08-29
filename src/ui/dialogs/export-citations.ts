@@ -1,21 +1,39 @@
 import { Dialog, showMessage } from "siyuan";
 import { CITATION_FORMAT_LABELS, exportCitations, type CitationExportFormat } from "../../services/citation-export";
-import type { LibraryService, LibraryPaperRecord } from "../../services/library-service";
+import type { LibraryService, LibraryPaperRecord, PaperLibraryInfo } from "../../services/library-service";
 import { button, escapeHtml } from "../dom";
 
-export async function openCitationExportDialog(libraryDocId: string, libraries: LibraryService): Promise<void> {
-  const library = await libraries.getLibrary(libraryDocId);
-  const records = await libraries.listPapers(libraryDocId);
+/**
+ * 导出引用对话框：任何文档都能打开，文献库在对话框内选择。
+ * preferredDocId 是当前文档：本身是文献库则预选它；是论文页则预选其所属文献库。
+ */
+export async function openCitationExportDialog(libraries: LibraryService, preferredDocId?: string): Promise<void> {
+  const all = await libraries.discoverLibraries();
+  if (!all.length) {
+    showMessage("还没有论文文献库，请先在设置中完成初始化", 5000, "error");
+    return;
+  }
+  let initialId = all[0]!.docId;
+  if (preferredDocId) {
+    if (all.some((library) => library.docId === preferredDocId)) {
+      initialId = preferredDocId;
+    } else {
+      const entry = await libraries.findPaperEntry(preferredDocId);
+      if (entry) initialId = entry.library.docId;
+    }
+  }
+
   const dialog = new Dialog({
-    title: `导出引用 · ${library.title}`,
+    title: "导出引用",
     width: "920px",
     content: `<div class="b3-dialog__content paper-manager-form paper-manager-export">
       <div class="paper-manager-export-toolbar">
+        <select class="b3-select" data-library>${all.map((library) => `<option value="${escapeHtml(library.docId)}">${escapeHtml(library.title)}</option>`).join("")}</select>
         <input class="b3-text-field" data-search placeholder="搜索标题、作者、DOI 或引用键">
-        <select class="b3-select" data-project><option value="">全部项目</option>${library.data.projects.map((project) => `<option value="${escapeHtml(project.id)}">${escapeHtml(project.name)}</option>`).join("")}</select>
+        <select class="b3-select" data-project></select>
         <select class="b3-select" data-format>${Object.entries(CITATION_FORMAT_LABELS).map(([value, label]) => `<option value="${value}">${escapeHtml(label)}</option>`).join("")}</select>
       </div>
-      <div class="paper-manager-export-projects">${library.data.projects.filter((project) => project.docId).map((project) => `<a href="siyuan://blocks/${escapeHtml(project.docId!)}">${escapeHtml(project.name)} ↗</a>`).join(" · ")}</div>
+      <div class="paper-manager-export-projects" data-projects></div>
       <div class="paper-manager-export-list" data-list></div>
       <div class="paper-manager-actions"><button type="button" class="b3-button b3-button--text" data-select-visible>选择当前结果</button><button type="button" class="b3-button b3-button--text" data-clear>清空选择</button></div>
       <textarea class="b3-text-field paper-manager-export-output" rows="14" readonly data-output></textarea>
@@ -23,14 +41,19 @@ export async function openCitationExportDialog(libraryDocId: string, libraries: 
       <div class="paper-manager-actions" data-actions></div>
     </div>`,
   });
-  const selected = new Set(records.map((record) => record.docId));
-  let visible: LibraryPaperRecord[] = records;
   const list = dialog.element.querySelector<HTMLElement>("[data-list]")!;
   const output = dialog.element.querySelector<HTMLTextAreaElement>("[data-output]")!;
   const warnings = dialog.element.querySelector<HTMLElement>("[data-warnings]")!;
   const search = dialog.element.querySelector<HTMLInputElement>("[data-search]")!;
+  const librarySelect = dialog.element.querySelector<HTMLSelectElement>("[data-library]")!;
   const project = dialog.element.querySelector<HTMLSelectElement>("[data-project]")!;
   const format = dialog.element.querySelector<HTMLSelectElement>("[data-format]")!;
+  const projectLinks = dialog.element.querySelector<HTMLElement>("[data-projects]")!;
+
+  let library: PaperLibraryInfo = all.find((candidate) => candidate.docId === initialId)!;
+  let records: LibraryPaperRecord[] = [];
+  let selected = new Set<string>();
+  let visible: LibraryPaperRecord[] = [];
 
   const refreshOutput = () => {
     const chosen = records.filter((record) => selected.has(record.docId)).map((record) => record.paper);
@@ -54,6 +77,21 @@ export async function openCitationExportDialog(libraryDocId: string, libraries: 
     };
     refreshOutput();
   };
+  const loadLibrary = async (docId: string) => {
+    list.innerHTML = "<div class=\"paper-manager-preview\">正在加载…</div>";
+    output.value = "";
+    library = await libraries.getLibrary(docId);
+    records = await libraries.listPapers(docId);
+    selected = new Set(records.map((record) => record.docId));
+    search.value = "";
+    project.innerHTML = `<option value="">全部项目</option>${library.data.projects.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}</option>`).join("")}`;
+    projectLinks.innerHTML = library.data.projects.filter((item) => item.docId).map((item) => `<a href="siyuan://blocks/${escapeHtml(item.docId!)}">${escapeHtml(item.name)} ↗</a>`).join(" · ");
+    renderList();
+  };
+  librarySelect.value = initialId;
+  librarySelect.onchange = () => void loadLibrary(librarySelect.value).catch((error) => {
+    showMessage(`文献库加载失败：${error instanceof Error ? error.message : String(error)}`, 6000, "error");
+  });
   search.oninput = renderList;
   project.onchange = renderList;
   format.onchange = refreshOutput;
@@ -78,7 +116,7 @@ export async function openCitationExportDialog(libraryDocId: string, libraries: 
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
   dialog.element.querySelector<HTMLElement>("[data-actions]")!.append(cancel, copy, download);
-  renderList();
+  await loadLibrary(initialId);
 }
 
 function safeFilename(value: string): string {

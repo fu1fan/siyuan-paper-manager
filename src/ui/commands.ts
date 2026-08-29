@@ -8,7 +8,7 @@ export interface PaperUiActions {
   importPdf: () => Promise<void>;
   translate: (docId: string) => Promise<void>;
   repair: (docId: string) => Promise<void>;
-  exportLibrary: (docId: string) => Promise<void>;
+  exportLibrary: (docId?: string) => Promise<void>;
   openSettings: () => void;
   selfCheck: () => Promise<void>;
   toggleConnector: () => Promise<void>;
@@ -29,8 +29,8 @@ export function registerPaperUi(
   });
   plugin.addCommand({
     langKey: "export-library-citations",
-    langText: "论文管理：导出当前文献库引用",
-    callback: () => { void withCurrentDoc(actions.exportLibrary); },
+    langText: "论文管理：导出文献库引用",
+    callback: () => { void run(() => actions.exportLibrary(currentDocumentId() ?? undefined)); },
   });
   plugin.addCommand({
     langKey: "refresh-paper-meta",
@@ -79,7 +79,7 @@ function openQuickMenu(event: MouseEvent, actions: PaperUiActions): void {
   menu.addItem({ icon: "iconDownload", label: "导入本地 PDF", click: () => run(actions.importPdf) });
   menu.addItem({ icon: "iconLanguage", label: "翻译当前论文", click: () => withCurrentDoc(actions.translate) });
   menu.addItem({ icon: "iconRefresh", label: "刷新当前论文元数据摘要", click: () => withCurrentDoc(actions.repair) });
-  menu.addItem({ icon: "iconUpload", label: "导出当前文献库引用", click: () => withCurrentDoc(actions.exportLibrary) });
+  menu.addItem({ icon: "iconUpload", label: "导出文献库引用", click: () => run(() => actions.exportLibrary(currentDocumentId() ?? undefined)) });
   menu.addSeparator();
   const status = actions.getStatus().connector;
   menu.addItem({

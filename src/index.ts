@@ -68,7 +68,7 @@ export default class PaperManagerPlugin extends Plugin {
       importPdf: () => openImportPdfDialog(this.kernelClient, this.processor, () => this.settings),
       translate: (docId) => this.translate(docId),
       repair: (docId) => this.repair(docId),
-      exportLibrary: (docId) => openCitationExportDialog(docId, this.libraries),
+      exportLibrary: (docId) => openCitationExportDialog(this.libraries, docId),
       openSettings: () => this.settingsPanel.open(),
       selfCheck: () => this.selfCheck(),
       toggleConnector: () => this.toggleConnector(),
