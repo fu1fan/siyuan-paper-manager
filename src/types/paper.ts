@@ -17,10 +17,15 @@ export interface PaperCanonical {
   issn?: string;
   url?: string;
   journal?: string;
+  collectionTitle?: string;
   volume?: string;
   issue?: string;
   pages?: string;
   publisher?: string;
+  publisherPlace?: string;
+  edition?: string;
+  eventTitle?: string;
+  number?: string;
   language?: string;
   tags: string[];
 }
@@ -49,19 +54,21 @@ export interface PaperTranslation {
   completedAt?: string;
 }
 
-export interface PaperDataV1 {
-  schemaVersion: 1;
+export interface PaperDataV2 {
+  schemaVersion: 2;
   canonical: PaperCanonical;
   sources: PaperSourceRecord[];
   attachments: PaperAttachment[];
   translation: PaperTranslation;
   citekey: string;
+  libraryId: string;
+  projectIds: string[];
   source: PaperSourceKind;
   importedAt: string;
   updatedAt: string;
 }
 
-export type PaperData = PaperDataV1;
+export type PaperData = PaperDataV2;
 
 export type CanonicalField = Exclude<keyof PaperCanonical, "creators" | "tags"> | "creators" | "tags";
 

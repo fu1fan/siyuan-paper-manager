@@ -9,6 +9,7 @@ import { cleanCanonical } from "./normalize";
 const FIELDS: CanonicalField[] = [
   "itemType", "title", "creators", "date", "abstract", "doi", "isbn", "issn", "url",
   "journal", "volume", "issue", "pages", "publisher", "language", "tags",
+  "collectionTitle", "publisherPlace", "edition", "eventTitle", "number",
 ];
 
 export function findCanonicalConflicts(existing: PaperCanonical, incoming: PaperCanonical): DuplicateConflict[] {
@@ -50,6 +51,8 @@ export function mergePaperData(
     sources: [...existing.sources, ...incoming.sources],
     attachments,
     translation: existing.translation,
+    libraryId: existing.libraryId,
+    projectIds: existing.projectIds,
     updatedAt: new Date().toISOString(),
   };
 }

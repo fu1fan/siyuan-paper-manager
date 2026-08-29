@@ -40,6 +40,18 @@ export function generateCitekey(canonical: PaperCanonical): string {
   return `${family}${year}${titleToken}`.toLowerCase().slice(0, 64);
 }
 
+export function uniqueCitekey(base: string, existing: Iterable<string>): string {
+  const used = new Set(Array.from(existing, (value) => value.toLocaleLowerCase()));
+  if (!used.has(base.toLocaleLowerCase())) return base;
+  for (let index = 0; index < 26; index += 1) {
+    const candidate = `${base}${String.fromCharCode(97 + index)}`;
+    if (!used.has(candidate.toLocaleLowerCase())) return candidate;
+  }
+  let suffix = 2;
+  while (used.has(`${base}${suffix}`.toLocaleLowerCase())) suffix += 1;
+  return `${base}${suffix}`;
+}
+
 export function paperDocumentTitle(canonical: PaperCanonical, citekey: string): string {
   return sanitizeDocumentName(`${citekey} - ${canonical.title || "未命名文献"}`);
 }

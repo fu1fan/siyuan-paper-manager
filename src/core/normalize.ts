@@ -21,10 +21,15 @@ export function canonicalFromRaw(raw: Record<string, unknown>): PaperCanonical {
     issn: string(raw.ISSN ?? raw.issn),
     url: safeExternalUrl(string(raw.url)),
     journal: string(raw.publicationTitle ?? raw.bookTitle ?? raw.journal),
+    collectionTitle: string(raw.series ?? raw.collectionTitle),
     volume: string(raw.volume),
     issue: string(raw.issue),
     pages: string(raw.pages),
     publisher: string(raw.publisher),
+    publisherPlace: string(raw.place ?? raw.publisherPlace),
+    edition: string(raw.edition),
+    eventTitle: string(raw.conferenceName ?? raw.eventTitle),
+    number: string(raw.number ?? raw.seriesNumber),
     language: string(raw.language),
     tags,
   });
@@ -46,10 +51,15 @@ export function cleanCanonical(input: PaperCanonical): PaperCanonical {
     issn: optionalText(input.issn, 100),
     url: safeExternalUrl(input.url),
     journal: optionalText(input.journal, 1000),
+    collectionTitle: optionalText(input.collectionTitle, 1000),
     volume: optionalText(input.volume, 100),
     issue: optionalText(input.issue, 100),
     pages: optionalText(input.pages, 100),
     publisher: optionalText(input.publisher, 1000),
+    publisherPlace: optionalText(input.publisherPlace, 1000),
+    edition: optionalText(input.edition, 100),
+    eventTitle: optionalText(input.eventTitle, 1000),
+    number: optionalText(input.number, 100),
     language: optionalText(input.language, 100),
     tags: Array.from(new Set((input.tags ?? []).map((tag) => sanitizeText(tag, 200)).filter(Boolean))),
   };
@@ -59,7 +69,7 @@ export function paperDataFromCandidate(candidate: ImportCandidate): PaperData {
   const now = new Date().toISOString();
   const canonical = cleanCanonical(candidate.canonical);
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     canonical,
     sources: [{
       source: candidate.source,
@@ -71,6 +81,8 @@ export function paperDataFromCandidate(candidate: ImportCandidate): PaperData {
     attachments: [],
     translation: {},
     citekey: generateCitekey(canonical),
+    libraryId: "",
+    projectIds: [],
     source: candidate.source,
     importedAt: now,
     updatedAt: now,

@@ -9,6 +9,8 @@ export interface PluginSettings {
   autoListen: boolean;
   notebookId: string;
   destPath: string;
+  defaultLibraryDocId: string;
+  onboardingCompleted: boolean;
   assetsDir: string;
   enableEditUI: boolean;
   enableCnki: boolean;
@@ -25,7 +27,9 @@ export const DEFAULT_SETTINGS: PluginSettings = {
   zoteroPort: DEFAULT_ZOTERO_PORT,
   autoListen: true,
   notebookId: "",
-  destPath: DEFAULT_DEST_PATH,
+    destPath: DEFAULT_DEST_PATH,
+  defaultLibraryDocId: "",
+  onboardingCompleted: false,
   assetsDir: DEFAULT_ASSETS_DIR,
   enableEditUI: true,
   enableCnki: false,
@@ -50,6 +54,8 @@ export function normalizeSettings(input: unknown): PluginSettings {
     autoListen: bool(raw.autoListen, DEFAULT_SETTINGS.autoListen),
     notebookId: string(raw.notebookId, ""),
     destPath: normalizeHPath(string(raw.destPath, DEFAULT_SETTINGS.destPath)),
+    defaultLibraryDocId: optionalString(raw.defaultLibraryDocId),
+    onboardingCompleted: bool(raw.onboardingCompleted, DEFAULT_SETTINGS.onboardingCompleted),
     assetsDir: normalizeAssetsDir(string(raw.assetsDir, DEFAULT_SETTINGS.assetsDir)),
     enableEditUI: bool(raw.enableEditUI, DEFAULT_SETTINGS.enableEditUI),
     enableCnki: bool(raw.enableCnki, DEFAULT_SETTINGS.enableCnki),
@@ -111,6 +117,10 @@ function bool(value: unknown, fallback: boolean): boolean {
 
 function string(value: unknown, fallback: string): string {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
+}
+
+function optionalString(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
 }
 
 function validPort(value: unknown): boolean {

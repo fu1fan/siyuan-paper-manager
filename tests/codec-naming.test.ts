@@ -1,5 +1,5 @@
 import { decodePaperData, encodePaperData, paperIndexAttrs } from "../src/core/codec";
-import { generateCitekey, normalizeDoi, sanitizeDocumentName, titleSimilarity } from "../src/core/naming";
+import { generateCitekey, normalizeDoi, sanitizeDocumentName, titleSimilarity, uniqueCitekey } from "../src/core/naming";
 import { ATTR } from "../src/constants";
 import { paper } from "./fixtures";
 
@@ -26,6 +26,11 @@ describe("paper codec and naming", () => {
 
   it("compares normalized multilingual titles", () => {
     expect(titleSimilarity("A Study: of Tests", "A study of tests")).toBeGreaterThan(0.95);
+  });
+
+  it("adds stable suffixes to duplicate citekeys", () => {
+    expect(uniqueCitekey("smith2026paper", ["smith2026paper", "smith2026papera"]))
+      .toBe("smith2026paperb");
   });
 
   it("keeps index attributes synchronized", () => {

@@ -1,5 +1,6 @@
 export const PLUGIN_NAME = "siyuan-paper-manager";
-export const PAPER_SCHEMA_VERSION = 1 as const;
+export const PAPER_SCHEMA_VERSION = 2 as const;
+export const LIBRARY_SCHEMA_VERSION = 1 as const;
 export const CONNECTOR_API_VERSION = 3;
 export const CONNECTOR_SESSION_TTL_MS = 30 * 60 * 1000;
 export const CONNECTOR_GRACE_MS = 2_000;
@@ -16,6 +17,11 @@ export const ATTR = {
   error: "custom-paper-error",
   section: "custom-section",
   assets: "data-assets",
+  libraryData: "custom-paper-library-data",
+  libraryId: "custom-paper-library-id",
+  libraryItemId: "custom-paper-library-item-id",
+  librarySync: "custom-paper-library-sync",
+  librarySyncError: "custom-paper-library-sync-error",
 } as const;
 
 export const SECTION = {

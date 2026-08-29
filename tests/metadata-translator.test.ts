@@ -66,7 +66,8 @@ describe.skipIf(process.platform === "win32")("translator integration", () => {
     });
     try {
       const result = await translator.translate("doc", {
-        zoteroPort: 23119, autoListen: true, notebookId: "n", destPath: "/文献库", assetsDir: "/assets/",
+        zoteroPort: 23119, autoListen: true, notebookId: "n", destPath: "/文献库",
+        defaultLibraryDocId: "library-doc", onboardingCompleted: true, assetsDir: "/assets/",
         enableEditUI: true, enableCnki: false, pdf2zhPath: executable, translateFrom: "en", translateTo: "zh",
         translateService: "google", translationDual: true, pdf2zhArgs: [], translationAssetsDir: "/assets/",
       });
