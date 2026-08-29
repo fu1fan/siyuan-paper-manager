@@ -306,6 +306,11 @@ export class KernelClient {
     if (!address) throw new Error("asset/upload 未返回资源地址");
     return normalizeAssetAddress(address, normalizedDir);
   }
+
+  async removeWorkspaceFile(path: string): Promise<void> {
+    if (!path.startsWith("/data/") || path.includes("..")) throw new Error(`拒绝删除工作空间路径：${path}`);
+    await this.postImpl("/api/file/removeFile", { path });
+  }
 }
 
 async function defaultPost<T>(endpoint: string, payload: Record<string, unknown>): Promise<T> {

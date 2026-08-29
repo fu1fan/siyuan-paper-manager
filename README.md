@@ -11,7 +11,7 @@
 - **引用导出**：支持单篇搜索或按项目导出 GB/T 7714—2015、APA 7、IEEE、BibTeX、BibLaTeX、Typst Hayagriva，以及 LaTeX/Typst 引用语法。
 - **Zotero Connector 接收**：监听 `127.0.0.1:23119`，保存条目、PDF、网页快照和其他附件。
 - **论文元数据页**：完整数据保存在 `custom-paper-data`；元数据摘要可刷新，阅读笔记区不会被自动覆盖。
-- **本地 PDF 与翻译**：提取 PDF/XMP、Crossref、Citoid 和可选 CNKI 元数据，并可调用 pdf2zh 生成 mono/dual PDF。
+- **本地 PDF 与翻译**：提取 PDF/XMP、Crossref、Citoid 和可选 CNKI 元数据，并可调用 pdf2zh 生成 mono/dual PDF；可选择在重新翻译成功后自动删除旧翻译资源。
 
 ## 系统要求
 

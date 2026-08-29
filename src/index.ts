@@ -188,11 +188,18 @@ export default class PaperManagerPlugin extends Plugin {
     if (!attrs[ATTR.data]) throw new Error("当前文档不是论文元数据页");
     const paper = await this.kernelClient.getPaperData(docId);
     if (paper.translation.mono || paper.translation.dual) {
-      const accepted = await confirmAsync("重新翻译", "当前论文已有翻译版本。重新生成会替换元数据链接，但不会删除旧资源。是否继续？");
+      const cleanup = this.settings.autoDeleteOldTranslations
+        ? "新版本及元数据保存成功后，插件会删除旧翻译资源。"
+        : "插件会替换元数据链接，但保留旧翻译资源。";
+      const accepted = await confirmAsync("重新翻译", `当前论文已有翻译版本。${cleanup}是否继续？`);
       if (!accepted) return;
     }
     const result = await this.translator.translate(docId, this.settings);
-    showMessage(`翻译完成，用时 ${(result.elapsedMs / 1000).toFixed(1)} 秒`, 6000, "info");
+    const cleaned = result.deletedOldAssets.length ? `，已删除 ${result.deletedOldAssets.length} 个旧版本` : "";
+    showMessage(`翻译完成，用时 ${(result.elapsedMs / 1000).toFixed(1)} 秒${cleaned}`, 6000, "info");
+    if (result.cleanupWarnings.length) {
+      showMessage(`新翻译已保存，但有 ${result.cleanupWarnings.length} 个旧资源删除失败`, 7000, "error");
+    }
   }
 
   private async selfCheck(): Promise<void> {

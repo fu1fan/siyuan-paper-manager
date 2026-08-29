@@ -91,8 +91,10 @@ export class SettingsPanel {
       ${textField("目标语言", "translateTo", this.draft.translateTo)}
       ${textField("翻译服务", "translateService", this.draft.translateService)}
       ${switchField("保留双语版", "translationDual", this.draft.translationDual)}
+      ${switchField("重新翻译后删除旧版本", "autoDeleteOldTranslations", this.draft.autoDeleteOldTranslations)}
       ${textareaField("额外 CLI 参数", "pdf2zhArgs", this.draft.pdf2zhArgs.join(" "))}
-      ${textField("翻译资源目录", "translationAssetsDir", this.draft.translationAssetsDir)}`;
+      ${textField("翻译资源目录", "translationAssetsDir", this.draft.translationAssetsDir)}
+      <div class="paper-manager-preview">自动删除仅在新翻译及元数据保存成功后执行；删除失败不会影响新版本。</div>`;
     root.addEventListener("input", (event) => this.capture(event));
     root.addEventListener("change", (event) => this.capture(event));
     activate("library");

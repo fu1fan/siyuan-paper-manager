@@ -11,6 +11,8 @@ export interface TranslationResult {
   mono?: string;
   dual?: string;
   elapsedMs: number;
+  deletedOldAssets: string[];
+  cleanupWarnings: string[];
 }
 
 export interface TranslatorOptions {
@@ -37,6 +39,7 @@ export class TranslatorService {
   async translate(docId: string, settings: PluginSettings): Promise<TranslationResult> {
     if (this.child) throw new Error(`已有翻译任务正在运行：${this.activeDocId}`);
     const paper = await this.kernel.getPaperData(docId);
+    const previousTranslation = { ...paper.translation };
     const pdf = paper.attachments.find((attachment) => attachment.mimeType === "application/pdf");
     if (!pdf) throw new Error("当前论文没有可翻译的 PDF 附件");
     const fs = requireNode<typeof import("node:fs")>("fs", this.requireFn);
@@ -84,9 +87,18 @@ export class TranslatorService {
       };
       paper.updatedAt = new Date().toISOString();
       await this.options.persist(docId, paper);
+      const cleanup = settings.autoDeleteOldTranslations
+        ? await this.cleanupOldTranslations(previousTranslation, paper.translation)
+        : { deleted: [], warnings: [] };
       const elapsedMs = Date.now() - startedAt;
       this.options.onState?.({ state: "success", docId, elapsedMs });
-      return { mono, dual, elapsedMs };
+      return {
+        mono,
+        dual,
+        elapsedMs,
+        deletedOldAssets: cleanup.deleted,
+        cleanupWarnings: cleanup.warnings,
+      };
     } catch (error) {
       const message = translationError(error);
       this.options.onState?.({ state: "error", docId, message });
@@ -137,6 +149,45 @@ export class TranslatorService {
       });
     });
   }
+
+  private async cleanupOldTranslations(
+    previous: PaperData["translation"],
+    current: PaperData["translation"],
+  ): Promise<{ deleted: string[]; warnings: string[] }> {
+    const currentPaths = new Set(
+      [current.mono, current.dual]
+        .filter((value): value is string => Boolean(value))
+        .map((address) => translationWorkspacePath(address)),
+    );
+    const oldAddresses = new Set([previous.mono, previous.dual].filter((value): value is string => Boolean(value)));
+    const deleted: string[] = [];
+    const warnings: string[] = [];
+    for (const address of oldAddresses) {
+      try {
+        const path = translationWorkspacePath(address);
+        if (currentPaths.has(path)) continue;
+        await this.kernel.removeWorkspaceFile(path);
+        deleted.push(address);
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        warnings.push(`${address}：${detail}`);
+        console.warn("[paper-manager] 旧翻译资源删除失败", address, error);
+      }
+    }
+    return { deleted, warnings };
+  }
+}
+
+export function translationWorkspacePath(address: string): string {
+  const clean = address.replace(/\\/g, "/").replace(/^\/+/, "").split(/[?#]/, 1)[0] ?? "";
+  const segments = clean.split("/");
+  if (!clean || segments.some((segment) => !segment || segment === "." || segment === "..")) {
+    throw new Error(`翻译资源路径不合法：${address}`);
+  }
+  if (!/-(?:mono|dual)\.pdf$/i.test(segments.at(-1) ?? "")) {
+    throw new Error(`仅删除插件生成的翻译 PDF：${address}`);
+  }
+  return `/data/${segments.join("/")}`;
 }
 
 export function parseProgress(output: string): number | undefined {

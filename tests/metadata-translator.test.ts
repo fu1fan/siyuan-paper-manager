@@ -5,7 +5,7 @@ import { createRequire } from "node:module";
 import { encodePaperData } from "../src/core/codec";
 import { KernelClient } from "../src/core/kernel";
 import { MetadataExtractor, parseCnkiHtml } from "../src/services/metadata-extractor";
-import { parseProgress, TranslatorService } from "../src/services/translator";
+import { parseProgress, translationWorkspacePath, TranslatorService } from "../src/services/translator";
 import { paper } from "./fixtures";
 
 describe("metadata extraction helpers", () => {
@@ -26,6 +26,13 @@ describe("metadata extraction helpers", () => {
     expect(parseProgress("layout 42.5%" )).toBe(42);
     expect(parseProgress("processing page 4/20")).toBeUndefined();
   });
+
+  it("only maps plugin translation PDFs to workspace deletion paths", () => {
+    expect(translationWorkspacePath("assets/translations/paper-mono.pdf")).toBe("/data/assets/translations/paper-mono.pdf");
+    expect(translationWorkspacePath("/assets/translations/paper-mono.pdf")).toBe("/data/assets/translations/paper-mono.pdf");
+    expect(() => translationWorkspacePath("../conf/conf.json")).toThrow(/路径不合法/);
+    expect(() => translationWorkspacePath("assets/original.pdf")).toThrow(/仅删除插件生成/);
+  });
 });
 
 describe.skipIf(process.platform === "win32")("translator integration", () => {
@@ -39,11 +46,19 @@ describe.skipIf(process.platform === "win32")("translator integration", () => {
     chmodSync(executable, 0o755);
     const current = paper({
       attachments: [{ title: "input.pdf", mimeType: "application/pdf", assetAddress: "assets/input.pdf", sha256: "x" }],
+      translation: { mono: "assets/old-mono.pdf", dual: "assets/old-dual.pdf" },
     });
     const uploads: string[] = [];
-    const post = async (endpoint: string) => {
+    const removals: string[] = [];
+    const events: string[] = [];
+    const post = async (endpoint: string, payload?: Record<string, unknown>) => {
       if (endpoint === "/api/attr/getBlockAttrs") return { "custom-paper-data": encodePaperData(current) };
       if (endpoint === "/api/system/getWorkspaceInfo") return { workspaceDir: root };
+      if (endpoint === "/api/file/removeFile") {
+        events.push("remove");
+        removals.push(String(payload?.path));
+        return null;
+      }
       throw new Error(endpoint);
     };
     const fakeFetch = async (_url: string | URL | Request, init?: RequestInit) => {
@@ -59,6 +74,7 @@ describe.skipIf(process.platform === "win32")("translator integration", () => {
     const translator = new TranslatorService(new KernelClient(post as any, fakeFetch as typeof fetch), {
       requireFn: createRequire(import.meta.url),
       persist: async (_docId, updated) => {
+        events.push("persist");
         persisted = true;
         expect(updated.translation.mono).toBe("assets/张2026示例论文-mono.pdf");
         expect(updated.translation.dual).toBe("assets/张2026示例论文-dual.pdf");
@@ -69,11 +85,14 @@ describe.skipIf(process.platform === "win32")("translator integration", () => {
         zoteroPort: 23119, autoListen: true,
         defaultLibraryDocId: "library-doc", onboardingCompleted: true, assetsDir: "/assets/",
         enableEditUI: true, enableCnki: false, pdf2zhPath: executable, translateFrom: "en", translateTo: "zh",
-        translateService: "google", translationDual: true, pdf2zhArgs: [], translationAssetsDir: "/assets/",
+        translateService: "google", translationDual: true, autoDeleteOldTranslations: true,
+        pdf2zhArgs: [], translationAssetsDir: "/assets/",
       });
       expect(result.mono).toContain("-mono.pdf");
       expect(uploads).toHaveLength(2);
       expect(persisted).toBe(true);
+      expect(removals).toEqual(["/data/assets/old-mono.pdf", "/data/assets/old-dual.pdf"]);
+      expect(events).toEqual(["persist", "remove", "remove"]);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

@@ -41,6 +41,11 @@ describe("settings", () => {
     });
     expect(settings.pdf2zhArgs).toEqual(["-t", "4", "--config", "my file.json"]);
     expect(settings.assetsDir).toBe("/assets/library/");
+    expect(settings.autoDeleteOldTranslations).toBe(false);
+  });
+
+  it("loads the optional old translation cleanup setting", () => {
+    expect(normalizeSettings({ autoDeleteOldTranslations: true }).autoDeleteOldTranslations).toBe(true);
   });
 
   it("parses escaped argument strings without shell execution", () => {

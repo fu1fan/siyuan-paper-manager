@@ -16,6 +16,7 @@ export interface PluginSettings {
   translateTo: string;
   translateService: string;
   translationDual: boolean;
+  autoDeleteOldTranslations: boolean;
   pdf2zhArgs: string[];
   translationAssetsDir: string;
 }
@@ -33,6 +34,7 @@ export const DEFAULT_SETTINGS: PluginSettings = {
   translateTo: "zh",
   translateService: "google",
   translationDual: true,
+  autoDeleteOldTranslations: false,
   pdf2zhArgs: [],
   translationAssetsDir: DEFAULT_ASSETS_DIR,
 };
@@ -57,6 +59,7 @@ export function normalizeSettings(input: unknown): PluginSettings {
     translateTo: string(raw.translateTo, DEFAULT_SETTINGS.translateTo),
     translateService: string(raw.translateService, DEFAULT_SETTINGS.translateService),
     translationDual: bool(raw.translationDual, DEFAULT_SETTINGS.translationDual),
+    autoDeleteOldTranslations: bool(raw.autoDeleteOldTranslations, DEFAULT_SETTINGS.autoDeleteOldTranslations),
     pdf2zhArgs: oldArgs,
     translationAssetsDir: normalizeAssetsDir(
       string(raw.translationAssetsDir ?? raw.translationOutDir, DEFAULT_SETTINGS.translationAssetsDir),
