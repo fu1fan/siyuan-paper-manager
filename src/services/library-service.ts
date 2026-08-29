@@ -289,8 +289,8 @@ export class LibraryService {
 
 export function metadataFieldValue(field: LibraryMetadataField, paper: PaperData): AttributeViewValue {
   const c = paper.canonical;
-  if (field === "tags") return selectValue(c.tags);
-  if (field === "itemType") return selectValue([c.itemType]);
+  if (field === "tags") return selectValue(c.tags, "mSelect");
+  if (field === "itemType") return selectValue([c.itemType], "select");
   if (field === "url") return { type: "url", url: { content: c.url ?? "" } };
   return textValue(metadataText(field, c, paper));
 }
@@ -321,9 +321,9 @@ function textValue(content: string): AttributeViewValue {
   return { type: "text", text: { content } };
 }
 
-function selectValue(contents: string[]): AttributeViewValue {
+function selectValue(contents: string[], type: "select" | "mSelect"): AttributeViewValue {
   return {
-    type: contents.length > 1 ? "mSelect" : "select",
+    type,
     mSelect: contents.filter(Boolean).map((content, index) => ({ content, color: String(index % 14 + 1) })),
   };
 }

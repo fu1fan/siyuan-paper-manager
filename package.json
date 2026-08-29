@@ -1,7 +1,7 @@
 {
   "name": "siyuan-paper-manager",
-  "version": "0.3.0",
-  "description": "SiYuan plugin for Zotero Connector imports, paper metadata pages, PDF metadata extraction, and pdf2zh translation",
+  "version": "0.4.0",
+  "description": "SiYuan paper libraries backed by native databases, Zotero Connector imports, citation export, PDF metadata, and pdf2zh translation",
   "type": "module",
   "private": true,
   "scripts": {

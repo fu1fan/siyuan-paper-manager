@@ -174,7 +174,7 @@ export class ConnectorServer {
         translatorsHash: "siyuan-paper-manager-v1",
         sortedTranslatorHash: "siyuan-paper-manager-v1-sorted",
       },
-      version: "SiYuan Paper Manager 0.3.0",
+      version: "SiYuan Paper Manager 0.4.0",
     });
   }
 

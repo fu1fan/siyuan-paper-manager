@@ -202,9 +202,9 @@ function librarySelector(libraries: PaperLibraryInfo[], selected: string): strin
 }
 function parseProjects(value: string, library: PaperLibraryInfo) {
   const existing = new Map(library.data.projects.map((project) => [project.name, project.id]));
-  return value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).map((line) => {
+  return value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).map((line, index) => {
     const [name = "", docId = ""] = line.split("|").map((part) => part.trim());
-    return { id: existing.get(name) ?? newNodeId(), name, docId: docId || undefined };
+    return { id: existing.get(name) ?? library.data.projects[index]?.id ?? newNodeId(), name, docId: docId || undefined };
   });
 }
 async function actionMessage(action: () => Promise<string>): Promise<void> {

@@ -129,7 +129,7 @@ export class MetadataExtractor {
     const response = await this.fetchWithRetry(url, {
       headers: {
         Accept: "application/json",
-        "User-Agent": "siyuan-paper-manager/0.3.0 (+https://github.com/fu1fan/siyuan-paper-manager)",
+        "User-Agent": "siyuan-paper-manager/0.4.0 (+https://github.com/fu1fan/siyuan-paper-manager)",
       },
     });
     return response.json();

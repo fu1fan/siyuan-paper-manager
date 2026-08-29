@@ -1,96 +1,74 @@
 # siyuan-paper-manager
 
-面向思源笔记桌面端的论文管理插件：接收 Zotero Connector 文献与附件、创建可维护的论文元数据页、导入本地 PDF 提取元数据，并调用本地 pdf2zh 生成翻译版本。
+面向思源笔记桌面端的论文管理插件：接收 Zotero Connector 文献与附件，以思源原生数据库管理多个论文文献库，编辑论文元数据、导出引用、导入本地 PDF，并调用本地 pdf2zh 生成翻译版本。
 
 ## 功能
 
-- **Zotero Connector 接收**：仅监听 `127.0.0.1:23119`，支持 `ping`、`saveItems`、网页快照、附件、会话进度等端点。
-- **论文元数据页**：完整数据保存在 `custom-paper-data`，正文分为可自动刷新的元数据超级块和永不自动覆盖的阅读笔记超级块。
-- **重复导入合并**：优先按 DOI，其次按 citekey 与标题查重；默认保留现有非空字段，附件按 SHA-256 去重。
-- **本地 PDF 导入**：读取 PDF 信息/XMP 和前三页文本，依次尝试 DOI、Crossref、Citoid；识别失败仍用文件名创建。
-- **中文检索**：实验性 CNKI 候选检索，默认关闭，多候选由用户选择。
-- **pdf2zh 翻译**：单任务队列调用本地 CLI，生成 mono/dual PDF，上传思源并自动刷新元数据区。
-- **原生模板探针**：优先尝试思源 `/api/template/render`；字段绑定失败时提示并切换内置受限模板引擎。
+- **原生数据库文献库**：每个文献库都是一个真实思源文档，内含原生数据库；数据库行绑定对应论文元数据页。
+- **多个文献库**：可新建多个库并指定默认库，Connector 与本地 PDF 始终导入默认库。
+- **可配置元数据列**：每个库独立选择作者、年份、来源、DOI、标签、摘要等投影字段；调整后从论文 base64 元数据全量重建。
+- **项目管理**：论文可属于多个项目；项目可为纯文本，也可映射到一个思源项目文档。
+- **引用导出**：支持单篇搜索或按项目导出 GB/T 7714—2015、APA 7、IEEE、BibTeX、BibLaTeX、Typst Hayagriva，以及 LaTeX/Typst 引用语法。
+- **Zotero Connector 接收**：监听 `127.0.0.1:23119`，保存条目、PDF、网页快照和其他附件。
+- **论文元数据页**：完整数据保存在 `custom-paper-data`；元数据摘要可刷新，阅读笔记区不会被自动覆盖。
+- **本地 PDF 与翻译**：提取 PDF/XMP、Crossref、Citoid 和可选 CNKI 元数据，并可调用 pdf2zh 生成 mono/dual PDF。
 
 ## 系统要求
 
-- 思源笔记 `>= 3.1.16`
-- 桌面端或桌面窗口端；移动端、浏览器端不启动 Connector 和 pdf2zh
+- 思源笔记 `>= 3.8.1`
+- 桌面端或桌面窗口端
 - Node.js 22+ 与 pnpm（仅开发时需要）
 - 可选：Python 3.11–3.12 与 [pdf2zh](https://github.com/Byaidu/PDFMathTranslate)
 
-> Zotero 桌面版与本插件默认使用同一个 `23119` 端口，接收 Connector 数据时需关闭 Zotero，或在插件设置中修改端口。
+> Zotero 桌面版默认也使用 `23119`，接收 Connector 数据时需关闭 Zotero，或在插件设置中修改端口。
 
-## 开发与构建
+## 首次初始化
 
-```bash
-pnpm install
-pnpm run check          # 类型、Lint、测试、构建与产物校验
-pnpm run dev            # Vite watch 构建
-pnpm run make-link      # 将 dist 软链到默认思源插件目录
-pnpm run package        # 生成 package.zip
-```
+1. 启用插件后，初始化向导自动打开。
+2. 选择笔记本，填写文献库名称和路径。
+3. 插件创建文献库文档、插入原生数据库并将其设为默认库。
+4. 在“插件设置 → 文献库”中可新建更多库、切换默认库、配置字段和项目。
 
-构建产物位于 `dist/`，包含 `plugin.json`、`index.js`、`index.css`、i18n、图标、README 和两份模板。
+如果暂时关闭向导，下一次启动仍会提示。未设置默认文献库时，导入操作不会创建散落的论文页。
 
-## 初次配置
-
-1. 在“设置 → 集市 → 已下载”启用“论文管理”。
-2. 打开插件设置，在“导入与接收”选择目标笔记本；插件不会静默选择第一个笔记本。
-3. 确认状态栏显示 `Zotero 23119`，然后在浏览器点击 Zotero Connector。
-4. 本地 PDF 可通过 `⌥I` 或顶栏“论文管理 → 导入本地 PDF”导入。
-
-### 命令
+## 使用
 
 | 命令 | 默认快捷键 |
 |---|---|
 | 导入本地 PDF | `⌥I` |
 | 编辑当前论文元数据 | `⌥E` |
 | 翻译当前论文 | `⌥T` |
+| 导出当前文献库引用 | 无 |
 | 环境自检 | 无 |
 
-论文页右键菜单还提供编辑、翻译，以及失败页面的“修复导入”。
+论文页右键菜单提供编辑、翻译和失败修复；文献库页面右键菜单提供引用导出。导出页面支持搜索标题、作者、DOI、citekey，按项目过滤，复制结果或下载 `.txt`、`.bib`、`.yaml`。
 
-## 数据结构
+## 数据与同步规则
 
-文档根块属性：
+论文元数据页属性：
 
-- `custom-paper-data`：base64 编码的 schema v1 JSON，包含 `canonical`、`sources[]`、`attachments[]`、`translation`、citekey 与时间戳。
+- `custom-paper-data`：base64 编码的 schema v2 JSON，是论文元数据唯一权威源。
+- `custom-paper-library-id`：所属文献库文档 ID。
+- `custom-paper-library-item-id`：最近一次解析到的数据库 item ID，仅作缓存。
+- `custom-paper-library-sync` / `-error`：数据库投影同步状态。
 - `custom-paper-citekey` / `custom-paper-doi`：查重索引。
-- `custom-paper-attachment-pdf`：原始 PDF 索引。
-- `custom-paper-translation-mono` / `custom-paper-translation-dual`：翻译资源索引。
-- `custom-paper-state`：`ready` 或 `failed`。
 
-元数据区与笔记区是两个顶层超级块，分别标记 `custom-section=meta/note`。编辑或翻译只更新 meta 超级块；note 超级块及其块 ID不参与刷新。
+文献库文档属性：
 
-## PDF 元数据策略
+- `custom-paper-library-data`：base64 编码的文献库配置，包含 AV ID、数据库块 ID、字段 ID、项目映射和时间戳。
 
-1. 读取 PDF Document Info/XMP。
-2. 从前三页文本中识别 DOI。
-3. DOI 精确查询 Crossref；失败时使用 Citoid。
-4. 没有 DOI 时用标题查询 Crossref，并按标题、年份、作者评分。
-5. 可选 CNKI 候选检索。
-6. 全部失败时，以文件名作为标题创建元数据页。
+数据库是可重建投影，不是元数据编辑入口。直接删除数据库行后，“重新同步”会根据论文页恢复；真正移除论文应删除论文元数据页。数据库块损坏或被删除时，可在设置中运行“修复数据库”。
 
-网络服务均有超时、有限重试和 429 退避；离线不会阻断 PDF 导入。第一版不包含 OCR。
-
-## pdf2zh
+## 开发与构建
 
 ```bash
-uv tool install --python 3.12 pdf2zh
-# 国内首次下载模型时可设置：
-export HF_ENDPOINT=https://hf-mirror.com
+pnpm install
+pnpm run check
+pnpm run dev
+pnpm run make-link
+pnpm run package
 ```
 
-在插件“翻译”设置中配置可执行路径、语言、翻译服务和额外参数。插件使用 `spawn(..., { shell: false })`，中间文件只写系统临时目录；成功后才上传思源。重新翻译只替换链接，不自动删除旧资源。
+构建产物位于 `dist/`。所有思源文档和数据库写入都通过 Kernel API；插件不会直接修改 `.sy` 文件或 AV 存储 JSON。
 
-## 故障排查
-
-- **端口被占用**：关闭 Zotero，或修改插件端口。
-- **没有目标笔记本**：在插件设置中明确选择笔记本。
-- **模板回退提示**：打开“环境自检”查看当前引擎；回退引擎支持字段、`if/else` 和 `range`。
-- **找不到 pdf2zh**：填写绝对路径；macOS GUI 环境也会检查 `~/.local/bin/pdf2zh`。
-- **模型下载失败**：设置 `HF_ENDPOINT=https://hf-mirror.com` 后重试。
-- **导入状态为 failed**：在论文页右键选择“修复导入”。
-
-更完整的架构、测试和发布说明见 [docs/development.md](docs/development.md)。
+更多实现与验收说明见 [docs/development.md](docs/development.md)。

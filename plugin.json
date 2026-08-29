@@ -2,21 +2,39 @@
   "name": "siyuan-paper-manager",
   "author": "fu1fan",
   "url": "https://github.com/fu1fan/siyuan-paper-manager",
-  "version": "0.3.0",
-  "minAppVersion": "3.1.16",
-  "backends": ["all"],
-  "frontends": ["desktop", "desktop-window"],
+  "version": "0.4.0",
+  "minAppVersion": "3.8.1",
+  "backends": [
+    "all"
+  ],
+  "frontends": [
+    "desktop",
+    "desktop-window"
+  ],
   "displayName": {
     "default": "Paper Manager",
     "zh-CN": "论文管理"
   },
   "description": {
-    "default": "Import Zotero Connector literature, create metadata pages, extract local PDF metadata, and translate papers with pdf2zh.",
-    "zh-CN": "接收 Zotero Connector 文献、创建元数据页、提取本地 PDF 元数据，并使用 pdf2zh 翻译论文。"
+    "default": "Manage native-database paper libraries, import Zotero/PDF metadata, export citations, and translate papers with pdf2zh.",
+    "zh-CN": "使用思源原生数据库管理论文文献库，接收 Zotero/PDF 元数据，导出引用并通过 pdf2zh 翻译论文。"
   },
   "readme": {
     "default": "README.md",
     "zh-CN": "README.md"
   },
-  "keywords": ["siyuan-plugin", "zotero", "paper", "PDF", "文献", "翻译"]
+  "keywords": [
+    "siyuan-plugin",
+    "zotero",
+    "paper",
+    "PDF",
+    "文献",
+    "翻译",
+    "database",
+    "citation",
+    "BibTeX",
+    "Typst",
+    "数据库",
+    "引用"
+  ]
 }

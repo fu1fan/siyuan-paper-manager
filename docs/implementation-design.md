@@ -1,6 +1,6 @@
 # siyuan-paper-manager 实现设计
 
-> **实现状态（0.3.0）**：四项能力、UI、测试与构建门禁已在 `codex` 分支落地。本文保留最初的研究与设计推导；实际源码以 `src/` 为准，当前架构和验证方法见 `docs/development.md`。
+> **实现状态（0.4.0）**：四项能力、UI、测试与构建门禁已在 `codex` 分支落地。本文保留最初的研究与设计推导；实际源码以 `src/` 为准，当前架构和验证方法见 `docs/development.md`。
 >
 > **模板实现修订**：运行时仍先对 `/api/template/render` 做真实数据绑定探针；若字段未解析或出现 `<no value>`，会向用户提示并切换到插件内置的受限模板引擎。两种引擎都输出单一超级块根节点，刷新时只替换 `custom-section=meta` 区域。
 
@@ -196,7 +196,7 @@ await request("/api/filetree/createDocWithMd", {
 > - `data` 必须是 **JSON 字符串**，模板内用 `{{.key}}` 或 `.action{.key}` 访问；
 > - 模板引擎支持 Go 模板 + Sprig：条件 `if`、循环 `range`、`now` 日期、`list` 等；
 > - 用 `.action{...}` 而非 `{{...}}` 避免与嵌入块语法冲突；
-> - 该接口有管理员权限校验，且需思源版本 ≥ 3.1.16（规避 renderSprig SSTI 漏洞）。
+> - 该接口有管理员权限校验，且需思源版本 ≥ 3.8.1（规避 renderSprig SSTI 漏洞）。
 > - **渲染路径是绝对路径**（含工作空间前缀），而 `createDocWithMd` 的 `path` 是仓库内相对 hpath（`/` 开头），两者不要混。
 
 ### 4.4 模板变量协议（给 Zotero item → 模板的上下文）
@@ -669,7 +669,7 @@ const { stdout, stderr } = await execFileP(settings.pdf2zhPath || "pdf2zh", opts
 2. **`window.require` 可用性**：思源桌面版（Electron）**开启 nodeIntegration，渲染进程 `window.require` 可用**，可拿 `http/fs/child_process`。**但仅限桌面端**；伺服/浏览器模式 `window.require` 为 undefined。须用 `getFrontend().includes("desktop")` + `if(window.require)` 检测并仅桌面端运行（见能力1 环境前提）。若实测因思源设置/版本受限，回退 `siyuan-background`/`siyuan-plugin-backend` 独立进程方案。
 3. **模板 `render` 需要绝对路径**：已确认用官方内核 API `POST /api/system/getWorkspaceInfo`（返回 `data.workspaceDir`，需管理员 Token），再拼 `/data/plugins/{插件名}/templates/xxx.md`。注意该 API 需管理员权限，前端插件需带 Token 调用。
 4. **附件子目录 bug**（issue #7454）：`/api/asset/upload` 用子文件夹时返回地址不含子文件夹名，需代码拼接。
-5. **版本安全**：思源 ≥ 3.1.16，规避 renderSprig / asset upload 的历史漏洞。
+5. **版本安全**：思源 ≥ 3.8.1，规避 renderSprig / asset upload 的历史漏洞。
 6. **PDF 文本提取依赖**：直接导入 PDF 需要从 PDF 提取前几页文本，需引入 PDF 解析库（`pdf-parse`/`pdfjs-dist`）；纯扫描/图片型 PDF 无文字层，提取会失败，需提示用户手动或改用 Connector。
 7. **知网反爬**：若实现中文知网检索（茉莉花式），无官方 API、依赖浏览器模拟 + cookie 处理，易受知网前端改版影响，不建议放入第一版核心路径。
 8. **`setBlockAttrs` 无属性变更事件**：Issue #17179 —— 修改块属性不会触发 `savedoc`。**但这不影响本插件**：因隐藏字段唯一修改入口是插件 UI，改动必经过插件，插件主动刷新模板区即可（见 4.7(2)）。仅当未来允许用户直接在思源面板改属性时才需兜底。
