@@ -71,6 +71,33 @@
   margin-top: 8px;
 }
 
+.paper-manager-metadata-editor {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.paper-manager-form-section {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--b3-border-color);
+  border-radius: var(--b3-border-radius);
+}
+
+.paper-manager-form-section h3 {
+  margin: 0 0 10px;
+}
+
+.paper-manager-metadata-editor > .paper-manager-actions {
+  grid-column: 1 / -1;
+}
+
+@media (max-width: 760px) {
+  .paper-manager-metadata-editor {
+    grid-template-columns: 1fr;
+  }
+}
+
 .paper-manager-conflicts {
   max-height: 300px;
   overflow: auto;

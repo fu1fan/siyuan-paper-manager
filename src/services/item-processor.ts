@@ -76,10 +76,18 @@ export class ItemProcessor {
     }
   }
 
-  async updateCanonical(docId: string, canonical: PaperCanonical, overwriteFields?: CanonicalField[]): Promise<void> {
+  async updateCanonical(
+    docId: string,
+    canonical: PaperCanonical,
+    overwriteFields?: CanonicalField[],
+    requestedCitekey?: string,
+    projectIds?: string[],
+  ): Promise<void> {
     const paper = await this.kernel.getPaperData(docId);
     paper.canonical = canonical;
-    paper.citekey = paper.citekey || generateCitekey(canonical);
+    const citekeyBase = requestedCitekey?.trim() || paper.citekey || generateCitekey(canonical);
+    paper.citekey = uniqueCitekey(citekeyBase, await this.libraries.citekeys(paper.libraryId, docId));
+    if (projectIds) paper.projectIds = Array.from(new Set(projectIds));
     paper.sources.push(manualSource({
       action: "edit-metadata",
       fields: overwriteFields ?? Object.keys(canonical),
@@ -87,6 +95,7 @@ export class ItemProcessor {
     }));
     paper.updatedAt = new Date().toISOString();
     await this.persistAndRefresh(docId, paper);
+    await this.kernel.renameDocument(docId, paperDocumentTitle(canonical, paper.citekey));
   }
 
   async repair(docId: string): Promise<void> {
