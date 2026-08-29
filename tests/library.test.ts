@@ -1,8 +1,10 @@
-import { LibraryService, metadataFieldValue } from "../src/services/library-service";
+import { LibraryService, canonicalFromRow, metadataFieldValue } from "../src/services/library-service";
 import { ATTR } from "../src/constants";
 import { decodeLibraryData, encodeLibraryData } from "../src/core/codec";
 import type { KernelClient } from "../src/core/kernel";
 import {
+  LIBRARY_DATABASE_FIELD_LABELS,
+  LIBRARY_FIELD_LABELS,
   LIBRARY_METADATA_FIELDS,
   type PaperLibraryData,
 } from "../src/types/library";
@@ -28,8 +30,19 @@ describe("library database projection", () => {
     const value = metadataFieldValue("authors", paper());
     expect(value.text?.content).toBe("张, 三");
     expect(metadataFieldValue("tags", paper()).mSelect?.map((item) => item.content)).toEqual(["测试", "paper"]);
+    expect(metadataFieldValue("title", paper()).text?.content).toBe(paper().canonical.title);
     expect(metadataFieldValue("url", paper({ canonical: { ...paper().canonical, url: "https://example.com" } })).url?.content)
       .toBe("https://example.com");
+  });
+
+  it("prefers the title column over the block column content", () => {
+    const row = { id: "item", cells: [
+      { value: { block: { id: "doc", content: "tang2026wikiskill" } } },
+      { value: { keyID: "title-key", text: { content: "真实标题" } } },
+    ] };
+    expect(canonicalFromRow(fullLibraryData(), row).title).toBe("真实标题");
+    // 旧行没有标题列内容时回退到块列
+    expect(canonicalFromRow(fullLibraryData(), { id: "item", cells: [row.cells[0]!] }).title).toBe("tang2026wikiskill");
   });
 
   it("creates the bound row and writes every metadata cell on import", async () => {
@@ -239,6 +252,46 @@ describe("library database projection", () => {
     } as unknown as KernelClient;
     const service = new LibraryService(fake);
     await expect(service.requirePaperEntry("paper-doc")).rejects.toThrow(/还没有论文文献库/);
+  });
+
+  it("backfills empty title cells from the paper's first heading on sync", async () => {
+    const libraryData = fullLibraryData();
+    const keyValues = [
+      { key: { id: "block-key", name: "文档", type: "block" } },
+      { key: { id: "project-key", name: "所属项目", type: "mSelect" } },
+      ...Object.entries(LIBRARY_DATABASE_FIELD_LABELS).map(([field, name]) => ({
+        key: { id: `${field}-key`, name, type: field === "addedAt" ? "created" : "select" },
+      })),
+      ...Object.entries(LIBRARY_FIELD_LABELS).map(([field, name]) => ({ key: { id: `${field}-key`, name, type: "text" } })),
+    ];
+    const cells: Array<{ keyID: string; content: unknown }> = [];
+    const fake = {
+      getBlockAttrs: async () => ({ [ATTR.libraryData]: encodeLibraryData(libraryData) }),
+      query: async (stmt: string) => stmt.includes("subtype = 'h1'")
+        ? [{ root_id: "paper-doc", content: "论文页的真实标题" }]
+        : [{ content: "库", hpath: "/库", box: "box" }],
+      listRowsByAttribute: async (name: string) => name === ATTR.libraryId
+        ? [{ id: "paper-doc", content: "tang2026wikiskill" }]
+        : [],
+      getAttributeView: async () => ({ av: { id: "av", name: "库", keyValues } }),
+      renderAttributeView: async () => ({ id: "av", name: "库", viewID: "view", viewType: "table", view: {
+        rowCount: 1,
+        rows: [{ id: "item-1", cells: [
+          { value: { block: { id: "paper-doc", content: "tang2026wikiskill" } } },
+          { value: { keyID: "title-key", text: { content: "" } } },
+        ] }],
+      } }),
+      setAttributeViewCell: async (_avId: string, keyID: string, _itemID: string, value: { text?: { content?: string } }) => {
+        cells.push({ keyID, content: value.text?.content });
+      },
+      setAttributeViewSelectOptions: async () => {},
+      removeAttributeViewBlocks: async () => {},
+    } as unknown as KernelClient;
+
+    const result = await new LibraryService(fake).syncLibrary("library-doc");
+
+    expect(result.papers).toBe(1);
+    expect(cells).toEqual([{ keyID: "title-key", content: "论文页的真实标题" }]);
   });
 
 });

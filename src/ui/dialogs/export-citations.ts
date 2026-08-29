@@ -25,25 +25,37 @@ export async function openCitationExportDialog(libraries: LibraryService, prefer
 
   const dialog = new Dialog({
     title: "导出引用",
-    width: "920px",
+    width: "960px",
     content: `<div class="b3-dialog__content paper-manager-form paper-manager-export">
       <div class="paper-manager-export-toolbar">
-        <select class="b3-select" data-library>${all.map((library) => `<option value="${escapeHtml(library.docId)}">${escapeHtml(library.title)}</option>`).join("")}</select>
+        <select class="b3-select" data-library title="文献库">${all.map((library) => `<option value="${escapeHtml(library.docId)}">${escapeHtml(library.title)}</option>`).join("")}</select>
         <input class="b3-text-field" data-search placeholder="搜索标题、作者、DOI 或引用键">
         <select class="b3-select" data-project></select>
         <select class="b3-select" data-format>${Object.entries(CITATION_FORMAT_LABELS).map(([value, label]) => `<option value="${value}">${escapeHtml(label)}</option>`).join("")}</select>
       </div>
       <div class="paper-manager-export-projects" data-projects></div>
-      <div class="paper-manager-export-list" data-list></div>
-      <div class="paper-manager-actions"><button type="button" class="b3-button b3-button--text" data-select-visible>选择当前结果</button><button type="button" class="b3-button b3-button--text" data-clear>清空选择</button></div>
-      <textarea class="b3-text-field paper-manager-export-output" rows="14" readonly data-output></textarea>
-      <div class="paper-manager-preview" data-warnings></div>
-      <div class="paper-manager-actions" data-actions></div>
+      <div class="paper-manager-export-body">
+        <div class="paper-manager-export-side">
+          <div class="paper-manager-export-side-bar">
+            <span data-count></span>
+            <span class="paper-manager-export-side-actions">
+              <button type="button" class="b3-button b3-button--text" data-select-visible>选择当前结果</button><button type="button" class="b3-button b3-button--text" data-clear>清空</button>
+            </span>
+          </div>
+          <div class="paper-manager-export-list" data-list></div>
+        </div>
+        <textarea class="b3-text-field paper-manager-export-output" readonly data-output></textarea>
+      </div>
+      <div class="paper-manager-export-footer">
+        <span class="paper-manager-preview" data-warnings></span>
+        <span class="paper-manager-export-footer-actions" data-actions></span>
+      </div>
     </div>`,
   });
   const list = dialog.element.querySelector<HTMLElement>("[data-list]")!;
   const output = dialog.element.querySelector<HTMLTextAreaElement>("[data-output]")!;
   const warnings = dialog.element.querySelector<HTMLElement>("[data-warnings]")!;
+  const count = dialog.element.querySelector<HTMLElement>("[data-count]")!;
   const search = dialog.element.querySelector<HTMLInputElement>("[data-search]")!;
   const librarySelect = dialog.element.querySelector<HTMLSelectElement>("[data-library]")!;
   const project = dialog.element.querySelector<HTMLSelectElement>("[data-project]")!;
@@ -70,11 +82,12 @@ export async function openCitationExportDialog(libraries: LibraryService, prefer
       const text = [c.title, c.doi, record.paper.citekey, ...c.creators.map((creator) => `${creator.family} ${creator.given}`)].join(" ").toLocaleLowerCase();
       return (!query || text.includes(query)) && (!project.value || record.projectIds.includes(project.value));
     });
-    list.innerHTML = visible.length ? visible.map((record) => `<label class="paper-manager-export-row"><input type="checkbox" data-doc-id="${escapeHtml(record.docId)}" ${selected.has(record.docId) ? "checked" : ""}><span><strong>${escapeHtml(record.paper.canonical.title)}</strong><small>${escapeHtml(record.paper.citekey)} · ${escapeHtml(record.paper.canonical.date ?? "无年份")}</small></span></label>`).join("") : "<div class=\"paper-manager-preview\">没有匹配的论文。</div>";
+    list.innerHTML = visible.length ? visible.map((record) => `<label class="paper-manager-export-row"><input type="checkbox" data-doc-id="${escapeHtml(record.docId)}" ${selected.has(record.docId) ? "checked" : ""}><span><strong>${escapeHtml(record.paper.canonical.title || record.paper.citekey)}</strong><small>${escapeHtml(record.paper.citekey)} · ${escapeHtml(record.paper.canonical.date ?? "无年份")}</small></span></label>`).join("") : "<div class=\"paper-manager-preview paper-manager-export-empty\">没有匹配的论文。</div>";
     for (const checkbox of list.querySelectorAll<HTMLInputElement>("[data-doc-id]")) checkbox.onchange = () => {
       if (checkbox.checked) selected.add(checkbox.dataset.docId!); else selected.delete(checkbox.dataset.docId!);
       refreshOutput();
     };
+    count.textContent = `已选 ${selected.size} / ${records.length} 篇`;
     refreshOutput();
   };
   const loadLibrary = async (docId: string) => {

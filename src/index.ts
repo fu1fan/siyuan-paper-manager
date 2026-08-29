@@ -111,6 +111,15 @@ export default class PaperManagerPlugin extends Plugin {
         }
         return;
       }
+      // 已有文献库但默认库指针丢失（如设置被旧草稿覆盖）：自动认领第一个，不再打扰
+      if (libraries.length) {
+        await this.updateSettings({
+          ...this.settings,
+          defaultLibraryDocId: libraries[0]!.docId,
+          onboardingCompleted: true,
+        });
+        return;
+      }
       await openOnboardingDialog(this.kernelClient, this.libraries, async (library) => {
         await this.updateSettings({ ...this.settings, defaultLibraryDocId: library.docId, onboardingCompleted: true });
       });

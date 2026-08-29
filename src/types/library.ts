@@ -1,4 +1,5 @@
 export type LibraryMetadataField =
+  | "title"
   | "authors"
   | "year"
   | "journal"
@@ -44,12 +45,13 @@ export interface PaperLibraryDataV3 {
 export type PaperLibraryData = PaperLibraryDataV3;
 
 export const LIBRARY_METADATA_FIELDS: LibraryMetadataField[] = [
-  "authors", "year", "journal", "itemType", "doi", "citekey", "tags",
+  "title", "authors", "year", "journal", "itemType", "doi", "citekey", "tags",
   "abstract", "publisher", "publisherPlace", "volume", "issue", "pages",
   "language", "isbn", "issn", "url",
 ];
 
 export const LIBRARY_FIELD_LABELS: Record<LibraryMetadataField, string> = {
+  title: "标题",
   authors: "作者",
   year: "年份",
   journal: "来源",

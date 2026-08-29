@@ -329,6 +329,8 @@ export class LibraryService {
 
   async syncLibrary(libraryDocId: string): Promise<LibrarySyncResult> {
     const library = await this.getLibrary(libraryDocId);
+    try { await this.ensureSchemaFields(library); }
+    catch (error) { console.warn("[paper-manager] 同步前对齐数据库字段失败", libraryDocId, error); }
     const memberRows = await this.kernel.listRowsByAttribute(ATTR.libraryId, libraryDocId);
     const members = new Map<string, string>();
     for (const member of memberRows) {
@@ -350,7 +352,41 @@ export class LibraryService {
         restoredRows += 1;
       } catch (error) { failed.push({ docId, message: message(error) }); }
     }
+    await this.backfillTitles(library);
     return { papers: members.size, restoredRows, removedRows: stale.length, failed };
+  }
+
+  /** 标题列后补：旧行的标题单元格为空时，用论文页首个 H1 回填。 */
+  private async backfillTitles(library: PaperLibraryInfo): Promise<void> {
+    const keyId = library.data.fieldKeyIds.title;
+    if (!keyId) return;
+    let pending: AttributeViewRow[] = [];
+    try {
+      const rows = await this.allRows(library.data);
+      pending = rows.filter((row) => boundBlockId(row) && !fieldText(library.data, row, "title"));
+    } catch (error) {
+      console.warn("[paper-manager] 标题回填扫描失败", error);
+      return;
+    }
+    if (!pending.length) return;
+    const docIds = pending.map((row) => boundBlockId(row));
+    const headings = await this.kernel.query(
+      `SELECT root_id, content FROM blocks WHERE type = 'h' AND subtype = 'h1' AND root_id IN (${docIds.map((id) => `'${sql(id)}'`).join(", ")})`,
+    );
+    const titleByDoc = new Map<string, string>();
+    for (const heading of headings) {
+      const rootId = String(heading.root_id ?? "");
+      if (rootId && !titleByDoc.has(rootId)) titleByDoc.set(rootId, String(heading.content ?? "").trim());
+    }
+    for (const row of pending) {
+      const title = titleByDoc.get(boundBlockId(row));
+      if (!title) continue;
+      try {
+        await this.kernel.setAttributeViewCell(library.data.avId, keyId, row.id, textValue(title));
+      } catch (error) {
+        console.warn("[paper-manager] 标题回填失败", row.id, error);
+      }
+    }
   }
 
   async repairLibrary(libraryDocId: string): Promise<LibrarySyncResult> {
@@ -546,6 +582,7 @@ export function metadataFieldValue(field: LibraryMetadataField, paper: PaperData
 
 function metadataText(field: LibraryMetadataField, c: PaperCanonical, paper: PaperData): string {
   switch (field) {
+    case "title": return c.title;
     case "authors": return c.creators.filter((creator) => creator.creatorType === "author").map(creatorName).join("；");
     case "year": return c.date?.match(/\d{4}/)?.[0] ?? c.date ?? "";
     case "journal": return c.journal ?? "";
@@ -596,7 +633,8 @@ export function canonicalFromRow(data: PaperLibraryData, row: AttributeViewRow):
   const tags = fieldSelects(data, row, "tags");
   return {
     itemType: fieldSelects(data, row, "itemType")[0] || text("itemType") || "journalArticle",
-    title: row.cells.find((cell) => cell.value.block?.content)?.value.block?.content ?? "",
+    // 文档名即 citekey，块列内容不再是标题；标题列优先，兼容旧行回退块列
+    title: text("title") || row.cells.find((cell) => cell.value.block?.content)?.value.block?.content || "",
     creators,
     date: text("year") || undefined,
     abstract: text("abstract") || undefined,
