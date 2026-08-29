@@ -45,7 +45,7 @@ export async function openCitationExportDialog(libraryDocId: string, libraries: 
     visible = records.filter((record) => {
       const c = record.paper.canonical;
       const text = [c.title, c.doi, record.paper.citekey, ...c.creators.map((creator) => `${creator.family} ${creator.given}`)].join(" ").toLocaleLowerCase();
-      return (!query || text.includes(query)) && (!project.value || record.paper.projectIds.includes(project.value));
+      return (!query || text.includes(query)) && (!project.value || record.projectIds.includes(project.value));
     });
     list.innerHTML = visible.length ? visible.map((record) => `<label class="paper-manager-export-row"><input type="checkbox" data-doc-id="${escapeHtml(record.docId)}" ${selected.has(record.docId) ? "checked" : ""}><span><strong>${escapeHtml(record.paper.canonical.title)}</strong><small>${escapeHtml(record.paper.citekey)} · ${escapeHtml(record.paper.canonical.date ?? "无年份")}</small></span></label>`).join("") : "<div class=\"paper-manager-preview\">没有匹配的论文。</div>";
     for (const checkbox of list.querySelectorAll<HTMLInputElement>("[data-doc-id]")) checkbox.onchange = () => {

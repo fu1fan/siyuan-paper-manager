@@ -3,7 +3,7 @@ import type { PaperData } from "../src/types/paper";
 export function paper(overrides: Partial<PaperData> = {}): PaperData {
   const now = "2026-08-28T00:00:00.000Z";
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     canonical: {
       itemType: "journalArticle",
       title: "示例论文 Example Paper",
@@ -19,7 +19,6 @@ export function paper(overrides: Partial<PaperData> = {}): PaperData {
     translation: {},
     citekey: "张2026示例论文",
     libraryId: "library-doc",
-    projectIds: [],
     source: "pdf-import",
     importedAt: now,
     updatedAt: now,

@@ -1,8 +1,15 @@
 import { Setting, showMessage } from "siyuan";
 import { newNodeId } from "../core/node-id";
-import type { KernelClient } from "../core/kernel";
+import type { DocumentSearchResult, KernelClient } from "../core/kernel";
 import type { LibraryService, PaperLibraryInfo } from "../services/library-service";
-import { LIBRARY_FIELD_LABELS, type LibraryMetadataField } from "../types/library";
+import {
+  FIXED_COLUMN_HINTS,
+  columnLabel,
+  isFixedColumn,
+  type LibraryColumn,
+  type LibraryMetadataField,
+  type LibraryProject,
+} from "../types/library";
 import type { PluginSettings } from "../types/settings";
 import { normalizeSettings, splitArgString } from "../types/settings";
 import { escapeHtml } from "./dom";
@@ -144,18 +151,46 @@ export class SettingsPanel {
     if (!editor) return;
     const selected = libraries.find((library) => library.docId === this.draft.defaultLibraryDocId) ?? libraries[0];
     if (!selected) { editor.innerHTML = ""; return; }
+    const projectDocumentLabels = new Map<string, string>();
+    await Promise.all(selected.data.projects.map(async (project) => {
+      if (!project.docId) return;
+      try {
+        const doc = await this.kernel.getDocumentInfo(project.docId);
+        if (doc) projectDocumentLabels.set(project.docId, documentLabel(doc));
+      } catch { /* keep the stored ID visible */ }
+    }));
     editor.innerHTML = `<hr class="b3-hr"><h3>${escapeHtml(selected.title)}</h3>
       <div class="paper-manager-preview">${escapeHtml(selected.hPath)} · 数据库 ${escapeHtml(selected.data.avId)}</div>
-      <div class="paper-manager-field paper-manager-field--column"><span>投影到数据库的元数据</span><div class="paper-manager-checkboxes">${
-        Object.entries(LIBRARY_FIELD_LABELS).map(([field, label]) => `<label><input type="checkbox" data-library-field="${field}" ${selected.data.selectedFields.includes(field as LibraryMetadataField) ? "checked" : ""}> ${escapeHtml(label)}</label>`).join("")
-      }</div></div>
-      <label class="paper-manager-field paper-manager-field--column"><span>项目（每行：项目名 | 可选项目文档 ID）</span><textarea class="b3-text-field" rows="5" data-projects>${escapeHtml(selected.data.projects.map((project) => `${project.name}${project.docId ? ` | ${project.docId}` : ""}`).join("\n"))}</textarea></label>
+      <section class="paper-manager-library-section"><h4>数据库字段</h4>
+        <p class="b3-label__text">勾选需要展示的字段，拖动左侧手柄或使用上下按钮调整数据库列顺序。</p>
+        <div class="paper-manager-field-list" data-field-list>${selected.data.columnOrder.map((column) => columnRowHtml(
+          column, selected.data.selectedFields,
+        )).join("")}</div>
+      </section>
+      <section class="paper-manager-library-section"><h4>项目定义</h4>
+        <p class="b3-label__text">项目名称用于数据库多选；可搜索并绑定一个思源项目文档。</p>
+        <div class="paper-manager-project-list" data-project-list>${selected.data.projects.map((project) => projectRowHtml(
+          project, project.docId ? projectDocumentLabels.get(project.docId) ?? project.docId : "",
+        )).join("")}</div>
+        <button type="button" class="b3-button b3-button--outline" data-project-add>添加项目</button>
+      </section>
       <div class="paper-manager-actions">
         <button type="button" class="b3-button b3-button--text" data-sync>重新同步</button>
         <button type="button" class="b3-button b3-button--text" data-repair>修复数据库</button>
         <button type="button" class="b3-button b3-button--text" data-project-save>保存项目</button>
         <button type="button" class="b3-button b3-button--primary" data-field-save>应用字段并重建</button>
       </div>`;
+    bindFieldOrdering(editor.querySelector<HTMLElement>("[data-field-list]")!);
+    const projectList = editor.querySelector<HTMLElement>("[data-project-list]")!;
+    for (const row of projectList.querySelectorAll<HTMLElement>("[data-project-row]")) bindProjectRow(row, this.kernel);
+    editor.querySelector<HTMLButtonElement>("[data-project-add]")!.onclick = () => {
+      const wrapper = document.createElement("div");
+      wrapper.innerHTML = projectRowHtml({ id: newNodeId(), name: "" }, "");
+      const row = wrapper.firstElementChild as HTMLElement;
+      projectList.append(row);
+      bindProjectRow(row, this.kernel);
+      row.querySelector<HTMLInputElement>("[data-project-name]")?.focus();
+    };
     editor.querySelector<HTMLButtonElement>("[data-sync]")!.onclick = () => void actionMessage(async () => {
       const result = await this.libraries.syncLibrary(selected.docId);
       return `同步完成：${result.papers} 篇，恢复 ${result.restoredRows} 行，移除 ${result.removedRows} 行，失败 ${result.failed.length} 篇`;
@@ -165,12 +200,16 @@ export class SettingsPanel {
       return `修复完成：同步 ${result.papers} 篇论文`;
     });
     editor.querySelector<HTMLButtonElement>("[data-project-save]")!.onclick = () => void actionMessage(async () => {
-      await this.libraries.updateProjects(selected.docId, parseProjects(editor.querySelector<HTMLTextAreaElement>("[data-projects]")!.value, selected));
-      return "项目设置已保存并同步";
+      await this.libraries.updateProjects(selected.docId, collectProjects(projectList));
+      return "项目定义已保存";
     });
     editor.querySelector<HTMLButtonElement>("[data-field-save]")!.onclick = () => void actionMessage(async () => {
-      const fields = Array.from(editor.querySelectorAll<HTMLInputElement>("[data-library-field]:checked"), (input) => input.dataset.libraryField as LibraryMetadataField);
-      const result = await this.libraries.applySelectedFields(selected.docId, fields);
+      const rows = Array.from(editor.querySelectorAll<HTMLElement>("[data-field-row]"));
+      const order = rows.map((row) => row.dataset.column as LibraryColumn);
+      const fields = rows
+        .filter((row) => !row.dataset.fixed && row.querySelector<HTMLInputElement>("[data-library-field]")?.checked)
+        .map((row) => row.dataset.column as LibraryMetadataField);
+      const result = await this.libraries.applySelectedFields(selected.docId, fields, order);
       return `字段已应用并重建 ${result.papers} 篇论文`;
     });
   }
@@ -202,12 +241,127 @@ function librarySelector(libraries: PaperLibraryInfo[], selected: string): strin
   return `<label class="paper-manager-field"><span>默认文献库</span><select class="b3-select" data-default-library>${libraries.map((library) =>
     `<option value="${escapeHtml(library.docId)}" ${library.docId === selected ? "selected" : ""}>${escapeHtml(library.title)}</option>`).join("")}</select></label>`;
 }
-function parseProjects(value: string, library: PaperLibraryInfo) {
-  const existing = new Map(library.data.projects.map((project) => [project.name, project.id]));
-  return value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).map((line, index) => {
-    const [name = "", docId = ""] = line.split("|").map((part) => part.trim());
-    return { id: existing.get(name) ?? library.data.projects[index]?.id ?? newNodeId(), name, docId: docId || undefined };
-  });
+
+function columnRowHtml(column: LibraryColumn, selectedFields: LibraryMetadataField[]): string {
+  const fixed = isFixedColumn(column);
+  const checked = fixed || selectedFields.includes(column as LibraryMetadataField);
+  const hint = fixed ? ` <small class="paper-manager-field-hint">${escapeHtml(FIXED_COLUMN_HINTS[column])}</small>` : "";
+  return `<div class="paper-manager-field-row" draggable="true" data-field-row data-column="${column}"${fixed ? ` data-fixed="true"` : ""}>
+    <span class="paper-manager-drag-handle" title="上下拖动排序" aria-hidden="true">⋮⋮</span>
+    <input type="checkbox" data-library-field="${column}" ${checked ? "checked" : ""} ${fixed ? "disabled" : ""} aria-label="${escapeHtml(columnLabel(column))}">
+    <span class="paper-manager-field-label">${escapeHtml(columnLabel(column))}${hint}</span>
+    <button type="button" class="b3-button b3-button--text" data-move-up title="上移">↑</button>
+    <button type="button" class="b3-button b3-button--text" data-move-down title="下移">↓</button>
+  </div>`;
+}
+
+function bindFieldOrdering(list: HTMLElement): void {
+  let dragged: HTMLElement | null = null;
+  for (const row of list.querySelectorAll<HTMLElement>("[data-field-row]")) {
+    row.addEventListener("dragstart", (event) => {
+      dragged = row;
+      row.dataset.dragging = "true";
+      event.dataTransfer?.setData("text/plain", row.dataset.column ?? "");
+      if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+    });
+    row.addEventListener("dragend", () => {
+      delete row.dataset.dragging;
+      dragged = null;
+    });
+    row.addEventListener("dragover", (event) => {
+      if (!dragged || dragged === row) return;
+      event.preventDefault();
+      const rect = row.getBoundingClientRect();
+      list.insertBefore(dragged, event.clientY < rect.top + rect.height / 2 ? row : row.nextSibling);
+    });
+    row.querySelector<HTMLButtonElement>("[data-move-up]")!.onclick = () => {
+      const previous = row.previousElementSibling;
+      if (previous) list.insertBefore(row, previous);
+    };
+    row.querySelector<HTMLButtonElement>("[data-move-down]")!.onclick = () => {
+      const next = row.nextElementSibling;
+      if (next) list.insertBefore(next, row);
+    };
+  }
+}
+
+function projectRowHtml(project: LibraryProject, document: string): string {
+  return `<div class="paper-manager-project-row" data-project-row data-project-id="${escapeHtml(project.id)}">
+    <input class="b3-text-field" data-project-name placeholder="项目名称" value="${escapeHtml(project.name)}">
+    <div class="paper-manager-project-document">
+      <input class="b3-text-field" data-project-search autocomplete="off" placeholder="搜索并绑定项目文档（可选）" value="${escapeHtml(document)}">
+      <input type="hidden" data-project-doc-id value="${escapeHtml(project.docId ?? "")}">
+      <div class="paper-manager-document-results" data-document-results hidden></div>
+    </div>
+    <a class="b3-button b3-button--text" data-project-open ${project.docId ? `href="siyuan://blocks/${escapeHtml(project.docId)}"` : "hidden"} title="打开绑定文档">↗</a>
+    <button type="button" class="b3-button b3-button--text" data-project-clear title="清除文档绑定">清除</button>
+    <button type="button" class="b3-button b3-button--text" data-project-remove title="删除项目">删除</button>
+  </div>`;
+}
+
+function bindProjectRow(row: HTMLElement, kernel: KernelClient): void {
+  const search = row.querySelector<HTMLInputElement>("[data-project-search]")!;
+  const docId = row.querySelector<HTMLInputElement>("[data-project-doc-id]")!;
+  const results = row.querySelector<HTMLElement>("[data-document-results]")!;
+  const open = row.querySelector<HTMLAnchorElement>("[data-project-open]")!;
+  let request = 0;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const choose = (document: DocumentSearchResult) => {
+    search.value = documentLabel(document);
+    docId.value = document.id;
+    open.href = `siyuan://blocks/${document.id}`;
+    open.hidden = false;
+    results.hidden = true;
+  };
+  search.oninput = () => {
+    docId.value = "";
+    open.hidden = true;
+    if (timer) clearTimeout(timer);
+    const keyword = search.value.trim();
+    if (!keyword) { results.hidden = true; results.innerHTML = ""; return; }
+    const current = ++request;
+    timer = setTimeout(() => { void (async () => {
+      try {
+        const documents = await kernel.searchDocuments(keyword, 12);
+        if (current !== request) return;
+        results.innerHTML = documents.length
+          ? documents.map((document) => `<button type="button" data-document-id="${escapeHtml(document.id)}"><strong>${escapeHtml(document.title)}</strong><small>${escapeHtml(document.hPath)}</small></button>`).join("")
+          : "<span>没有匹配的文档</span>";
+        results.hidden = false;
+        for (const button of results.querySelectorAll<HTMLButtonElement>("[data-document-id]")) {
+          button.onclick = () => {
+            const document = documents.find((candidate) => candidate.id === button.dataset.documentId);
+            if (document) choose(document);
+          };
+        }
+      } catch (error) {
+        if (current !== request) return;
+        results.textContent = `搜索失败：${message(error)}`;
+        results.hidden = false;
+      }
+    })(); }, 220);
+  };
+  search.onfocus = () => { if (results.childElementCount || results.textContent) results.hidden = false; };
+  search.onblur = () => setTimeout(() => { results.hidden = true; }, 180);
+  row.querySelector<HTMLButtonElement>("[data-project-clear]")!.onclick = () => {
+    search.value = "";
+    docId.value = "";
+    open.hidden = true;
+    results.hidden = true;
+  };
+  row.querySelector<HTMLButtonElement>("[data-project-remove]")!.onclick = () => row.remove();
+}
+
+function collectProjects(list: HTMLElement): LibraryProject[] {
+  return Array.from(list.querySelectorAll<HTMLElement>("[data-project-row]"), (row) => ({
+    id: row.dataset.projectId || newNodeId(),
+    name: row.querySelector<HTMLInputElement>("[data-project-name]")!.value.trim(),
+    docId: row.querySelector<HTMLInputElement>("[data-project-doc-id]")!.value.trim() || undefined,
+  })).filter((project) => project.name);
+}
+
+function documentLabel(document: DocumentSearchResult): string {
+  return `${document.title}${document.hPath ? ` · ${document.hPath}` : ""}`;
 }
 async function actionMessage(action: () => Promise<string>): Promise<void> {
   try { showMessage(await action(), 5000, "info"); }

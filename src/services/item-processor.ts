@@ -81,13 +81,11 @@ export class ItemProcessor {
     canonical: PaperCanonical,
     overwriteFields?: CanonicalField[],
     requestedCitekey?: string,
-    projectIds?: string[],
   ): Promise<void> {
     const paper = await this.kernel.getPaperData(docId);
     paper.canonical = canonical;
     const citekeyBase = requestedCitekey?.trim() || paper.citekey || generateCitekey(canonical);
     paper.citekey = uniqueCitekey(citekeyBase, await this.libraries.citekeys(paper.libraryId, docId));
-    if (projectIds) paper.projectIds = Array.from(new Set(projectIds));
     paper.sources.push(manualSource({
       action: "edit-metadata",
       fields: overwriteFields ?? Object.keys(canonical),

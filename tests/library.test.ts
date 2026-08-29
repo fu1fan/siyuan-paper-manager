@@ -19,12 +19,14 @@ describe("library database projection", () => {
     const cells: Array<{ keyID: string; itemID: string }> = [];
     let added = false;
     const libraryData: PaperLibraryData = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       avId: "av",
       avBlockId: "av-block",
       selectedFields: ["citekey"],
       fieldKeyIds: { citekey: "cite-key" },
       projectKeyId: "project-key",
+      databaseKeyIds: { addedAt: "added-key", readingStatus: "status-key", rating: "rating-key" },
+      columnOrder: ["project", "addedAt", "readingStatus", "rating", "citekey"],
       projects: [],
       createdAt: "2026-01-01T00:00:00.000Z",
       updatedAt: "2026-01-01T00:00:00.000Z",
@@ -45,7 +47,8 @@ describe("library database projection", () => {
     expect(await service.syncPaper("paper-doc", current)).toBe("real-item-id");
     expect(cells).toEqual([
       { keyID: "cite-key", itemID: "real-item-id" },
-      { keyID: "project-key", itemID: "real-item-id" },
+      { keyID: "status-key", itemID: "real-item-id" },
+      { keyID: "rating-key", itemID: "real-item-id" },
     ]);
   });
 

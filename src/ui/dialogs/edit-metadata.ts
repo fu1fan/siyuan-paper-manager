@@ -2,7 +2,6 @@ import { Dialog, showMessage } from "siyuan";
 import type { KernelClient } from "../../core/kernel";
 import { cleanCanonical } from "../../core/normalize";
 import type { ItemProcessor } from "../../services/item-processor";
-import type { LibraryService } from "../../services/library-service";
 import type { PaperCreator } from "../../types/paper";
 import { button, escapeHtml, inputValue } from "../dom";
 
@@ -10,10 +9,8 @@ export async function openEditMetadataDialog(
   docId: string,
   kernel: KernelClient,
   processor: ItemProcessor,
-  libraries: LibraryService,
 ): Promise<void> {
   const paper = await kernel.getPaperData(docId);
-  const library = await libraries.getLibrary(paper.libraryId);
   const c = paper.canonical;
   const authors = c.creators.filter((creator) => creator.creatorType === "author");
   const editors = c.creators.filter((creator) => creator.creatorType === "editor");
@@ -50,10 +47,8 @@ export async function openEditMetadataDialog(
         ${textField("标签", "tags", c.tags.join(", "))}
         ${textareaField("摘要", "abstract", c.abstract, 7)}
       </section>
-      <section class="paper-manager-form-section"><h3>所属项目</h3>
-        <div class="paper-manager-checkboxes" data-project-list>${library.data.projects.length
-          ? library.data.projects.map((project) => `<label title="${escapeHtml(project.docId ?? "纯文本项目")}"><input type="checkbox" data-project-id="${escapeHtml(project.id)}" ${paper.projectIds.includes(project.id) ? "checked" : ""}> ${escapeHtml(project.name)}${project.docId ? " 🔗" : ""}</label>`).join("")
-          : "<span class=\"paper-manager-preview\">请先在文献库设置中添加项目。</span>"}</div>
+      <section class="paper-manager-form-section"><h3>附件</h3>
+        <div class="paper-manager-preview">所属项目、阅读状态和评分请直接在文献库数据库中编辑。</div>
         <div class="paper-manager-field"><span>PDF 附件</span><input class="b3-text-field" readonly value="${escapeHtml(paper.attachments.find((a) => a.mimeType === "application/pdf")?.assetAddress ?? "无")}"></div>
       </section>
       <div class="paper-manager-actions" data-actions></div>
@@ -95,8 +90,7 @@ export async function openEditMetadataDialog(
         abstract: inputValue(root, "[data-name=abstract]"),
         tags: inputValue(root, "[data-name=tags]").split(/[,，;；]/).map((tag) => tag.trim()).filter(Boolean),
       });
-      const projectIds = Array.from(root.querySelectorAll<HTMLInputElement>("[data-project-id]:checked"), (input) => input.dataset.projectId!);
-      await processor.updateCanonical(docId, canonical, undefined, inputValue(root, "[data-name=citekey]"), projectIds);
+      await processor.updateCanonical(docId, canonical, undefined, inputValue(root, "[data-name=citekey]"));
       const saved = await kernel.getPaperData(docId);
       showMessage(`论文元数据已保存并同步${saved.citekey !== paper.citekey ? `，引用键：${saved.citekey}` : ""}`, 4500, "info");
       dialog.destroy();

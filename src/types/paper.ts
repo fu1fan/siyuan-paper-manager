@@ -54,21 +54,22 @@ export interface PaperTranslation {
   completedAt?: string;
 }
 
-export interface PaperDataV2 {
-  schemaVersion: 2;
+export interface PaperDataV3 {
+  schemaVersion: 3;
   canonical: PaperCanonical;
   sources: PaperSourceRecord[];
   attachments: PaperAttachment[];
   translation: PaperTranslation;
   citekey: string;
   libraryId: string;
-  projectIds: string[];
   source: PaperSourceKind;
   importedAt: string;
   updatedAt: string;
+  /** Runtime-only bridge for moving schema v2 project assignments into the AV row. */
+  legacyProjectIds?: string[];
 }
 
-export type PaperData = PaperDataV2;
+export type PaperData = PaperDataV3;
 
 export type CanonicalField = Exclude<keyof PaperCanonical, "creators" | "tags"> | "creators" | "tags";
 

@@ -52,7 +52,7 @@ export function mergePaperData(
     attachments,
     translation: existing.translation,
     libraryId: existing.libraryId,
-    projectIds: existing.projectIds,
+    legacyProjectIds: existing.legacyProjectIds,
     updatedAt: new Date().toISOString(),
   };
 }

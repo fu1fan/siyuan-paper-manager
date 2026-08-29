@@ -35,6 +35,13 @@ export interface SqlRow {
   [key: string]: unknown;
 }
 
+export interface DocumentSearchResult {
+  id: string;
+  title: string;
+  hPath: string;
+  notebookId: string;
+}
+
 export type AttributeViewKeyType = "text" | "number" | "date" | "select" | "mSelect" | "url" | "email" | "phone" | "mAsset" | "template" | "created" | "updated" | "checkbox" | "relation" | "rollup" | "lineNumber";
 
 export interface AttributeViewValue {
@@ -168,6 +175,23 @@ export class KernelClient {
     });
   }
 
+  async setAttributeViewSelectOptions(avID: string, keyID: string, names: string[]): Promise<void> {
+    await this.postImpl("/api/transactions", {
+      reqId: Date.now(),
+      session: "paper-manager",
+      app: "siyuan",
+      transactions: [{
+        doOperations: [{
+          action: "updateAttrViewColOptions",
+          id: keyID,
+          avID,
+          data: names.map((name, index) => ({ name, color: String(index % 14 + 1), desc: "" })),
+        }],
+        undoOperations: [],
+      }],
+    });
+  }
+
   async addAttributeViewKey(
     avID: string,
     keyID: string,
@@ -182,6 +206,10 @@ export class KernelClient {
 
   async removeAttributeViewKey(avID: string, keyID: string): Promise<void> {
     await this.postImpl("/api/av/removeAttributeViewKey", { avID, keyID, removeRelationDest: false });
+  }
+
+  async sortAttributeViewKey(avID: string, keyID: string, previousKeyID: string): Promise<void> {
+    await this.postImpl("/api/av/sortAttributeViewKey", { avID, keyID, previousKeyID });
   }
 
   async addAttributeViewBlocks(avID: string, blockID: string, sources: Array<{ id: string; content: string }>): Promise<void> {
@@ -207,6 +235,26 @@ export class KernelClient {
 
   async renameDocument(id: string, title: string): Promise<void> {
     await this.postImpl("/api/filetree/renameDocByID", { id, title });
+  }
+
+  async getDocumentInfo(id: string): Promise<DocumentSearchResult | undefined> {
+    const rows = await this.query(
+      `SELECT id, content, hpath, box FROM blocks WHERE type = 'd' AND id = ${sqlString(id)} LIMIT 1`,
+    );
+    return documentSearchResult(rows[0]);
+  }
+
+  async searchDocuments(keyword: string, limit = 20): Promise<DocumentSearchResult[]> {
+    const query = keyword.trim();
+    if (!query) return [];
+    const safeLimit = Math.max(1, Math.min(50, Math.trunc(limit)));
+    const pattern = sqlString(`%${escapeLike(query)}%`);
+    const rows = await this.query(
+      `SELECT id, content, hpath, box FROM blocks WHERE type = 'd' `
+      + `AND (content LIKE ${pattern} ESCAPE '\\' OR hpath LIKE ${pattern} ESCAPE '\\') `
+      + `ORDER BY updated DESC LIMIT ${safeLimit}`,
+    );
+    return rows.map(documentSearchResult).filter((row): row is DocumentSearchResult => Boolean(row));
   }
 
   async listRowsByAttribute(name: string, value?: string): Promise<SqlRow[]> {
@@ -355,6 +403,20 @@ function sanitizeFilename(filename: string): string {
 
 function sqlString(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
+}
+
+function escapeLike(value: string): string {
+  return value.replace(/[\\%_]/g, (character) => `\\${character}`);
+}
+
+function documentSearchResult(row: SqlRow | undefined): DocumentSearchResult | undefined {
+  if (!row?.id) return undefined;
+  return {
+    id: String(row.id),
+    title: string(row.content) || "无标题文档",
+    hPath: string(row.hpath),
+    notebookId: string(row.box),
+  };
 }
 
 function string(value: unknown): string {

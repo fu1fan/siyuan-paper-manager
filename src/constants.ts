@@ -1,6 +1,6 @@
 export const PLUGIN_NAME = "siyuan-paper-manager";
-export const PAPER_SCHEMA_VERSION = 2 as const;
-export const LIBRARY_SCHEMA_VERSION = 1 as const;
+export const PAPER_SCHEMA_VERSION = 3 as const;
+export const LIBRARY_SCHEMA_VERSION = 2 as const;
 export const CONNECTOR_API_VERSION = 3;
 export const CONNECTOR_SESSION_TTL_MS = 30 * 60 * 1000;
 export const CONNECTOR_GRACE_MS = 2_000;

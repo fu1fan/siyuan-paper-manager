@@ -1,4 +1,4 @@
-import { SOURCE } from "../constants";
+import { PAPER_SCHEMA_VERSION, SOURCE } from "../constants";
 import type { ImportCandidate, ZoteroCreator } from "../types/import";
 import type { PaperCanonical, PaperCreator, PaperData, PaperSourceKind } from "../types/paper";
 import { generateCitekey, normalizeDoi } from "./naming";
@@ -69,7 +69,7 @@ export function paperDataFromCandidate(candidate: ImportCandidate): PaperData {
   const now = new Date().toISOString();
   const canonical = cleanCanonical(candidate.canonical);
   return {
-    schemaVersion: 2,
+    schemaVersion: PAPER_SCHEMA_VERSION,
     canonical,
     sources: [{
       source: candidate.source,
@@ -82,7 +82,6 @@ export function paperDataFromCandidate(candidate: ImportCandidate): PaperData {
     translation: {},
     citekey: generateCitekey(canonical),
     libraryId: "",
-    projectIds: [],
     source: candidate.source,
     importedAt: now,
     updatedAt: now,

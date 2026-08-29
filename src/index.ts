@@ -173,7 +173,7 @@ export default class PaperManagerPlugin extends Plugin {
 
   private async editMetadata(docId: string): Promise<void> {
     if (!this.settings.enableEditUI) throw new Error("编辑元数据 UI 已在设置中关闭");
-    await openEditMetadataDialog(docId, this.kernelClient, this.processor, this.libraries);
+    await openEditMetadataDialog(docId, this.kernelClient, this.processor);
   }
 
   private async repair(docId: string): Promise<void> {
