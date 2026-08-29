@@ -27,4 +27,26 @@ describe("attribute view kernel adapter", () => {
     expect(calls[0]?.payload.srcs).toEqual([{ id: "paper-doc", content: "论文", isDetached: false }]);
     expect(calls[2]?.payload.itemID).toBe("item-row");
   });
+
+  it("includes the numeric reqId required by SiYuan transactions", async () => {
+    const calls: Array<{ endpoint: string; payload: Record<string, unknown> }> = [];
+    const kernel = new KernelClient(async (endpoint, payload) => {
+      calls.push({ endpoint, payload });
+      return null as never;
+    });
+
+    await kernel.setAttributeViewName("av-id", "论文文献数据库");
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.endpoint).toBe("/api/transactions");
+    expect(calls[0]?.payload.reqId).toEqual(expect.any(Number));
+    expect(calls[0]?.payload).toMatchObject({
+      app: "siyuan",
+      session: "paper-manager",
+      transactions: [{
+        doOperations: [{ action: "setAttrViewName", id: "av-id", data: "论文文献数据库" }],
+        undoOperations: [],
+      }],
+    });
+  });
 });

@@ -16,6 +16,16 @@
 
 .paper-manager-form {
   width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  overflow-x: hidden;
+}
+
+.paper-manager-form > * {
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 /* SiYuan's settings styles override the browser's native [hidden] rule in
@@ -30,10 +40,19 @@
 
 .paper-manager-field {
   display: grid;
-  grid-template-columns: minmax(130px, 180px) 1fr;
+  grid-template-columns: minmax(130px, 180px) minmax(0, 1fr);
   gap: 12px;
   align-items: center;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
   margin: 12px 0;
+}
+
+.paper-manager-field > * {
+  min-width: 0;
+  max-width: 100%;
 }
 
 .paper-manager-field--column {
@@ -51,6 +70,7 @@
 
 .paper-manager-actions {
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
   gap: 8px;
   margin-top: 18px;
@@ -93,6 +113,11 @@
 }
 
 @media (max-width: 760px) {
+  .paper-manager-field {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+  }
+
   .paper-manager-metadata-editor {
     grid-template-columns: 1fr;
   }

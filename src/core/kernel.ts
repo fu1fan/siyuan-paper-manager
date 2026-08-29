@@ -166,6 +166,7 @@ export class KernelClient {
 
   async setAttributeViewName(avID: string, name: string): Promise<void> {
     await this.postImpl("/api/transactions", {
+      reqId: Date.now(),
       session: "paper-manager",
       app: "siyuan",
       transactions: [{ doOperations: [{ action: "setAttrViewName", id: avID, data: name }], undoOperations: [] }],

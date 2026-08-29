@@ -58,7 +58,7 @@ export class LibraryService {
     const requestedBlockId = newNodeId();
     const avBlockId = await this.kernel.appendAttributeViewBlock(created.id, requestedBlockId, avId);
     await this.kernel.renderAttributeView(avId, avBlockId, 1, 100, true);
-    await this.kernel.setAttributeViewName(avId, `${title} · 文献数据库`);
+    await this.setAttributeViewNameSafely(avId, `${title} · 文献数据库`);
     const projectKeyId = newNodeId();
     await this.kernel.addAttributeViewKey(avId, projectKeyId, "所属项目", "mSelect");
     const fieldKeyIds: Partial<Record<LibraryMetadataField, string>> = {};
@@ -231,7 +231,7 @@ export class LibraryService {
     const avId = newNodeId();
     const avBlockId = await this.kernel.appendAttributeViewBlock(libraryDocId, newNodeId(), avId);
     await this.kernel.renderAttributeView(avId, avBlockId, 1, 100, true);
-    await this.kernel.setAttributeViewName(avId, `${library.title} · 文献数据库`);
+    await this.setAttributeViewNameSafely(avId, `${library.title} · 文献数据库`);
     const projectKeyId = newNodeId();
     await this.kernel.addAttributeViewKey(avId, projectKeyId, "所属项目", "mSelect");
     library.data.avId = avId;
@@ -273,6 +273,16 @@ export class LibraryService {
 
   private saveLibraryData(docId: string, data: PaperLibraryData): Promise<void> {
     return this.kernel.setBlockAttrs(docId, { [ATTR.libraryData]: encodeLibraryData(data) });
+  }
+
+  private async setAttributeViewNameSafely(avId: string, name: string): Promise<void> {
+    try {
+      await this.kernel.setAttributeViewName(avId, name);
+    } catch (error) {
+      // The database name is cosmetic. Older kernels have changed the raw
+      // transaction contract, so a naming failure must not abort library setup.
+      console.warn("[paper-manager] 数据库重命名失败，继续创建文献库", error);
+    }
   }
 
   private async allRows(data: PaperLibraryData): Promise<AttributeViewRow[]> {

@@ -48,4 +48,27 @@ describe("library database projection", () => {
       { keyID: "project-key", itemID: "real-item-id" },
     ]);
   });
+
+  it("keeps creating a usable library when the cosmetic database rename fails", async () => {
+    let savedAttrs: Record<string, string> = {};
+    const fake = {
+      createDocument: async () => ({ id: "library-doc", hPath: "/论文文献库" }),
+      appendAttributeViewBlock: async () => "av-block",
+      renderAttributeView: async () => ({ id: "av", name: "", viewID: "view", viewType: "table", view: {} }),
+      setAttributeViewName: async () => { throw new Error("旧版内核不支持数据库重命名事务"); },
+      addAttributeViewKey: async () => {},
+      setBlockAttrs: async (_id: string, attrs: Record<string, string>) => { savedAttrs = attrs; },
+    } as unknown as KernelClient;
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const library = await new LibraryService(fake).createLibrary("box", "/论文文献库", "论文文献库");
+
+    expect(library.docId).toBe("library-doc");
+    expect(savedAttrs[ATTR.libraryData]).toBeTruthy();
+    expect(warn).toHaveBeenCalledWith(
+      "[paper-manager] 数据库重命名失败，继续创建文献库",
+      expect.any(Error),
+    );
+    warn.mockRestore();
+  });
 });
