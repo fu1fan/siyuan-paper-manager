@@ -56,35 +56,19 @@ describe("template capability mode", () => {
     expect(attrs.get("note-old")?.["custom-section"]).toBe("note");
   });
 
-  it("falls back once when the native engine does not bind context", async () => {
-    const warnings: string[] = [];
-    const post = vi.fn(async (endpoint: string) => {
-      if (endpoint === "/api/system/getWorkspaceInfo") return { workspaceDir: "/tmp/ws" };
-      if (endpoint === "/api/template/render") return { content: "<div>&lt;no value&gt;</div>" };
-      throw new Error(endpoint);
-    });
+  it("uses the packaged renderer without calling the restricted native template API", async () => {
+    const modes: string[] = [];
+    const post = vi.fn(async (endpoint: string) => { throw new Error(endpoint); });
     const service = new TemplateService(new KernelClient(post as any), {
       loadTemplate: async () => "{{{row\n# {{.title}}\n}}}\n{: custom-section=\"meta\"}",
-      onFallback: (message) => warnings.push(message),
+      onModeChange: (mode) => modes.push(mode),
     });
     const first = await service.render("paper-meta", paper(), "doc");
     const second = await service.render("paper-meta", paper(), "doc");
-    expect(first.mode).toBe("fallback");
-    expect(second.mode).toBe("fallback");
-    expect(warnings).toHaveLength(1);
-    expect(post).toHaveBeenCalledTimes(2);
-  });
-
-  it("uses native DOM after a successful title sentinel", async () => {
-    const post = vi.fn(async (endpoint: string) => {
-      if (endpoint === "/api/system/getWorkspaceInfo") return { workspaceDir: "/tmp/ws" };
-      if (endpoint === "/api/template/render") return { content: "<div>示例论文 Example Paper</div>" };
-      throw new Error(endpoint);
-    });
-    const service = new TemplateService(new KernelClient(post as any), {
-      loadTemplate: async () => "fallback",
-    });
-    const result = await service.render("paper-meta", paper(), "doc");
-    expect(result).toMatchObject({ mode: "native", dataType: "dom" });
+    expect(first).toMatchObject({ mode: "builtin", dataType: "markdown" });
+    expect(second).toMatchObject({ mode: "builtin", dataType: "markdown" });
+    expect(first.content).toContain("# 示例论文 Example Paper");
+    expect(modes).toEqual(["builtin"]);
+    expect(post).not.toHaveBeenCalled();
   });
 });

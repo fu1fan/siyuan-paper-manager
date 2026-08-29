@@ -2,10 +2,9 @@
 
 > **实现状态（0.4.0）**：四项能力、UI、测试与构建门禁已在 `codex` 分支落地。本文保留最初的研究与设计推导；实际源码以 `src/` 为准，当前架构和验证方法见 `docs/development.md`。
 >
-> **模板实现修订**：运行时仍先对 `/api/template/render` 做真实数据绑定探针；若字段未解析或出现 `<no value>`，会向用户提示并切换到插件内置的受限模板引擎。两种引擎都输出单一超级块根节点，刷新时只替换 `custom-section=meta` 区域。
+> **模板实现修订**：思源 3.8.1 将 `/api/template/render` 限制到工作空间 `data/templates`，插件目录中的打包模板不能再交给该接口。当前实现直接读取随插件打包的模板并使用内置受限引擎渲染，不写入 `data/templates`，也不再执行会产生错误提示的原生模板探针。
 
-> **模板方案决策**：采用 **思源原生模板片段**（方案 A，用户已确认）。
-> 模板**随插件打包**（位于 `data/plugins/{插件名}/templates/`），插件通过内核 API `POST /api/template/render` 让思源渲染填充，再调 `createDocWithMd` 创建文档。模板不写入 `data/templates`，随插件安装/更新/卸载自动管理。
+> **模板方案决策**：模板随插件打包（位于 `data/plugins/{插件名}/templates/`），由插件内置引擎渲染后再调用块 API 写入。模板不写入 `data/templates`，随插件安装、更新和卸载自动管理。
 
 > **技术栈决策**：**Vite + TypeScript**。工程骨架参照社区主流模板（`frostime/plugin-sample-vite` 或 `siyuan-note/plugin-sample-vite-svelte`），支持热重载与 GitHub Action 自动打包。
 
@@ -157,7 +156,7 @@ data/plugins/siyuan-paper-manager/
 
 > 创建文档时可把两段拼成一份 Markdown 一次性 `createDocWithMd`；此后更新只重渲染 `paper-meta` 对应块。
 
-### 4.3 渲染链路（创建时，复用思源模板引擎）
+### 4.3 早期原生渲染方案（3.8.1 已停用）
 
 ```ts
 import { request } from "siyuan";        // 或 this.app 提供的请求方法

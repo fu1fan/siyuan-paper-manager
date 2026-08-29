@@ -12,5 +12,5 @@ export type TranslationState =
 export interface PluginStatus {
   connector: ConnectorState;
   translation: TranslationState;
-  templateMode: "unknown" | "native" | "fallback";
+  templateMode: "unknown" | "builtin";
 }

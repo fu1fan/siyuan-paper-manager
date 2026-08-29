@@ -46,7 +46,7 @@ export function buildEnvironmentReport(settings: PluginSettings, status: PluginS
     pdf2zh: { ok: pdf2zhOk, detail: pdf2zh },
     template: {
       ok: status.templateMode !== "unknown",
-      detail: status.templateMode === "unknown" ? "尚未执行真实模板探针" : status.templateMode === "native" ? "原生模板" : "内置回退渲染器",
+      detail: status.templateMode === "unknown" ? "尚未渲染模板" : "内置模板渲染器",
     },
   };
 }

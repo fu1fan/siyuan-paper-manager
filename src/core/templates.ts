@@ -24,14 +24,11 @@ export interface TemplateServiceOptions {
   pluginName?: string;
   loadTemplate?: (name: TemplateName) => Promise<string>;
   onModeChange?: (mode: TemplateMode) => void;
-  onFallback?: (message: string) => void;
 }
 
 export class TemplateService {
   private readonly pluginName: string;
   private mode: TemplateMode = "unknown";
-  private warned = false;
-  private workspaceDir: string | null = null;
   private readonly cache = new Map<TemplateName, string>();
 
   constructor(private readonly kernel: KernelClient, private readonly options: TemplateServiceOptions = {}) {
@@ -42,31 +39,16 @@ export class TemplateService {
     return this.mode;
   }
 
-  async renderFallback(name: TemplateName, data: PaperData): Promise<string> {
+  async renderBuiltin(name: TemplateName, data: PaperData): Promise<string> {
+    this.setMode("builtin");
     return renderTemplateText(await this.template(name), templateContext(data));
   }
 
-  async render(name: TemplateName, data: PaperData, hostDocId: string): Promise<RenderedTemplate> {
-    if (this.mode !== "fallback") {
-      try {
-        const native = await this.renderNative(name, data, hostDocId);
-        if (!native.content || /<no value>|ZgotmplZ/i.test(native.content)) {
-          throw new Error("原生模板返回未绑定字段");
-        }
-        if (name === "paper-meta" && data.canonical.title && !textFromDom(native.content).includes(data.canonical.title)) {
-          throw new Error("原生模板探针未解析标题字段");
-        }
-        this.setMode("native");
-        return { dataType: "dom", content: native.content, mode: "native" };
-      } catch (error) {
-        this.setMode("fallback");
-        this.warnFallback(error);
-      }
-    }
+  async render(name: TemplateName, data: PaperData, _hostDocId: string): Promise<RenderedTemplate> {
     return {
       dataType: "markdown",
-      content: await this.renderFallback(name, data),
-      mode: "fallback",
+      content: await this.renderBuiltin(name, data),
+      mode: "builtin",
     };
   }
 
@@ -127,23 +109,13 @@ export class TemplateService {
     data: PaperData,
   ): Promise<string> {
     const requestedId = newNodeId();
-    const markdown = preserveRootIal(await this.renderFallback(name, data), requestedId, section);
+    const markdown = preserveRootIal(await this.renderBuiltin(name, data), requestedId, section);
     const operationIds = await this.kernel.appendBlock(docId, markdown, "markdown");
     const blockId = operationIds.includes(requestedId) ? requestedId : operationIds[0] ?? requestedId;
     await this.kernel.setBlockAttrs(blockId, { [ATTR.section]: section });
     const attrs = await this.kernel.getBlockAttrs(blockId);
     if (attrs[ATTR.section] !== section) throw new Error(`创建 ${section} 模板容器失败`);
     return blockId;
-  }
-
-  private async renderNative(name: TemplateName, data: PaperData, docId: string) {
-    if (!this.workspaceDir) this.workspaceDir = (await this.kernel.getWorkspaceInfo()).workspaceDir;
-    const separator = this.workspaceDir.includes("\\") ? "\\" : "/";
-    const path = [
-      this.workspaceDir.replace(/[\\/]+$/, ""),
-      "data", "plugins", this.pluginName, "templates", `${name}.md`,
-    ].join(separator);
-    return this.kernel.renderNativeTemplate(docId, path, templateContext(data));
   }
 
   private async template(name: TemplateName): Promise<string> {
@@ -160,15 +132,6 @@ export class TemplateService {
     if (this.mode === mode) return;
     this.mode = mode;
     this.options.onModeChange?.(mode);
-  }
-
-  private warnFallback(error: unknown): void {
-    const message = `原生模板不可用，已切换内置渲染器：${error instanceof Error ? error.message : String(error)}`;
-    console.warn("[paper-manager]", message, error);
-    if (!this.warned) {
-      this.warned = true;
-      this.options.onFallback?.(message);
-    }
   }
 }
 
@@ -237,13 +200,6 @@ function preserveRootDom(dom: string, blockId: string, section: string): string 
     output = `${marked}${output.slice(rootEnd)}`;
   }
   return output;
-}
-
-function textFromDom(dom: string): string {
-  if (typeof DOMParser === "function") {
-    return new DOMParser().parseFromString(dom, "text/html").body.textContent ?? "";
-  }
-  return dom.replace(/<[^>]+>/g, "").replace(/&lt;/g, "<").replace(/&gt;/g, ">");
 }
 
 async function retry<T>(fn: () => Promise<T>, attempts: number, delayMs: number): Promise<T> {

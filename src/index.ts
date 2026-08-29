@@ -40,7 +40,6 @@ export default class PaperManagerPlugin extends Plugin {
     this.settings = await this.settingsStore.load();
     this.templates = new TemplateService(this.kernelClient, {
       onModeChange: (templateMode) => this.statusStore.update({ templateMode }),
-      onFallback: (message) => showMessage(message, 7000, "error"),
     });
     this.libraries = new LibraryService(this.kernelClient);
     this.processor = new ItemProcessor(
@@ -210,7 +209,7 @@ export default class PaperManagerPlugin extends Plugin {
       title: "论文管理环境自检",
       width: "680px",
       content: `<div class="b3-dialog__content"><table class="b3-typography"><tbody>${rows}</tbody></table>
-        <p>原生模板模式会在首次真实创建/刷新论文页时进行数据绑定探针。</p></div>`,
+        <p>打包模板由插件内置引擎渲染，不会写入思源 data/templates 目录。</p></div>`,
     });
   }
 }

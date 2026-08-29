@@ -25,11 +25,6 @@ export interface BlockOperationResponse {
   doOperations?: Array<{ id?: string; action?: string; data?: string }>;
 }
 
-export interface NativeTemplateResult {
-  content: string;
-  path?: string;
-}
-
 export interface WorkspaceInfo {
   workspaceDir: string;
   [key: string]: unknown;
@@ -257,21 +252,6 @@ export class KernelClient {
 
   getWorkspaceInfo(): Promise<WorkspaceInfo> {
     return this.postImpl<WorkspaceInfo>("/api/system/getWorkspaceInfo", {});
-  }
-
-  async renderNativeTemplate(
-    id: string,
-    absolutePath: string,
-    context: Record<string, unknown>,
-  ): Promise<NativeTemplateResult> {
-    const data = await this.postImpl<string | NativeTemplateResult>("/api/template/render", {
-      id,
-      path: absolutePath,
-      data: JSON.stringify(context),
-    });
-    if (typeof data === "string") return { content: data };
-    if (!data || typeof data.content !== "string") throw new Error("template/render 返回结构异常");
-    return data;
   }
 
   async readPluginFile(path: string): Promise<string> {
