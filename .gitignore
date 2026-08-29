@@ -25,3 +25,4 @@ data/
 
 # test artifacts
 coverage/
+render_out/

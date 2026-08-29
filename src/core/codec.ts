@@ -49,18 +49,10 @@ export function paperStateAttrs(paper: PaperData): Record<string, string> {
 }
 
 /**
- * 解析属性中的 JSON。旧版本曾用 base64 包装（为规避 SQL 读取时的
- * HTML 转义），这里仅作只读回退；下一次保存会改写为明文 JSON。
+ * 解析属性中的 JSON。属性经 SQL 读取时可能被 HTML 转义，先反转义再解析。
  */
 function parseStoredJson(encoded: string): unknown {
-  const trimmed = encoded.trim();
-  try {
-    return JSON.parse(htmlUnescape(trimmed)) as unknown;
-  } catch {
-    const binary = atob(htmlUnescape(trimmed));
-    const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
-    return JSON.parse(new TextDecoder().decode(bytes)) as unknown;
-  }
+  return JSON.parse(htmlUnescape(encoded.trim())) as unknown;
 }
 
 function htmlUnescape(value: string): string {

@@ -49,7 +49,7 @@ export interface PaperTranslation {
 /**
  * 论文的运行时表示：元数据以文献库数据库行为权威，此处仅用于导入、
  * 合并、摘要渲染等流程内的组装。附件与翻译产物等机器状态存于文档
- * 自定义属性（非 base64）。
+ * 自定义属性。
  */
 export interface PaperData {
   canonical: PaperCanonical;

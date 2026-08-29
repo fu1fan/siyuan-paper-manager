@@ -23,15 +23,6 @@ function fullLibraryData(overrides: Partial<PaperLibraryData> = {}): PaperLibrar
   };
 }
 
-function legacyEncode(value: unknown): string {
-  const bytes = new TextEncoder().encode(JSON.stringify(value));
-  let binary = "";
-  for (let index = 0; index < bytes.length; index += 0x8000) {
-    binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
-  }
-  return btoa(binary);
-}
-
 describe("library database projection", () => {
   it("projects canonical fields into SiYuan AV values", () => {
     const value = metadataFieldValue("authors", paper());
@@ -235,8 +226,8 @@ describe("library data decoding", () => {
     expect(decodeLibraryData(encodeLibraryData(data))).toEqual(data);
   });
 
-  it("still reads legacy base64 payloads and upgrades schema v1/v2", () => {
-    const decoded = decodeLibraryData(legacyEncode({
+  it("upgrades schema v1/v2 payloads and drops column management fields", () => {
+    const decoded = decodeLibraryData(JSON.stringify({
       schemaVersion: 2,
       avId: "av",
       avBlockId: "av-block",
