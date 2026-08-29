@@ -1,5 +1,5 @@
-import { ATTR, LEGACY_ATTR, LIBRARY_SCHEMA_VERSION } from "../constants";
-import { decodeLegacyPaperData, decodeLibraryData, encodeLibraryData } from "../core/codec";
+import { ATTR, LIBRARY_SCHEMA_VERSION } from "../constants";
+import { decodeLibraryData, encodeLibraryData } from "../core/codec";
 import type { AttributeViewRow, AttributeViewValue, KernelClient } from "../core/kernel";
 import { newNodeId } from "../core/node-id";
 import type {
@@ -56,8 +56,6 @@ export class LibraryService {
     for (const library of output) {
       try { await this.ensureSchemaFields(library); }
       catch (error) { console.warn("[paper-manager] 数据库字段初始化失败，可在设置中重试修复", library.docId, error); }
-      try { await this.migrateLegacyPapers(library); }
-      catch (error) { console.warn("[paper-manager] 旧版论文数据迁移失败", library.docId, error); }
     }
     return output;
   }
@@ -83,12 +81,13 @@ export class LibraryService {
   }
 
   async createLibrary(notebookId: string, hPath: string, title: string): Promise<PaperLibraryInfo> {
-    const created = await this.kernel.createDocument(notebookId, hPath, `# ${escapeHeading(title)}\n`, title);
+    // 文档正文不放 H1：文献库页的内容就是数据库本身，避免标题层层重复
+    const created = await this.kernel.createDocument(notebookId, hPath, "", title);
     const avId = newNodeId();
     const requestedBlockId = newNodeId();
     const avBlockId = await this.kernel.appendAttributeViewBlock(created.id, requestedBlockId, avId);
     await this.kernel.renderAttributeView(avId, avBlockId, 1, 100, true);
-    await this.setAttributeViewNameSafely(avId, `${title} · 文献数据库`);
+    await this.setAttributeViewNameSafely(avId, "文献数据库");
     const projectKeyId = newNodeId();
     await this.kernel.addAttributeViewKey(avId, projectKeyId, "所属项目", "mSelect");
     const databaseKeyIds: Partial<Record<LibraryDatabaseField, string>> = {};
@@ -351,7 +350,7 @@ export class LibraryService {
     const avId = newNodeId();
     const avBlockId = await this.kernel.appendAttributeViewBlock(libraryDocId, newNodeId(), avId);
     await this.kernel.renderAttributeView(avId, avBlockId, 1, 100, true);
-    await this.setAttributeViewNameSafely(avId, `${library.title} · 文献数据库`);
+    await this.setAttributeViewNameSafely(avId, "文献数据库");
     const projectKeyId = newNodeId();
     await this.kernel.addAttributeViewKey(avId, projectKeyId, "所属项目", "mSelect");
     library.data.avId = avId;
@@ -466,87 +465,6 @@ export class LibraryService {
       if (!changed) return;
       library.data.updatedAt = new Date().toISOString();
       await this.saveLibraryData(library.docId, library.data);
-    });
-  }
-
-  /**
-   * 一次性迁移：把仍带旧版 base64 数据的论文文档搬进数据库。
-   * 只回填空单元格——用户在数据库中的手动编辑优先；完成后清除全部
-   * 旧版属性，此后 legacy 解码不再被触发。
-   */
-  private async migrateLegacyPapers(library: PaperLibraryInfo): Promise<void> {
-    const legacyRows = await this.kernel.listRowsByAttribute(LEGACY_ATTR.data);
-    const candidates = legacyRows
-      .map((row) => ({ docId: String(row.id ?? ""), encoded: String(row.value ?? "") }))
-      .filter((candidate) => candidate.docId && candidate.encoded);
-    if (!candidates.length) return;
-    await this.withLibraryLock(library.docId, async () => {
-      let rows = await this.allRows(library.data);
-      for (const candidate of candidates) {
-        let legacy;
-        try {
-          legacy = decodeLegacyPaperData(candidate.encoded);
-        } catch (error) {
-          console.warn("[paper-manager] 跳过无法解码的旧版论文数据", candidate.docId, error);
-          continue;
-        }
-        if (legacy.libraryId && legacy.libraryId !== library.docId) continue;
-        try {
-          let row = findBoundRow(rows, candidate.docId);
-          if (!row) {
-            await this.kernel.addAttributeViewBlocks(library.data.avId, library.data.avBlockId, [{
-              id: candidate.docId,
-              content: legacy.canonical.title,
-            }]);
-            rows = await retry(() => this.allRows(library.data), (value) => Boolean(findBoundRow(value, candidate.docId)));
-            row = findBoundRow(rows, candidate.docId);
-          }
-          if (!row) throw new Error("迁移时未能建立数据库条目");
-          const paper: PaperData = {
-            canonical: legacy.canonical,
-            citekey: legacy.citekey,
-            libraryId: library.docId,
-            attachments: legacy.attachments,
-            translation: legacy.translation,
-          };
-          for (const field of LIBRARY_METADATA_FIELDS) {
-            const keyId = library.data.fieldKeyIds[field];
-            if (!keyId) continue;
-            const cell = row.cells.find((item) => item.value.keyID === keyId)?.value;
-            if (cellIsEmpty(cell)) {
-              await this.kernel.setAttributeViewCell(library.data.avId, keyId, row.id, metadataFieldValue(field, paper));
-            }
-          }
-          if (legacy.projectIds.length && !selectContents(row, library.data.projectKeyId).length) {
-            await this.kernel.setAttributeViewCell(
-              library.data.avId,
-              library.data.projectKeyId,
-              row.id,
-              projectFieldValue(legacy.projectIds, library.data.projects),
-            );
-          }
-          const statusKeyId = library.data.databaseKeyIds.readingStatus;
-          const ratingKeyId = library.data.databaseKeyIds.rating;
-          if (statusKeyId && cellIsEmpty(row.cells.find((cell) => cell.value.keyID === statusKeyId)?.value)) {
-            await this.kernel.setAttributeViewCell(library.data.avId, statusKeyId, row.id, selectValue([READING_STATUSES[0]], "select"));
-          }
-          if (ratingKeyId && cellIsEmpty(row.cells.find((cell) => cell.value.keyID === ratingKeyId)?.value)) {
-            await this.kernel.setAttributeViewCell(library.data.avId, ratingKeyId, row.id, selectValue(["0"], "select"));
-          }
-          const attrs = await this.kernel.getBlockAttrs(candidate.docId);
-          await this.kernel.setBlockAttrs(candidate.docId, {
-            [ATTR.libraryId]: library.docId,
-            ...(attrs[ATTR.attachments] ? {} : { [ATTR.attachments]: JSON.stringify(legacy.attachments) }),
-            [LEGACY_ATTR.data]: "",
-            [LEGACY_ATTR.citekey]: "",
-            [LEGACY_ATTR.doi]: "",
-            [LEGACY_ATTR.assets]: "",
-            [LEGACY_ATTR.libraryItemId]: "",
-          });
-        } catch (error) {
-          console.warn("[paper-manager] 旧版论文数据迁移失败，保留原数据等待重试", candidate.docId, error);
-        }
-      }
     });
   }
 
@@ -699,17 +617,6 @@ function fieldUrl(data: PaperLibraryData, row: AttributeViewRow, field: LibraryM
   return value?.url?.content?.trim() ?? value?.text?.content?.trim() ?? "";
 }
 
-function cellIsEmpty(value: AttributeViewValue | undefined): boolean {
-  if (!value) return true;
-  if (value.text) return !value.text.content?.trim();
-  if (value.mSelect) return value.mSelect.length === 0;
-  if (value.url) return !value.url.content?.trim();
-  if (value.number) return !value.number.isNotEmpty;
-  if (value.date) return !value.date.isNotEmpty;
-  if (value.checkbox) return false;
-  return true;
-}
-
 function parseAttachments(encoded: string | undefined): PaperData["attachments"] {
   if (!encoded) return [];
   try {
@@ -731,17 +638,6 @@ function selectValue(contents: string[], type: "select" | "mSelect"): AttributeV
   return {
     type,
     mSelect: contents.filter(Boolean).map((content, index) => ({ content, color: String(index % 14 + 1) })),
-  };
-}
-
-function projectFieldValue(projectIds: string[], projects: LibraryProject[]): AttributeViewValue {
-  const selected = new Set(projectIds);
-  return {
-    type: "mSelect",
-    mSelect: projects.filter((project) => selected.has(project.id)).map((project, index) => ({
-      content: project.name,
-      color: String(index % 14 + 1),
-    })),
   };
 }
 
@@ -786,10 +682,6 @@ async function retry<T>(fn: () => Promise<T>, predicate: (value: T) => boolean):
     value = await fn();
   }
   return value;
-}
-
-function escapeHeading(value: string): string {
-  return value.replace(/[\r\n]+/g, " ").replace(/#/g, "\\#");
 }
 
 function sql(value: string): string {

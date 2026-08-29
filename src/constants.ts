@@ -18,15 +18,6 @@ export const ATTR = {
   librarySyncError: "custom-paper-library-sync-error",
 } as const;
 
-/** 已废弃的旧版属性名，仅用于一次性迁移时识别并清理。 */
-export const LEGACY_ATTR = {
-  data: "custom-paper-data",
-  citekey: "custom-paper-citekey",
-  doi: "custom-paper-doi",
-  assets: "data-assets",
-  libraryItemId: "custom-paper-library-item-id",
-} as const;
-
 export const SECTION = {
   meta: "meta",
   note: "note",

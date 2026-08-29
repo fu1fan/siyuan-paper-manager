@@ -14,7 +14,6 @@ import { findCanonicalConflicts, mergePaperData } from "../core/merge";
 import { paperDataFromCandidate } from "../core/normalize";
 import {
   normalizeTitle,
-  paperDocumentTitle,
   sanitizeDocumentName,
   titleSimilarity,
 } from "../core/naming";
@@ -106,12 +105,12 @@ export class ItemProcessor {
   }
 
   private async createPaper(paper: PaperData, copy: boolean, library: PaperLibraryInfo): Promise<string> {
-    const title = paperDocumentTitle(paper.canonical, paper.citekey);
-    const finalTitle = copy ? `${title} - 副本 ${timestampSuffix()}` : title;
-    const markdown = `# ${escapeHeading(finalTitle)}\n`;
+    // 文档命名用单独的 citekey；正文首个 H1 保留论文全文标题（不含 citekey）
+    const docName = copy ? `${paper.citekey} 副本 ${timestampSuffix()}` : paper.citekey;
+    const markdown = `# ${escapeHeading(paper.canonical.title || "未命名文献")}\n`;
     const base = library.hPath.replace(/\/+$/, "");
-    const hPath = `${base}/${sanitizeDocumentName(finalTitle)}`;
-    const created = await this.kernel.createDocument(library.notebookId, hPath, markdown, finalTitle);
+    const hPath = `${base}/${sanitizeDocumentName(docName)}`;
+    const created = await this.kernel.createDocument(library.notebookId, hPath, markdown, docName);
     try {
       await this.kernel.setBlockAttrs(created.id, paperStateAttrs(paper));
       const sections = await this.templates.ensureSections(created.id, paper);

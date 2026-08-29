@@ -1,10 +1,8 @@
 import { LibraryService, metadataFieldValue } from "../src/services/library-service";
-import { ATTR, LEGACY_ATTR } from "../src/constants";
+import { ATTR } from "../src/constants";
 import { decodeLibraryData, encodeLibraryData } from "../src/core/codec";
 import type { KernelClient } from "../src/core/kernel";
 import {
-  LIBRARY_DATABASE_FIELD_LABELS,
-  LIBRARY_FIELD_LABELS,
   LIBRARY_METADATA_FIELDS,
   type PaperLibraryData,
 } from "../src/types/library";
@@ -229,71 +227,15 @@ describe("library database projection", () => {
     await expect(service.requirePaperEntry("paper-doc")).rejects.toThrow(/还没有论文文献库/);
   });
 
-  it("migrates legacy base64 data into empty cells only, then clears legacy attrs", async () => {
-    const libraryData = fullLibraryData({ projects: [{ id: "p1", name: "项目一" }] });
-    const legacy = legacyEncode({
-      schemaVersion: 3,
-      canonical: paper().canonical,
-      citekey: "legacy-ck",
-      libraryId: "library-doc",
-      attachments: [{ title: "PDF", mimeType: "application/pdf", assetAddress: "assets/p.pdf", sha256: "x" }],
-      translation: {},
-      projectIds: ["p1"],
-    });
-    const cells: Array<{ keyID: string; content: unknown }> = [];
-    const paperAttrs: Record<string, string>[] = [];
-    const keyValues = [
-      { key: { id: "block-key", name: "文档", type: "block" } },
-      { key: { id: "project-key", name: "所属项目", type: "mSelect" } },
-      ...Object.entries(LIBRARY_DATABASE_FIELD_LABELS).map(([field, name]) => ({
-        key: { id: `${field}-key`, name, type: field === "addedAt" ? "created" : "select" },
-      })),
-      ...Object.entries(LIBRARY_FIELD_LABELS).map(([field, name]) => ({ key: { id: `${field}-key`, name, type: "text" } })),
-    ];
-    const fake = {
-      listRowsByAttribute: async (name: string) => {
-        if (name === ATTR.libraryData) {
-          return [{ id: "library-doc", content: "库", hpath: "/库", box: "box", value: encodeLibraryData(libraryData) }];
-        }
-        if (name === LEGACY_ATTR.data) return [{ id: "paper-doc", value: legacy }];
-        return [];
-      },
-      getAttributeView: async () => ({ av: { id: "av", name: "库", keyValues } }),
-      renderAttributeView: async () => ({ id: "av", name: "库", viewID: "view", viewType: "table", view: {
-        rowCount: 1,
-        rows: [{ id: "item-1", cells: [
-          { value: { block: { id: "paper-doc", content: "示例论文 Example Paper" } } },
-          { value: { keyID: "authors-key", text: { content: "用户改过的作者" } } },
-          { value: { keyID: "citekey-key", text: { content: "" } } },
-        ] }],
-      } }),
-      setAttributeViewCell: async (_avId: string, keyID: string, _itemID: string, value: { text?: { content?: string }; mSelect?: Array<{ content: string }> }) => {
-        cells.push({ keyID, content: value.text?.content ?? value.mSelect?.map((item) => item.content) });
-      },
-      setAttributeViewSelectOptions: async () => {},
-      getBlockAttrs: async () => ({}),
-      setBlockAttrs: async (_id: string, attrs: Record<string, string>) => { paperAttrs.push(attrs); },
-    } as unknown as KernelClient;
-
-    await new LibraryService(fake).discoverLibraries();
-
-    const written = new Map(cells.map((cell) => [cell.keyID, cell.content]));
-    expect(written.has("authors-key")).toBe(false);
-    expect(written.get("citekey-key")).toBe("legacy-ck");
-    expect(written.get("year-key")).toBe("2026");
-    expect(written.get("project-key")).toEqual(["项目一"]);
-    expect(written.get("readingStatus-key")).toEqual(["未读"]);
-    expect(written.get("rating-key")).toEqual(["0"]);
-    const cleared = paperAttrs.at(-1) ?? {};
-    expect(cleared[LEGACY_ATTR.data]).toBe("");
-    expect(cleared[LEGACY_ATTR.citekey]).toBe("");
-    expect(cleared[ATTR.libraryId]).toBe("library-doc");
-    expect(JSON.parse(cleared[ATTR.attachments]!)[0]?.assetAddress).toBe("assets/p.pdf");
-  });
 });
 
-describe("legacy library data decoding", () => {
-  it("upgrades schema v1/v2 payloads and drops column management fields", () => {
+describe("library data decoding", () => {
+  it("round-trips plain JSON payloads", () => {
+    const data = fullLibraryData({ projects: [{ id: "p1", name: "项目一" }] });
+    expect(decodeLibraryData(encodeLibraryData(data))).toEqual(data);
+  });
+
+  it("still reads legacy base64 payloads and upgrades schema v1/v2", () => {
     const decoded = decodeLibraryData(legacyEncode({
       schemaVersion: 2,
       avId: "av",

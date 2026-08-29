@@ -52,10 +52,6 @@ export function uniqueCitekey(base: string, existing: Iterable<string>): string 
   return `${base}${suffix}`;
 }
 
-export function paperDocumentTitle(canonical: PaperCanonical, citekey: string): string {
-  return sanitizeDocumentName(`${citekey} - ${canonical.title || "未命名文献"}`);
-}
-
 export function titleSimilarity(left: string, right: string): number {
   const a = normalizeTitle(left);
   const b = normalizeTitle(right);
