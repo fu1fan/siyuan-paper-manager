@@ -271,8 +271,24 @@ export class LibraryService {
           id: docId,
           content: paper.canonical.title,
         }]);
-        rows = await retry(() => this.allRows(library.data), (value) => Boolean(findBoundRow(value, docId)));
-        row = findBoundRow(rows, docId);
+        // 确认建行优先直读条目关联映射（直读 av 数据）：renderAttributeView
+        // 是视图渲染快照，内核异步落库期间可能持续返回旧数据，导致导入后
+        // 短期内识别不到论文页。映射不可用（老内核）时回退到视图轮询。
+        let itemId = await this.findItemId(library.data, docId);
+        if (itemId === "") {
+          itemId = await retry(
+            () => this.findItemId(library.data, docId),
+            (value) => value !== "" && value !== null,
+            8,
+            250,
+          );
+        }
+        if (itemId) {
+          row = { id: itemId, cells: [{ value: { block: { id: docId, content: paper.canonical.title } } }] };
+        } else {
+          rows = await retry(() => this.allRows(library.data), (value) => Boolean(findBoundRow(value, docId)), 8, 250);
+          row = findBoundRow(rows, docId);
+        }
       }
       if (!row) throw new Error("数据库添加论文行后未返回条目 ID");
       if (writeMetadata) {
@@ -468,14 +484,15 @@ export class LibraryService {
     });
   }
 
-  private async findItemId(data: PaperLibraryData, docId: string): Promise<string> {
+  private async findItemId(data: PaperLibraryData, docId: string): Promise<string | null> {
     try {
       const mapping = await this.kernel.getAttributeViewItemIDsByBoundIDs(data.avId, [docId]);
       return mapping[docId] ?? "";
     } catch (error) {
-      // 老内核（< 3.3.1）没有该端点；entryInLibrary 会再按绑定块整表扫描兜底。
+      // 老内核（< 3.3.1）没有该端点，返回 null 表示不可用；
+      // entryInLibrary 会再按绑定块整表扫描兜底。
       console.debug("[paper-manager] 条目关联查询不可用，回退到整表扫描", error);
-      return "";
+      return null;
     }
   }
 
@@ -675,10 +692,15 @@ function creatorName(creator: { family: string; given: string }): string {
   return [creator.family, creator.given].filter(Boolean).join(", ");
 }
 
-async function retry<T>(fn: () => Promise<T>, predicate: (value: T) => boolean): Promise<T> {
+async function retry<T>(
+  fn: () => Promise<T>,
+  predicate: (value: T) => boolean,
+  attempts = 5,
+  delayMs = 120,
+): Promise<T> {
   let value = await fn();
-  for (let attempt = 0; attempt < 5 && !predicate(value); attempt += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 120));
+  for (let attempt = 0; attempt < attempts && !predicate(value); attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
     value = await fn();
   }
   return value;

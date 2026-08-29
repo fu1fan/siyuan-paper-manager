@@ -56,6 +56,29 @@ describe("library database projection", () => {
     expect(cells).toContainEqual({ keyID: "rating-key", itemID: "real-item-id" });
   });
 
+  it("confirms a new row through the bound-item mapping when the rendered view is stale", async () => {
+    const current = paper();
+    const cells: Array<{ keyID: string; itemID: string }> = [];
+    const fake = {
+      getBlockAttrs: async () => ({ [ATTR.libraryData]: encodeLibraryData(fullLibraryData()) }),
+      query: async () => [{ content: "库", hpath: "/库", box: "box" }],
+      // 视图渲染快照始终是旧的（内核异步落库），不包含新行
+      renderAttributeView: async () => ({ id: "av", name: "库", viewID: "view", viewType: "table", view: {
+        rowCount: 0,
+        rows: [],
+      } }),
+      addAttributeViewBlocks: async () => {},
+      getAttributeViewItemIDsByBoundIDs: async (_avId: string, blockIds: string[]) =>
+        Object.fromEntries(blockIds.map((id) => [id, id === "paper-doc" ? "mapped-item-id" : ""])),
+      setAttributeViewCell: async (_avID: string, keyID: string, itemID: string) => { cells.push({ keyID, itemID }); },
+      setBlockAttrs: async () => {},
+    } as unknown as KernelClient;
+    const service = new LibraryService(fake);
+    expect(await service.syncPaper("paper-doc", current, true)).toBe("mapped-item-id");
+    expect(cells).toHaveLength(LIBRARY_METADATA_FIELDS.length + 2);
+    expect(cells).toContainEqual({ keyID: "citekey-key", itemID: "mapped-item-id" });
+  });
+
   it("never rewrites metadata cells without the import merge flag", async () => {
     const cells: string[] = [];
     const attrs: Record<string, string>[] = [];
