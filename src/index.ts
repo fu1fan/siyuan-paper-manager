@@ -9,6 +9,7 @@ import { buildEnvironmentReport } from "./services/environment-check";
 import { ItemProcessor } from "./services/item-processor";
 import { SettingsStore } from "./services/settings-store";
 import { TranslatorService } from "./services/translator";
+import { LibraryService } from "./services/library-service";
 import type { PluginSettings } from "./types/settings";
 import { resolveDuplicateDialog } from "./ui/dialogs/duplicate";
 import { openEditMetadataDialog } from "./ui/dialogs/edit-metadata";
@@ -16,6 +17,7 @@ import { openImportPdfDialog } from "./ui/dialogs/import-pdf";
 import { registerPaperUi } from "./ui/commands";
 import { escapeHtml } from "./ui/dom";
 import { SettingsPanel } from "./ui/settings";
+import { openOnboardingDialog } from "./ui/dialogs/onboarding";
 
 export default class PaperManagerPlugin extends Plugin {
   private readonly kernelClient = new KernelClient();
@@ -25,6 +27,7 @@ export default class PaperManagerPlugin extends Plugin {
   private settingsPanel!: SettingsPanel;
   private templates!: TemplateService;
   private processor!: ItemProcessor;
+  private libraries!: LibraryService;
   private translator: TranslatorService | null = null;
   private connector: ConnectorServer | null = null;
   private cleanup: Array<() => void> = [];
@@ -38,6 +41,7 @@ export default class PaperManagerPlugin extends Plugin {
       onModeChange: (templateMode) => this.statusStore.update({ templateMode }),
       onFallback: (message) => showMessage(message, 7000, "error"),
     });
+    this.libraries = new LibraryService(this.kernelClient);
     this.processor = new ItemProcessor(
       this.kernelClient,
       this.templates,
@@ -54,6 +58,7 @@ export default class PaperManagerPlugin extends Plugin {
       PLUGIN_NAME,
       this.settings,
       this.kernelClient,
+      this.libraries,
       (settings) => this.updateSettings(settings),
     );
     this.setting = this.settingsPanel.setting;
@@ -68,6 +73,10 @@ export default class PaperManagerPlugin extends Plugin {
       getStatus: () => this.statusStore.get(),
     }));
     if (this.settings.autoListen) void this.startConnector();
+  }
+
+  onLayoutReady(): void {
+    setTimeout(() => { void this.ensureOnboarding(); }, 500);
   }
 
   onunload(): void {
@@ -85,6 +94,24 @@ export default class PaperManagerPlugin extends Plugin {
     if (restart) {
       await this.stopConnector();
       if (next.autoListen) await this.startConnector();
+    }
+  }
+
+  private async ensureOnboarding(): Promise<void> {
+    try {
+      const libraries = await this.libraries.discoverLibraries();
+      const current = libraries.find((library) => library.docId === this.settings.defaultLibraryDocId);
+      if (current) {
+        if (!this.settings.onboardingCompleted) {
+          await this.updateSettings({ ...this.settings, onboardingCompleted: true });
+        }
+        return;
+      }
+      await openOnboardingDialog(this.kernelClient, this.libraries, async (library) => {
+        await this.updateSettings({ ...this.settings, defaultLibraryDocId: library.docId, onboardingCompleted: true });
+      });
+    } catch (error) {
+      showMessage(`初始化文献库失败：${error instanceof Error ? error.message : String(error)}`, 7000, "error");
     }
   }
 
