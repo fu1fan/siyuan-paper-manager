@@ -35,6 +35,7 @@ export class TranslatorService {
   private activeDocId: string | null = null;
   private readonly queue: QueuedTranslation[] = [];
   private pumping = false;
+  private lastRunning: { docId: string; progress?: number; message?: string } | null = null;
 
   constructor(private readonly kernel: KernelClient, private readonly options: TranslatorOptions) {
     const requireFn = options.requireFn ?? getNodeRequire();
@@ -75,8 +76,6 @@ export class TranslatorService {
       this.pumping = false;
     }
   }
-
-  private lastRunning: { docId: string; progress?: number; message?: string } | null = null;
 
   private emit(state: TranslationState): void {
     if (state.state === "running") {

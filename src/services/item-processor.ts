@@ -18,7 +18,7 @@ import {
   titleSimilarity,
 } from "../core/naming";
 import { TemplateService } from "../core/templates";
-import { LibraryService, type PaperLibraryInfo } from "./library-service";
+import { LibraryService, type LibraryPaperRecord, type PaperLibraryInfo } from "./library-service";
 import { uniqueCitekey } from "../core/naming";
 
 export interface ProcessResult {
@@ -46,8 +46,10 @@ export class ItemProcessor {
     const library = await this.libraries.getLibrary(settings.defaultLibraryDocId);
     const incoming = paperDataFromCandidate(candidate);
     incoming.libraryId = library.docId;
-    incoming.citekey = uniqueCitekey(incoming.citekey, await this.libraries.citekeys(library.docId));
-    const match = await this.findDuplicate(incoming, library);
+    // 一次整表渲染同时取引用键与论文记录：引用键去重与查重共用，避免重复渲染数据库
+    const { papers, citekeys } = await this.libraries.listPapersAndCitekeys(library.docId);
+    incoming.citekey = uniqueCitekey(incoming.citekey, citekeys);
+    const match = this.findDuplicate(incoming, papers);
     let resolution: DuplicateResolution | null = null;
     if (match) {
       resolution = await this.resolveDuplicate(match, incoming);
@@ -130,8 +132,7 @@ export class ItemProcessor {
   }
 
   /** 查重直接读当前文献库的数据库行：DOI 列优先，其次引用键 + 标题相似度。 */
-  private async findDuplicate(incoming: PaperData, library: PaperLibraryInfo): Promise<DuplicateMatch | null> {
-    const candidates = await this.libraries.listPapers(library.docId);
+  private findDuplicate(incoming: PaperData, candidates: LibraryPaperRecord[]): DuplicateMatch | null {
     const doi = incoming.canonical.doi;
     if (doi) {
       const match = candidates.find((candidate) => candidate.paper.canonical.doi === doi);

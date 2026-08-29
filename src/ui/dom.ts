@@ -15,16 +15,6 @@ export function button(label: string, primary = false): HTMLButtonElement {
   return element;
 }
 
-export function field(label: string, control: HTMLElement, description?: string): HTMLElement {
-  const wrapper = document.createElement("label");
-  wrapper.className = "paper-manager-field";
-  const title = document.createElement("span");
-  title.textContent = label;
-  if (description) title.title = description;
-  wrapper.append(title, control);
-  return wrapper;
-}
-
 export function currentDocumentId(): string | null {
   const selectors = [
     ".layout__wnd--active .protyle-title[data-node-id]",

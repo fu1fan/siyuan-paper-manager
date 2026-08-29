@@ -2,6 +2,15 @@
 
 > **实现状态（0.4.0）**：四项能力、UI、测试与构建门禁已在 `codex` 分支落地。本文保留最初的研究与设计推导；实际源码以 `src/` 为准，当前架构和验证方法见 `docs/development.md`。
 >
+> **与当前实现（0.4.x）的主要差异**（以代码为准，下文不再逐项修订）：
+>
+> 1. **数据库权威化（schema v3）**：用户可见元数据的权威是文献库原生数据库行，不再是 `custom-paper-data` base64 字段。论文文档自定义属性只保存机器状态：附件清单（`custom-paper-attachments`，明文 JSON）、翻译产物地址（`custom-paper-translation-mono/-dual`）、处理状态（`custom-paper-state/-error`）、文献库归属（`custom-paper-library-id`）与同步状态（`custom-paper-library-sync/-error`）。4.7 的"单字段 base64 + 索引字段"方案已废弃；`custom-citekey`/`custom-doi`/`custom-attachment-pdf` 等索引字段均不存在。文献库配置 `custom-paper-library-data` 也是明文 JSON（读取时容忍 HTML 转义，兼容 v1/v2）。
+> 2. **无独立"编辑元数据"对话框**：用户在数据库行中直接编辑；插件只在导入/合并时回写元数据列（`writeMetadata`），其余路径绝不覆盖数据库。论文页识别通过父文档数据库条目查询（`getAttributeViewItemIDsByBoundIDs`）+ 全库兜底扫描，不读隐藏字段。
+> 3. **citekey 冲突自动规避**（与 4.5 相反）：重名时自动追加 `a/b/c…` 后缀（`uniqueCitekey`）。文档命名只用 citekey（副本加时间戳），正文首个 H1 保留论文完整标题，不再用"citekey - 标题"。
+> 4. **多文献库**：文献库是真实文档 + 原生数据库，可建多个并指定默认库；项目（多选列，可绑定思源文档）定义在库配置中。
+> 5. **模板渲染**：不使用 `/api/template/render`（见下方模板修订说明），由内置受限引擎渲染打包模板；meta 区可刷新，note 区一次性创建后不再触碰。
+> 6. **翻译**：串行队列 + 状态栏进度；重新翻译需确认，旧资源按 `autoDeleteOldTranslations` 在新版本保存成功后清理；翻译产物的删除有路径白名单（仅 `*-mono.pdf`/`*-dual.pdf`）。
+>
 > **模板实现修订**：思源 3.8.1 将 `/api/template/render` 限制到工作空间 `data/templates`，插件目录中的打包模板不能再交给该接口。当前实现直接读取随插件打包的模板并使用内置受限引擎渲染，不写入 `data/templates`，也不再执行会产生错误提示的原生模板探针。
 
 > **模板方案决策**：模板随插件打包（位于 `data/plugins/{插件名}/templates/`），由插件内置引擎渲染后再调用块 API 写入。模板不写入 `data/templates`，随插件安装、更新和卸载自动管理。

@@ -1,6 +1,6 @@
 {
   "name": "siyuan-paper-manager",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "SiYuan paper libraries backed by native databases, Zotero Connector imports, citation export, PDF metadata, and pdf2zh translation",
   "type": "module",
   "private": true,
@@ -26,7 +26,7 @@
     "paper",
     "pdf2zh"
   ],
-  "license": "MIT",
+  "license": "PolyForm-Noncommercial-1.0.0",
   "devDependencies": {
     "@eslint/js": "^9.39.5",
     "@types/archiver": "^6.0.3",

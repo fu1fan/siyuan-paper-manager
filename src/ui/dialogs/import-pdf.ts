@@ -1,6 +1,5 @@
 import { Dialog, showMessage } from "siyuan";
 import { SOURCE } from "../../constants";
-import type { KernelClient } from "../../core/kernel";
 import type { ItemProcessor } from "../../services/item-processor";
 import { MetadataExtractor } from "../../services/metadata-extractor";
 import type { MetadataCandidate } from "../../types/import";
@@ -8,12 +7,10 @@ import type { PluginSettings } from "../../types/settings";
 import { button, escapeHtml } from "../dom";
 
 export async function openImportPdfDialog(
-  kernel: KernelClient,
   processor: ItemProcessor,
   getSettings: () => PluginSettings,
 ): Promise<void> {
   const settings = getSettings();
-  void kernel;
   const dialog = new Dialog({
     title: "导入本地 PDF",
     width: "720px",

@@ -65,7 +65,7 @@ export default class PaperManagerPlugin extends Plugin {
     );
     this.setting = this.settingsPanel.setting;
     this.cleanup.push(registerPaperUi(this, {
-      importPdf: () => openImportPdfDialog(this.kernelClient, this.processor, () => this.settings),
+      importPdf: () => openImportPdfDialog(this.processor, () => this.settings),
       translate: (docId) => this.translate(docId),
       repair: (docId) => this.repair(docId),
       exportLibrary: (docId) => openCitationExportDialog(this.libraries, docId),

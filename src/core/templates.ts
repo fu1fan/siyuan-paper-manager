@@ -5,15 +5,10 @@ import { KernelClient } from "./kernel";
 import { safeAssetUrl, safeExternalUrl } from "./normalize";
 import { renderTemplateText } from "./template-engine";
 import { newNodeId } from "./node-id";
+import { retryUntil } from "./retry";
 
 export type TemplateName = "paper-meta" | "paper-note";
 export type TemplateMode = PluginStatus["templateMode"];
-
-export interface RenderedTemplate {
-  dataType: "markdown" | "dom";
-  content: string;
-  mode: Exclude<TemplateMode, "unknown">;
-}
 
 export interface PaperSectionIds {
   meta: string;
@@ -44,17 +39,9 @@ export class TemplateService {
     return renderTemplateText(await this.template(name), templateContext(data));
   }
 
-  async render(name: TemplateName, data: PaperData, _hostDocId: string): Promise<RenderedTemplate> {
-    return {
-      dataType: "markdown",
-      content: await this.renderBuiltin(name, data),
-      mode: "builtin",
-    };
-  }
-
   async ensureSections(docId: string, data: PaperData): Promise<PaperSectionIds> {
-    let meta = await retry(() => this.kernel.findSectionBlock(docId, SECTION.meta), 4, 120);
-    let note = await retry(() => this.kernel.findSectionBlock(docId, SECTION.note), 4, 120);
+    let meta = await retryUntil(() => this.kernel.findSectionBlock(docId, SECTION.meta), Boolean, 4, 120);
+    let note = await retryUntil(() => this.kernel.findSectionBlock(docId, SECTION.note), Boolean, 4, 120);
 
     // SiYuan 3.8.x may create the super blocks before their trailing custom IAL
     // is queryable. Adopt those containers instead of appending duplicates.
@@ -87,16 +74,12 @@ export class TemplateService {
     data: PaperData,
     knownBlockId?: string,
   ): Promise<void> {
-    const blockId = knownBlockId ?? await retry(() => this.kernel.findSectionBlock(docId, section), 8, 250);
+    const blockId = knownBlockId ?? await retryUntil(() => this.kernel.findSectionBlock(docId, section), Boolean, 8, 250);
     if (!blockId) throw new Error(`未找到 ${section} 模板容器`);
-    const rendered = await this.render(name, data, docId);
+    const content = await this.renderBuiltin(name, data);
     const previous = await this.kernel.getBlockKramdown(blockId);
     if (!previous.kramdown) throw new Error(`无法读取 ${section} 容器 Kramdown`);
-    if (rendered.dataType === "markdown") {
-      await this.kernel.updateBlock(blockId, preserveRootIal(rendered.content, blockId, section), "markdown", true);
-    } else {
-      await this.kernel.updateBlock(blockId, preserveRootDom(rendered.content, blockId, section), "dom", true);
-    }
+    await this.kernel.updateBlock(blockId, preserveRootIal(content, blockId, section), "markdown", true);
     await this.kernel.setBlockAttrs(blockId, { [ATTR.section]: section });
     const attrs = await this.kernel.getBlockAttrs(blockId);
     if (attrs[ATTR.section] !== section) throw new Error(`${section} 容器标记在刷新后丢失`);
@@ -188,26 +171,3 @@ function preserveRootIal(markdown: string, blockId: string, section: string): st
   return `${trimmed}\n${ial}\n`;
 }
 
-function preserveRootDom(dom: string, blockId: string, section: string): string {
-  let output = dom.trim();
-  output = output.replace(/data-node-id="[^"]+"/, `data-node-id="${blockId}"`);
-  const rootEnd = output.indexOf(">");
-  if (rootEnd >= 0) {
-    const root = output.slice(0, rootEnd);
-    const marked = /custom-section=/.test(root)
-      ? root.replace(/custom-section="[^"]*"/, `custom-section="${section}"`)
-      : `${root} custom-section="${section}"`;
-    output = `${marked}${output.slice(rootEnd)}`;
-  }
-  return output;
-}
-
-async function retry<T>(fn: () => Promise<T>, attempts: number, delayMs: number): Promise<T> {
-  let last: T;
-  for (let index = 0; index < attempts; index += 1) {
-    last = await fn();
-    if (last) return last;
-    await new Promise((resolve) => setTimeout(resolve, delayMs));
-  }
-  return last!;
-}

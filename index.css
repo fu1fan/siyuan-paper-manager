@@ -84,13 +84,6 @@
   white-space: pre-wrap;
 }
 
-.paper-manager-checkboxes {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-  gap: 8px 14px;
-  margin-top: 8px;
-}
-
 .paper-manager-library-section {
   margin-top: 16px;
   padding: 14px;

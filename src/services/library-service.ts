@@ -2,6 +2,7 @@ import { ATTR, LIBRARY_SCHEMA_VERSION } from "../constants";
 import { decodeLibraryData, encodeLibraryData } from "../core/codec";
 import type { AttributeViewRow, AttributeViewValue, KernelClient } from "../core/kernel";
 import { newNodeId } from "../core/node-id";
+import { retryUntil } from "../core/retry";
 import type {
   LibraryDatabaseField,
   LibraryMetadataField,
@@ -53,10 +54,11 @@ export class LibraryService {
 
   async discoverLibraries(): Promise<PaperLibraryInfo[]> {
     const output = await this.listLibraryRefs();
-    for (const library of output) {
+    // 锁按库串行，库与库之间可并行对齐
+    await Promise.all(output.map(async (library) => {
       try { await this.ensureSchemaFields(library); }
       catch (error) { console.warn("[paper-manager] 数据库字段初始化失败，可在设置中重试修复", library.docId, error); }
-    }
+    }));
     return output;
   }
 
@@ -125,10 +127,12 @@ export class LibraryService {
   }
 
   async getLibrary(docId: string): Promise<PaperLibraryInfo> {
-    const attrs = await this.kernel.getBlockAttrs(docId);
+    const [attrs, rows] = await Promise.all([
+      this.kernel.getBlockAttrs(docId),
+      this.kernel.query(`SELECT content, hpath, box FROM blocks WHERE id = '${sql(docId)}' LIMIT 1`),
+    ]);
     const encoded = attrs[ATTR.libraryData];
     if (!encoded) throw new Error("当前文档不是论文文献库");
-    const rows = await this.kernel.query(`SELECT content, hpath, box FROM blocks WHERE id = '${sql(docId)}' LIMIT 1`);
     const row = rows[0] ?? {};
     const library: PaperLibraryInfo = {
       docId,
@@ -276,7 +280,7 @@ export class LibraryService {
         // 短期内识别不到论文页。映射不可用（老内核）时回退到视图轮询。
         let itemId = await this.findItemId(library.data, docId);
         if (itemId === "") {
-          itemId = await retry(
+          itemId = await retryUntil(
             () => this.findItemId(library.data, docId),
             (value) => value !== "" && value !== null,
             8,
@@ -286,7 +290,7 @@ export class LibraryService {
         if (itemId) {
           row = { id: itemId, cells: [{ value: { block: { id: docId, content: paper.canonical.title } } }] };
         } else {
-          rows = await retry(() => this.allRows(library.data), (value) => Boolean(findBoundRow(value, docId)), 8, 250);
+          rows = await retryUntil(() => this.allRows(library.data), (value) => Boolean(findBoundRow(value, docId)), 8, 250);
           row = findBoundRow(rows, docId);
         }
       }
@@ -345,12 +349,21 @@ export class LibraryService {
     await this.kernel.removeAttributeViewBlocks(library.data.avId, stale.map((row) => row.id));
     let restoredRows = 0;
     const failed: LibrarySyncResult["failed"] = [];
-    for (const [docId, content] of members) {
-      if (findBoundRow(rows, docId)) continue;
+    const missing = [...members].filter(([docId]) => !findBoundRow(rows, docId));
+    if (missing.length) {
+      // 先整批建行；批量失败时回退到逐条，保留单篇失败原因
       try {
-        await this.kernel.addAttributeViewBlocks(library.data.avId, library.data.avBlockId, [{ id: docId, content }]);
-        restoredRows += 1;
-      } catch (error) { failed.push({ docId, message: message(error) }); }
+        await this.kernel.addAttributeViewBlocks(library.data.avId, library.data.avBlockId,
+          missing.map(([id, content]) => ({ id, content })));
+        restoredRows = missing.length;
+      } catch {
+        for (const [docId, content] of missing) {
+          try {
+            await this.kernel.addAttributeViewBlocks(library.data.avId, library.data.avBlockId, [{ id: docId, content }]);
+            restoredRows += 1;
+          } catch (error) { failed.push({ docId, message: message(error) }); }
+        }
+      }
     }
     await this.backfillTitles(library);
     return { papers: members.size, restoredRows, removedRows: stale.length, failed };
@@ -432,33 +445,36 @@ export class LibraryService {
   }
 
   async citekeys(libraryDocId: string, exceptDocId?: string): Promise<string[]> {
-    const library = await this.getLibrary(libraryDocId);
-    const keyId = library.data.fieldKeyIds.citekey;
-    if (!keyId) return [];
-    const rows = await this.allRows(library.data);
-    const keys: string[] = [];
-    for (const row of rows) {
-      const docId = boundBlockId(row);
-      if (!docId || docId === exceptDocId) continue;
-      const value = row.cells.find((cell) => cell.value.keyID === keyId)?.value.text?.content?.trim();
-      if (value) keys.push(value);
-    }
-    return keys;
+    return (await this.listPapersAndCitekeys(libraryDocId, exceptDocId)).citekeys;
   }
 
   async listPapers(libraryDocId: string): Promise<LibraryPaperRecord[]> {
+    return (await this.listPapersAndCitekeys(libraryDocId)).papers;
+  }
+
+  /** 一次整表渲染同时产出论文记录与引用键，避免导入查重时重复渲染数据库。 */
+  async listPapersAndCitekeys(
+    libraryDocId: string,
+    exceptDocId?: string,
+  ): Promise<{ papers: LibraryPaperRecord[]; citekeys: string[] }> {
     const library = await this.getLibrary(libraryDocId);
     const rows = await this.allRows(library.data);
     const projectIdsByName = new Map(library.data.projects.map((project) => [project.name, project.id]));
-    const output: LibraryPaperRecord[] = [];
+    const citekeyKeyId = library.data.fieldKeyIds.citekey;
+    const papers: LibraryPaperRecord[] = [];
+    const citekeys: string[] = [];
     for (const row of rows) {
       const docId = boundBlockId(row);
       if (!docId) continue;
       const projectIds = selectContents(row, library.data.projectKeyId)
         .map((name) => projectIdsByName.get(name)).filter((id): id is string => Boolean(id));
-      output.push({ docId, paper: paperFromRow(library, row, docId), projectIds });
+      papers.push({ docId, paper: paperFromRow(library, row, docId), projectIds });
+      if (citekeyKeyId && docId !== exceptDocId) {
+        const value = row.cells.find((cell) => cell.value.keyID === citekeyKeyId)?.value.text?.content?.trim();
+        if (value) citekeys.push(value);
+      }
     }
-    return output;
+    return { papers, citekeys };
   }
 
   private saveLibraryData(docId: string, data: PaperLibraryData): Promise<void> {
@@ -728,20 +744,6 @@ function boundBlockId(row: AttributeViewRow): string {
 
 function creatorName(creator: { family: string; given: string }): string {
   return [creator.family, creator.given].filter(Boolean).join(", ");
-}
-
-async function retry<T>(
-  fn: () => Promise<T>,
-  predicate: (value: T) => boolean,
-  attempts = 5,
-  delayMs = 120,
-): Promise<T> {
-  let value = await fn();
-  for (let attempt = 0; attempt < attempts && !predicate(value); attempt += 1) {
-    await new Promise((resolve) => setTimeout(resolve, delayMs));
-    value = await fn();
-  }
-  return value;
 }
 
 function sql(value: string): string {

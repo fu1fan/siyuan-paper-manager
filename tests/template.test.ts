@@ -63,11 +63,11 @@ describe("template capability mode", () => {
       loadTemplate: async () => "{{{row\n# {{.title}}\n}}}\n{: custom-section=\"meta\"}",
       onModeChange: (mode) => modes.push(mode),
     });
-    const first = await service.render("paper-meta", paper(), "doc");
-    const second = await service.render("paper-meta", paper(), "doc");
-    expect(first).toMatchObject({ mode: "builtin", dataType: "markdown" });
-    expect(second).toMatchObject({ mode: "builtin", dataType: "markdown" });
-    expect(first.content).toContain("# 示例论文 Example Paper");
+    const first = await service.renderBuiltin("paper-meta", paper());
+    const second = await service.renderBuiltin("paper-meta", paper());
+    expect(service.getMode()).toBe("builtin");
+    expect(first).toContain("# 示例论文 Example Paper");
+    expect(second).toBe(first);
     expect(modes).toEqual(["builtin"]);
     expect(post).not.toHaveBeenCalled();
   });
