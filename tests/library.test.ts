@@ -74,4 +74,51 @@ describe("library database projection", () => {
     );
     warn.mockRestore();
   });
+
+  it("reuses same-name database columns and removes duplicates instead of recreating them", async () => {
+    let savedAttrs: Record<string, string> = {};
+    const removed: string[] = [];
+    const added: string[] = [];
+    const libraryData: PaperLibraryData = {
+      schemaVersion: 2,
+      avId: "av",
+      avBlockId: "av-block",
+      selectedFields: [],
+      fieldKeyIds: {},
+      projectKeyId: "project-key",
+      databaseKeyIds: {},
+      columnOrder: ["project", "addedAt", "readingStatus", "rating"],
+      projects: [],
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    };
+    const fake = {
+      listRowsByAttribute: async () => [{
+        id: "library-doc", content: "库", hpath: "/库", box: "box", value: encodeLibraryData(libraryData),
+      }],
+      getAttributeView: async () => ({ av: { id: "av", name: "库", keyValues: [
+        { key: { id: "block-key", name: "文档", type: "block" } },
+        { key: { id: "project-key", name: "所属项目", type: "mSelect" } },
+        { key: { id: "old-status", name: "阅读状态", type: "select" } },
+        { key: { id: "dup-status", name: "阅读状态", type: "select" } },
+        { key: { id: "old-rating", name: "论文打分", type: "select" } },
+      ] } }),
+      addAttributeViewKey: async (_avId: string, keyId: string) => { added.push(keyId); },
+      removeAttributeViewKey: async (_avId: string, keyId: string) => { removed.push(keyId); },
+      setAttributeViewSelectOptions: async () => {},
+      sortAttributeViewKey: async () => {},
+      setBlockAttrs: async (_id: string, attrs: Record<string, string>) => { savedAttrs = attrs; },
+    } as unknown as KernelClient;
+
+    const library = (await new LibraryService(fake).discoverLibraries())[0]!;
+
+    expect(removed).toEqual(["dup-status"]);
+    expect(added).toHaveLength(1);
+    expect(library.data.databaseKeyIds).toEqual({
+      addedAt: added[0],
+      readingStatus: "old-status",
+      rating: "old-rating",
+    });
+    expect(savedAttrs[ATTR.libraryData]).toBeTruthy();
+  });
 });

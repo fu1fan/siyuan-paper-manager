@@ -38,7 +38,16 @@ export interface LibrarySyncResult {
 export interface LibraryPaperRecord { docId: string; paper: PaperData; projectIds: string[] }
 
 export class LibraryService {
+  private readonly libraryLocks = new Map<string, Promise<unknown>>();
+
   constructor(private readonly kernel: KernelClient) {}
+
+  /** 串行化同一文献库的结构变更，避免并发初始化重复建列。 */
+  private withLibraryLock<T>(docId: string, task: () => Promise<T>): Promise<T> {
+    const next = (this.libraryLocks.get(docId) ?? Promise.resolve()).then(task, task);
+    this.libraryLocks.set(docId, next.catch(() => undefined));
+    return next;
+  }
 
   async discoverLibraries(): Promise<PaperLibraryInfo[]> {
     const rows = await this.kernel.listRowsByAttribute(ATTR.libraryData);
@@ -52,10 +61,8 @@ export class LibraryService {
           notebookId: String(row.box ?? ""),
           data: decodeLibraryData(String(row.value ?? "")),
         };
-        if (databaseFields().some((field) => !library.data.databaseKeyIds[field])) {
-          try { await this.ensureDatabaseFields(library); }
-          catch (error) { console.warn("[paper-manager] 阅读字段初始化失败，可在设置中重试修复", library.docId, error); }
-        }
+        try { await this.ensureDatabaseFields(library); }
+        catch (error) { console.warn("[paper-manager] 阅读字段初始化失败，可在设置中重试修复", library.docId, error); }
         output.push(library);
       } catch (error) {
         console.warn("[paper-manager] 跳过损坏的文献库", row.id, error);
@@ -364,25 +371,46 @@ export class LibraryService {
   }
 
   private async ensureDatabaseFields(library: PaperLibraryInfo): Promise<void> {
-    let changed = false;
-    let previousKeyId = library.data.projectKeyId;
-    for (const field of databaseFields()) {
-      let keyId = library.data.databaseKeyIds[field];
-      if (!keyId) {
-        keyId = newNodeId();
-        await this.kernel.addAttributeViewKey(
-          library.data.avId, keyId, LIBRARY_DATABASE_FIELD_LABELS[field], databaseFieldKeyType(field), previousKeyId,
-        );
-        await this.configureDatabaseFieldOptions(library.data.avId, keyId, field);
-        library.data.databaseKeyIds[field] = keyId;
-        changed = true;
+    await this.withLibraryLock(library.docId, async () => {
+      // 以数据库实际列为准对齐：同名已有列直接复用，同名重复列删除，
+      // 避免旧数据、并发调用或中途失败导致的重复建列。
+      const definition = await this.kernel.getAttributeView(library.data.avId);
+      const keysByName = new Map<string, string[]>();
+      for (const entry of definition.av.keyValues) {
+        const list = keysByName.get(entry.key.name) ?? [];
+        list.push(entry.key.id);
+        keysByName.set(entry.key.name, list);
       }
-      previousKeyId = keyId;
-    }
-    if (!changed) return;
-    library.data.updatedAt = new Date().toISOString();
-    await this.saveLibraryData(library.docId, library.data);
-    await this.reorderManagedFields(library);
+      let changed = false;
+      let previousKeyId = library.data.projectKeyId;
+      for (const field of databaseFields()) {
+        const label = LIBRARY_DATABASE_FIELD_LABELS[field];
+        const matches = keysByName.get(label) ?? [];
+        const recorded = library.data.databaseKeyIds[field];
+        let keyId = recorded && matches.includes(recorded) ? recorded : matches[0];
+        for (const duplicate of matches.filter((id) => id !== keyId)) {
+          await this.kernel.removeAttributeViewKey(library.data.avId, duplicate);
+          changed = true;
+        }
+        if (!keyId) {
+          keyId = newNodeId();
+          await this.kernel.addAttributeViewKey(
+            library.data.avId, keyId, label, databaseFieldKeyType(field), previousKeyId,
+          );
+          changed = true;
+        }
+        await this.configureDatabaseFieldOptions(library.data.avId, keyId, field);
+        if (library.data.databaseKeyIds[field] !== keyId) {
+          library.data.databaseKeyIds[field] = keyId;
+          changed = true;
+        }
+        previousKeyId = keyId;
+      }
+      if (!changed) return;
+      library.data.updatedAt = new Date().toISOString();
+      await this.saveLibraryData(library.docId, library.data);
+      await this.reorderManagedFields(library);
+    });
   }
 
   private async reorderManagedFields(library: PaperLibraryInfo): Promise<void> {
