@@ -9,6 +9,7 @@ export interface PaperUiActions {
   editMetadata: (docId: string) => Promise<void>;
   translate: (docId: string) => Promise<void>;
   repair: (docId: string) => Promise<void>;
+  exportLibrary: (docId: string) => Promise<void>;
   openSettings: () => void;
   selfCheck: () => Promise<void>;
   toggleConnector: () => Promise<void>;
@@ -25,6 +26,11 @@ export function registerPaperUi(
     langText: "论文管理：导入本地 PDF",
     hotkey: "⌥I",
     callback: () => { void run(actions.importPdf); },
+  });
+  plugin.addCommand({
+    langKey: "export-library-citations",
+    langText: "论文管理：导出当前文献库引用",
+    callback: () => { void withCurrentDoc(actions.exportLibrary); },
   });
   plugin.addCommand({
     langKey: "edit-paper-metadata",
@@ -73,6 +79,7 @@ function openQuickMenu(event: MouseEvent, actions: PaperUiActions): void {
   menu.addItem({ icon: "iconUpload", label: "导入本地 PDF", click: () => run(actions.importPdf) });
   menu.addItem({ icon: "iconEdit", label: "编辑当前论文元数据", click: () => withCurrentDoc(actions.editMetadata) });
   menu.addItem({ icon: "iconLanguage", label: "翻译当前论文", click: () => withCurrentDoc(actions.translate) });
+  menu.addItem({ icon: "iconDownload", label: "导出当前文献库引用", click: () => withCurrentDoc(actions.exportLibrary) });
   menu.addSeparator();
   const status = actions.getStatus().connector;
   menu.addItem({
@@ -109,6 +116,11 @@ export function topBarMenuPosition(event: MouseEvent): {
 async function addPaperItems(menu: { addItem: (item: any) => unknown; addSeparator?: () => unknown }, docId: string, kernel: KernelClient, actions: PaperUiActions): Promise<void> {
   try {
     const attrs = await kernel.getBlockAttrs(docId);
+    if (attrs[ATTR.libraryData]) {
+      menu.addSeparator?.();
+      menu.addItem({ icon: "iconDownload", label: "导出文献库引用", click: () => run(() => actions.exportLibrary(docId)) });
+      return;
+    }
     if (!attrs[ATTR.data]) return;
     menu.addSeparator?.();
     menu.addItem({ icon: "iconEdit", label: "编辑论文元数据", click: () => run(() => actions.editMetadata(docId)) });

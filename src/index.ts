@@ -18,6 +18,7 @@ import { registerPaperUi } from "./ui/commands";
 import { escapeHtml } from "./ui/dom";
 import { SettingsPanel } from "./ui/settings";
 import { openOnboardingDialog } from "./ui/dialogs/onboarding";
+import { openCitationExportDialog } from "./ui/dialogs/export-citations";
 
 export default class PaperManagerPlugin extends Plugin {
   private readonly kernelClient = new KernelClient();
@@ -68,6 +69,7 @@ export default class PaperManagerPlugin extends Plugin {
       editMetadata: (docId) => this.editMetadata(docId),
       translate: (docId) => this.translate(docId),
       repair: (docId) => this.repair(docId),
+      exportLibrary: (docId) => openCitationExportDialog(docId, this.libraries),
       openSettings: () => this.settingsPanel.open(),
       selfCheck: () => this.selfCheck(),
       toggleConnector: () => this.toggleConnector(),

@@ -98,6 +98,36 @@
   }
 }
 
+.paper-manager-export-toolbar {
+  display: grid;
+  grid-template-columns: minmax(240px, 1fr) 180px 240px;
+  gap: 10px;
+}
+
+.paper-manager-export-list {
+  max-height: 260px;
+  overflow: auto;
+  border: 1px solid var(--b3-border-color);
+  border-radius: var(--b3-border-radius);
+}
+
+.paper-manager-export-row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--b3-border-color);
+}
+
+.paper-manager-export-row:last-child { border-bottom: 0; }
+.paper-manager-export-row span { display: grid; gap: 3px; }
+.paper-manager-export-row small { color: var(--b3-theme-on-surface-light); }
+.paper-manager-export-output { font-family: var(--b3-font-family-code); }
+
+@media (max-width: 760px) {
+  .paper-manager-export-toolbar { grid-template-columns: 1fr; }
+}
+
 .paper-manager-conflicts {
   max-height: 300px;
   overflow: auto;

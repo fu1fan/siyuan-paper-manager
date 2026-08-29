@@ -28,6 +28,8 @@ export interface LibrarySyncResult {
   failed: Array<{ docId: string; message: string }>;
 }
 
+export interface LibraryPaperRecord { docId: string; paper: PaperData }
+
 export class LibraryService {
   constructor(private readonly kernel: KernelClient) {}
 
@@ -255,6 +257,18 @@ export class LibraryService {
       try { keys.push((await this.kernel.getPaperData(id)).citekey); } catch { /* ignored */ }
     }
     return keys;
+  }
+
+  async listPapers(libraryDocId: string): Promise<LibraryPaperRecord[]> {
+    const rows = await this.kernel.listRowsByAttribute(ATTR.libraryId, libraryDocId);
+    const output: LibraryPaperRecord[] = [];
+    for (const row of rows) {
+      const docId = String(row.id ?? "");
+      if (!docId) continue;
+      try { output.push({ docId, paper: await this.kernel.getPaperData(docId) }); }
+      catch (error) { console.warn("[paper-manager] 导出时跳过损坏的论文页", docId, error); }
+    }
+    return output.sort((left, right) => left.paper.importedAt.localeCompare(right.paper.importedAt));
   }
 
   private saveLibraryData(docId: string, data: PaperLibraryData): Promise<void> {
