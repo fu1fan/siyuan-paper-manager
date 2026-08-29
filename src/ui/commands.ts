@@ -76,10 +76,10 @@ export function registerPaperUi(
 
 function openQuickMenu(event: MouseEvent, actions: PaperUiActions): void {
   const menu = new Menu("paper-manager-quick-menu");
-  menu.addItem({ icon: "iconUpload", label: "导入本地 PDF", click: () => run(actions.importPdf) });
+  menu.addItem({ icon: "iconDownload", label: "导入本地 PDF", click: () => run(actions.importPdf) });
   menu.addItem({ icon: "iconLanguage", label: "翻译当前论文", click: () => withCurrentDoc(actions.translate) });
   menu.addItem({ icon: "iconRefresh", label: "刷新当前论文元数据摘要", click: () => withCurrentDoc(actions.repair) });
-  menu.addItem({ icon: "iconDownload", label: "导出当前文献库引用", click: () => withCurrentDoc(actions.exportLibrary) });
+  menu.addItem({ icon: "iconUpload", label: "导出当前文献库引用", click: () => withCurrentDoc(actions.exportLibrary) });
   menu.addSeparator();
   const status = actions.getStatus().connector;
   menu.addItem({
@@ -122,7 +122,7 @@ async function addPaperItems(
     const kind = await actions.detectDocKind(docId);
     if (kind === "library") {
       menu.addSeparator?.();
-      menu.addItem({ icon: "iconDownload", label: "导出文献库引用", click: () => run(() => actions.exportLibrary(docId)) });
+      menu.addItem({ icon: "iconUpload", label: "导出文献库引用", click: () => run(() => actions.exportLibrary(docId)) });
       return;
     }
     if (kind !== "paper") return;
