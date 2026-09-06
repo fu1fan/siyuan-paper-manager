@@ -46,6 +46,7 @@ export interface AttributeViewValue {
   id?: string;
   keyID?: string;
   blockID?: string;
+  isDetached?: boolean;
   type?: string;
   block?: { id?: string; content?: string };
   text?: { content?: string };

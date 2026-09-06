@@ -71,6 +71,7 @@ describe("library database projection", () => {
 
   it("confirms a new row through the bound-item mapping when the rendered view is stale", async () => {
     const current = paper();
+    let added = false;
     const cells: Array<{ keyID: string; itemID: string }> = [];
     const fake = {
       getBlockAttrs: async () => ({ [ATTR.libraryData]: encodeLibraryData(fullLibraryData()) }),
@@ -80,9 +81,9 @@ describe("library database projection", () => {
         rowCount: 0,
         rows: [],
       } }),
-      addAttributeViewBlocks: async () => {},
+      addAttributeViewBlocks: async () => { added = true; },
       getAttributeViewItemIDsByBoundIDs: async (_avId: string, blockIds: string[]) =>
-        Object.fromEntries(blockIds.map((id) => [id, id === "paper-doc" ? "mapped-item-id" : ""])),
+        Object.fromEntries(blockIds.map((id) => [id, added && id === "paper-doc" ? "mapped-item-id" : ""])),
       setAttributeViewCell: async (_avID: string, keyID: string, itemID: string) => { cells.push({ keyID, itemID }); },
       setBlockAttrs: async () => {},
     } as unknown as KernelClient;
@@ -216,7 +217,7 @@ describe("library database projection", () => {
     expect(paperData.libraryId).toBe("library-doc");
     expect(paperData.attachments[0]?.assetAddress).toBe("assets/p.pdf");
     expect(paperData.translation.mono).toBe("assets/mono.pdf");
-    await expect(service.readPaper("other-doc")).rejects.toThrow(/不是论文页/);
+    await expect(service.readPaper("other-doc")).rejects.toThrow(/没有绑定该文档/);
   });
 
   it("falls back to scanning every library when the paper was moved out of the library doc", async () => {
@@ -257,7 +258,9 @@ describe("library database projection", () => {
   it("backfills empty title cells from the paper's first heading on sync", async () => {
     const libraryData = fullLibraryData();
     const keyValues = [
-      { key: { id: "block-key", name: "文档", type: "block" } },
+      { key: { id: "block-key", name: "文档", type: "block" }, values: [
+        { blockID: "item-1", block: { id: "paper-doc", content: "tang2026wikiskill" } },
+      ] },
       { key: { id: "project-key", name: "所属项目", type: "mSelect" } },
       ...Object.entries(LIBRARY_DATABASE_FIELD_LABELS).map(([field, name]) => ({
         key: { id: `${field}-key`, name, type: field === "addedAt" ? "created" : "select" },

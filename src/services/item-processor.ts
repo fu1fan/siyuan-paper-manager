@@ -102,8 +102,19 @@ export class ItemProcessor {
       });
       throw error;
     }
-    try { await this.libraries.syncPaper(docId, paper, writeMetadata); }
-    catch (error) { console.warn("[paper-manager] 论文状态已保存，但文献库数据库同步失败", docId, error); }
+    await this.syncPaperWithRetry(docId, paper, writeMetadata);
+  }
+
+  private async syncPaperWithRetry(docId: string, paper: PaperData, writeMetadata: boolean): Promise<void> {
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        await this.libraries.syncPaper(docId, paper, writeMetadata);
+        return;
+      } catch (error) {
+        if (attempt >= 2) throw new Error(`论文页 ${docId} 已保存，但数据库同步自动重试后仍失败：${error instanceof Error ? error.message : String(error)}`);
+        await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
+      }
+    }
   }
 
   private async createPaper(paper: PaperData, copy: boolean, library: PaperLibraryInfo): Promise<string> {
@@ -117,8 +128,7 @@ export class ItemProcessor {
       await this.kernel.setBlockAttrs(created.id, paperStateAttrs(paper));
       const sections = await this.templates.ensureSections(created.id, paper);
       await this.templates.refreshMeta(created.id, paper, sections.meta);
-      try { await this.libraries.syncPaper(created.id, paper, true); }
-      catch (error) { console.warn("[paper-manager] 论文页已创建，等待文献库修复同步", created.id, error); }
+      await this.syncPaperWithRetry(created.id, paper, true);
       return created.id;
     } catch (error) {
       try {
@@ -127,7 +137,7 @@ export class ItemProcessor {
           [ATTR.error]: String(error instanceof Error ? error.message : error).slice(0, 1000),
         });
       } catch { /* keep the original failure */ }
-      throw new Error(`论文页已创建但初始化失败，可使用“刷新元数据摘要”重试：${error instanceof Error ? error.message : String(error)}`);
+      throw new Error(`论文页已创建但初始化失败：${error instanceof Error ? error.message : String(error)}`);
     }
   }
 

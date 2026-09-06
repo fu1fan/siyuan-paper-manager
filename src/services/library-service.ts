@@ -199,7 +199,7 @@ export class LibraryService {
   /** 同 findPaperEntry，但未命中时抛出带具体环节原因的错误。 */
   async requirePaperEntry(docId: string): Promise<PaperEntry> {
     const { entry, reason } = await this.lookupPaperEntry(docId);
-    if (!entry) throw new Error(`当前文档不是论文页：${reason}`);
+    if (!entry) throw new Error(`论文识别失败：${reason}`);
     return entry;
   }
 
@@ -210,17 +210,19 @@ export class LibraryService {
     } catch (error) {
       console.warn("[paper-manager] 读取文档层级失败", docId, error);
     }
+    const failures: string[] = [];
     let parentChecked = false;
     if (parentId) {
       try {
         const parentAttrs = await this.kernel.getBlockAttrs(parentId);
         if (parentAttrs[ATTR.libraryData]) {
-          parentChecked = true;
           const library = await this.getLibrary(parentId);
           const entry = await this.entryInLibrary(library, docId);
           if (entry) return { entry, reason: "" };
+          parentChecked = true;
         }
       } catch (error) {
+        failures.push(message(error));
         console.warn("[paper-manager] 父页数据库查询失败，转为全库扫描", parentId, error);
       }
     }
@@ -228,13 +230,16 @@ export class LibraryService {
       const libraries = await this.listLibraryRefs();
       for (const library of libraries) {
         if (parentChecked && library.docId === parentId) continue;
-        const entry = await this.entryInLibrary(library, docId);
-        if (entry) return { entry, reason: "" };
+        try {
+          const entry = await this.entryInLibrary(library, docId);
+          if (entry) return { entry, reason: "" };
+        } catch (error) { failures.push(message(error)); }
       }
+      if (failures.length) return { entry: null, reason: `数据库读取失败：${[...new Set(failures)].join("；")}` };
       return {
         entry: null,
         reason: libraries.length
-          ? "所有文献库数据库中都没有绑定该文档的条目（若刚导入，请先在设置中对文献库点一次「重新同步」）"
+          ? "所有文献库数据库中都没有绑定该文档的条目"
           : "工作空间中还没有论文文献库",
       };
     } catch (error) {
@@ -244,10 +249,15 @@ export class LibraryService {
 
   private async entryInLibrary(library: PaperLibraryInfo, docId: string): Promise<PaperEntry | null> {
     const itemId = await this.findItemId(library.data, docId);
-    const rows = await this.allRows(library.data);
+    const rows = itemId
+      ? await retryUntil(() => this.allRows(library.data), (rows) => rows.some((row) => row.id === itemId), 4, 150)
+      : await this.allRows(library.data);
     const row = (itemId ? rows.find((candidate) => candidate.id === itemId) : undefined)
       ?? findBoundRow(rows, docId);
-    if (!row) return null;
+    if (!row) {
+      if (itemId) throw new Error("论文已绑定数据库，但条目数据暂时无法读取，请稍后重试");
+      return null;
+    }
     return { library, itemId: row.id, row };
   }
 
@@ -269,6 +279,10 @@ export class LibraryService {
     try {
       let rows = await this.allRows(library.data);
       let row = findBoundRow(rows, docId);
+      if (!row) {
+        const itemId = await this.findItemId(library.data, docId);
+        if (itemId) row = { id: itemId, cells: [] };
+      }
       const createdRow = !row;
       if (!row) {
         await this.kernel.addAttributeViewBlocks(library.data.avId, library.data.avBlockId, [{
@@ -575,12 +589,32 @@ export class LibraryService {
   }
 
   private async allRows(data: PaperLibraryData): Promise<AttributeViewRow[]> {
+    // 渲染视图受筛选、分组、布局和刷新时机影响，不能作为数据库成员全集。
+    // 原始值的 blockID 是条目 ID，主键值的 block.id 才是绑定的文档 ID。
+    try {
+      const definition = await this.kernel.getAttributeView(data.avId);
+      const primary = definition.av.keyValues.find(({ key }) => key.type === "block");
+      if (primary) {
+        const rows = new Map<string, AttributeViewRow>();
+        for (const value of primary.values ?? []) {
+          if (value.blockID) rows.set(value.blockID, { id: value.blockID, cells: [] });
+        }
+        for (const { key, values } of definition.av.keyValues) {
+          for (const value of values ?? []) {
+            if (value.blockID) rows.get(value.blockID)?.cells.push({ value: { ...value, keyID: key.id } });
+          }
+        }
+        return [...rows.values()];
+      }
+    } catch (error) {
+      console.debug("[paper-manager] 数据库原始数据读取失败，回退到视图", error);
+    }
     const output: AttributeViewRow[] = [];
     for (let page = 1; page <= 10_000; page += 1) {
       const rendered = await this.kernel.renderAttributeView(data.avId, data.avBlockId, page, 100, false);
       const rows = rendered.view.rows ?? [];
       output.push(...rows);
-      if (rows.length < 100 || output.length >= (rendered.view.rowCount ?? 0)) break;
+      if (rows.length < 100 || (rendered.view.rowCount !== undefined && output.length >= rendered.view.rowCount)) break;
     }
     return output;
   }
@@ -739,7 +773,7 @@ function findBoundRow(rows: AttributeViewRow[], docId: string): AttributeViewRow
 }
 
 function boundBlockId(row: AttributeViewRow): string {
-  return row.cells.find((cell) => cell.value.block?.id)?.value.block?.id ?? "";
+  return row.cells.find((cell) => !cell.value.isDetached && cell.value.block?.id)?.value.block?.id ?? "";
 }
 
 function creatorName(creator: { family: string; given: string }): string {
