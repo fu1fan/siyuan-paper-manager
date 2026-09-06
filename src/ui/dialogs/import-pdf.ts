@@ -10,7 +10,6 @@ export async function openImportPdfDialog(
   processor: ItemProcessor,
   getSettings: () => PluginSettings,
 ): Promise<void> {
-  const settings = getSettings();
   const dialog = new Dialog({
     title: "导入本地 PDF",
     width: "720px",
@@ -31,6 +30,8 @@ export async function openImportPdfDialog(
   const cancel = button("取消");
   let bytes: Uint8Array | null = null;
   let candidates: MetadataCandidate[] = [];
+  let extractionRequest = 0;
+  importButton.disabled = true;
 
   const updatePreview = () => {
     const selected = candidates[Number(candidateSelect.value)] ?? candidates[0];
@@ -48,18 +49,26 @@ export async function openImportPdfDialog(
   };
 
   candidateSelect.addEventListener("change", updatePreview);
-  fileInput.addEventListener("change", async () => {
+  const extract = async () => {
+    const request = ++extractionRequest;
     const file = fileInput.files?.[0];
-    if (!file) return;
-    bytes = new Uint8Array(await file.arrayBuffer());
-    preview.textContent = extractToggle.checked ? "正在提取元数据…" : "使用文件名创建元数据页。";
+    bytes = null;
+    candidates = [];
     importButton.disabled = true;
+    candidateSelect.disabled = true;
+    if (!file) { preview.textContent = "尚未选择 PDF。"; return; }
+    preview.textContent = extractToggle.checked ? "正在提取元数据…" : "使用文件名创建元数据页。";
     try {
-      const extractor = new MetadataExtractor({ enableCnki: settings.enableCnki });
+      const selectedBytes = new Uint8Array(await file.arrayBuffer());
+      if (request !== extractionRequest) return;
+      bytes = selectedBytes;
+      const extractor = new MetadataExtractor({ enableCnki: getSettings().enableCnki });
       const result = extractToggle.checked
-        ? await extractor.extract(bytes, file.name)
+        ? await extractor.extract(selectedBytes, file.name)
         : filenameOnlyResult(file.name);
-      candidates = result.candidates.length ? result.candidates : [result.selected];
+      if (request !== extractionRequest) return;
+      candidates = result.candidates.includes(result.selected)
+        ? result.candidates : [result.selected, ...result.candidates];
       candidateSelect.innerHTML = candidates.map((candidate, index) =>
         `<option value="${index}">${escapeHtml(candidate.provider)} · ${escapeHtml(candidate.canonical.title)} · ${candidate.confidence.toFixed(2)}</option>`).join("");
       candidateSelect.disabled = candidates.length <= 1;
@@ -67,6 +76,7 @@ export async function openImportPdfDialog(
       updatePreview();
       if (result.warnings.length) preview.textContent += `\n\n提示：${result.warnings.join("；")}`;
     } catch (error) {
+      if (request !== extractionRequest) return;
       const title = file.name.replace(/\.pdf$/i, "") || "未命名文献";
       candidates = [{
         provider: "filename",
@@ -77,11 +87,13 @@ export async function openImportPdfDialog(
       candidateSelect.innerHTML = `<option value="0">文件名兜底 · ${escapeHtml(title)}</option>`;
       updatePreview();
     } finally {
-      importButton.disabled = false;
+      if (request === extractionRequest) importButton.disabled = !bytes || !candidates.length;
     }
-  });
+  };
+  fileInput.addEventListener("change", () => { void extract(); });
+  extractToggle.addEventListener("change", () => { void extract(); });
 
-  cancel.addEventListener("click", () => dialog.destroy());
+  cancel.addEventListener("click", () => { extractionRequest += 1; dialog.destroy(); });
   importButton.addEventListener("click", async () => {
     const file = fileInput.files?.[0];
     const selected = candidates[Number(candidateSelect.value)] ?? candidates[0];
@@ -91,6 +103,7 @@ export async function openImportPdfDialog(
     }
     importButton.disabled = true;
     importButton.textContent = "正在导入…";
+    fileInput.disabled = extractToggle.disabled = true;
     try {
       const result = await processor.process({
         id: `pdf-${Date.now()}`,
@@ -99,12 +112,13 @@ export async function openImportPdfDialog(
         raw: selected.raw ?? { provider: selected.provider, filename: file.name },
         attachments: [{ title: file.name, mimeType: "application/pdf", bytes }],
       });
-      showMessage(`PDF 导入完成：${result.title}`, 5000, "info");
+      if (result.action !== "cancelled") showMessage(`PDF 导入完成：${result.title}`, 5000, "info");
       dialog.destroy();
     } catch (error) {
       showMessage(`PDF 导入失败：${error instanceof Error ? error.message : String(error)}`, 7000, "error");
       importButton.disabled = false;
       importButton.textContent = "导入并创建";
+      fileInput.disabled = extractToggle.disabled = false;
     }
   });
   dialog.element.querySelector<HTMLElement>("[data-actions]")!.append(cancel, importButton);

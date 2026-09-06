@@ -49,10 +49,12 @@ export function paperStateAttrs(paper: PaperData): Record<string, string> {
 }
 
 /**
- * 解析属性中的 JSON。属性经 SQL 读取时可能被 HTML 转义，先反转义再解析。
+ * 解析属性中的 JSON；普通解析失败时兼容 SQL 返回的 HTML 转义。
  */
-function parseStoredJson(encoded: string): unknown {
-  return JSON.parse(htmlUnescape(encoded.trim())) as unknown;
+export function parseStoredJson(encoded: string): unknown {
+  // 普通 JSON 内的 &quot; 等可能就是用户文本，只有解析失败才解码属性转义。
+  try { return JSON.parse(encoded.trim()) as unknown; }
+  catch { return JSON.parse(htmlUnescape(encoded.trim())) as unknown; }
 }
 
 function htmlUnescape(value: string): string {

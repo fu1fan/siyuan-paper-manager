@@ -36,3 +36,16 @@ describe("paper state attrs and naming", () => {
     expect(Object.keys(attrs)).toHaveLength(6);
   });
 });
+
+describe("stored JSON escaping", () => {
+  it("preserves literal HTML entities in ordinary JSON", async () => {
+    const { parseStoredJson } = await import("../src/core/codec");
+    expect(parseStoredJson('{"title":"Use &quot;quotes&quot; &amp; symbols"}'))
+      .toEqual({ title: "Use &quot;quotes&quot; &amp; symbols" });
+  });
+
+  it("decodes HTML-escaped attribute JSON", async () => {
+    const { parseStoredJson } = await import("../src/core/codec");
+    expect(parseStoredJson('{&quot;title&quot;:&quot;A &amp; B&quot;}')).toEqual({ title: "A & B" });
+  });
+});

@@ -255,6 +255,31 @@ describe("library database projection", () => {
     await expect(service.requirePaperEntry("paper-doc")).rejects.toThrow(/还没有论文文献库/);
   });
 
+  it("keeps bound rows when the membership attribute index is empty", async () => {
+    const data = fullLibraryData();
+    const remove = vi.fn();
+    const add = vi.fn();
+    const fake = {
+      getBlockAttrs: async () => ({ [ATTR.libraryData]: encodeLibraryData(data) }),
+      query: async () => [{ content: "库" }],
+      listRowsByAttribute: async () => [],
+      getAttributeView: async () => ({ av: { id: "av", name: "库", keyValues: [
+        { key: { id: "block-key", name: "文档", type: "block" }, values: [
+          { blockID: "item", block: { id: "doc", content: "paper" } },
+        ] },
+        { key: { id: "title-key", name: "标题", type: "text" }, values: [
+          { blockID: "item", text: { content: "保留的论文" } },
+        ] },
+      ] } }),
+      removeAttributeViewBlocks: remove, addAttributeViewBlocks: add,
+      setAttributeViewSelectOptions: async () => {},
+    } as unknown as KernelClient;
+    const result = await new LibraryService(fake).syncLibrary("library-doc");
+    expect(result).toMatchObject({ papers: 1, restoredRows: 0, removedRows: 0 });
+    expect(remove).not.toHaveBeenCalled();
+    expect(add).not.toHaveBeenCalled();
+  });
+
   it("backfills empty title cells from the paper's first heading on sync", async () => {
     const libraryData = fullLibraryData();
     const keyValues = [

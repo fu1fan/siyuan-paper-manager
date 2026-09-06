@@ -143,6 +143,11 @@ function itemTypeCode(type: string): string { return /book/i.test(type) ? "M" : 
 function bibType(type: string): string { return /bookSection|chapter/i.test(type) ? "incollection" : /book/i.test(type) ? "book" : /conference|proceedings/i.test(type) ? "inproceedings" : /thesis/i.test(type) ? "phdthesis" : "article"; }
 function hayagrivaType(type: string): string { return /book/i.test(type) ? "book" : /conference/i.test(type) ? "article" : "article"; }
 function compactCitation(format: CitationExportFormat): boolean { return format.startsWith("latex-") || format.startsWith("typst-"); }
-export function latex(value: string): string { return value.replace(/\\/g, "\\textbackslash{}").replace(/([#$%&_{}])/g, "\\$1").replace(/~/g, "\\textasciitilde{}").replace(/\^/g, "\\textasciicircum{}"); }
+export function latex(value: string): string {
+  const escapes: Record<string, string> = {
+    "\\": "\\textbackslash{}", "~": "\\textasciitilde{}", "^": "\\textasciicircum{}",
+  };
+  return value.replace(/[\\#$%&_{}~^]/g, (char) => escapes[char] ?? `\\${char}`);
+}
 function typstKey(value: string): string { return value.replace(/[^\p{L}\p{N}_:\-.]/gu, "-"); }
 function yamlScalar(value: string): string { return JSON.stringify(value.replace(/\r?\n/g, " ")); }

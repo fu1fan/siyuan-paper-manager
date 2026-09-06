@@ -32,7 +32,6 @@ export default class PaperManagerPlugin extends Plugin {
   private translator: TranslatorService | null = null;
   private connector: ConnectorServer | null = null;
   private cleanup: Array<() => void> = [];
-  private importQueue: Promise<void> = Promise.resolve();
 
   async onload(): Promise<void> {
     console.log(`[paper-manager] onload (${getFrontend()})`);
@@ -58,7 +57,7 @@ export default class PaperManagerPlugin extends Plugin {
     }
     this.settingsPanel = new SettingsPanel(
       PLUGIN_NAME,
-      this.settings,
+      () => this.settings,
       this.kernelClient,
       this.libraries,
       (settings) => this.updateSettings(settings),
@@ -93,8 +92,8 @@ export default class PaperManagerPlugin extends Plugin {
 
   private async updateSettings(next: PluginSettings): Promise<void> {
     const restart = next.zoteroPort !== this.settings.zoteroPort || next.autoListen !== this.settings.autoListen;
-    this.settings = next;
     await this.settingsStore.save(next);
+    this.settings = next;
     if (restart) {
       await this.stopConnector();
       if (next.autoListen) await this.startConnector();
@@ -173,13 +172,13 @@ export default class PaperManagerPlugin extends Plugin {
     else await this.startConnector();
   }
 
-  private enqueueImport(candidate: Parameters<ItemProcessor["process"]>[0]): void {
-    this.importQueue = this.importQueue
-      .then(async () => {
-        const result = await this.processor.process(candidate);
-        if (result.action !== "cancelled") showMessage(`论文${actionLabel(result.action)}：${result.title}`, 5000, "info");
-      })
-      .catch((error) => showMessage(`论文导入失败：${error instanceof Error ? error.message : String(error)}`, 7000, "error"));
+  private async enqueueImport(candidate: Parameters<ItemProcessor["process"]>[0]): Promise<void> {
+    try {
+      const result = await this.processor.process(candidate);
+      if (result.action !== "cancelled") showMessage(`论文${actionLabel(result.action)}：${result.title}`, 5000, "info");
+    } catch (error) {
+      showMessage(`论文导入失败：${error instanceof Error ? error.message : String(error)}`, 7000, "error");
+    }
   }
 
   private async detectDocKind(docId: string): Promise<"library" | "paper" | null> {

@@ -35,6 +35,7 @@ export class TranslatorService {
   private activeDocId: string | null = null;
   private readonly queue: QueuedTranslation[] = [];
   private pumping = false;
+  private cancellation: AbortController | null = null;
   private lastRunning: { docId: string; progress?: number; message?: string } | null = null;
 
   constructor(private readonly kernel: KernelClient, private readonly options: TranslatorOptions) {
@@ -44,7 +45,7 @@ export class TranslatorService {
   }
 
   isRunning(): boolean {
-    return this.child !== null || this.queue.length > 0;
+    return this.activeDocId !== null || this.queue.length > 0;
   }
 
   /** 多篇论文同时触发翻译时排队串行执行，状态栏显示当前进度与队列长度。 */
@@ -53,7 +54,7 @@ export class TranslatorService {
       return Promise.reject(new Error("该论文已在翻译队列中"));
     }
     return new Promise<TranslationResult>((resolve, reject) => {
-      this.queue.push({ docId, settings, resolve, reject });
+      this.queue.push({ docId, settings: structuredClone(settings), resolve, reject });
       // 让状态栏立即反映新的队列长度；沿用最近一次进度，避免清空百分比
       if (this.activeDocId && this.lastRunning) this.emit({ state: "running", ...this.lastRunning });
       void this.pump();
@@ -66,10 +67,19 @@ export class TranslatorService {
     try {
       while (this.queue.length) {
         const task = this.queue.shift()!;
+        this.activeDocId = task.docId;
+        this.cancellation = new AbortController();
+        this.emit({ state: "running", docId: task.docId, message: "正在准备翻译" });
         try {
-          task.resolve(await this.runTranslation(task.docId, task.settings));
+          task.resolve(await this.runTranslation(task.docId, task.settings, this.cancellation.signal));
         } catch (error) {
-          task.reject(error instanceof Error ? error : new Error(String(error)));
+          const message = translationError(error);
+          this.emit({ state: "error", docId: task.docId, message });
+          task.reject(new Error(message));
+        } finally {
+          this.activeDocId = null;
+          this.cancellation = null;
+          this.child = null;
         }
       }
     } finally {
@@ -87,15 +97,16 @@ export class TranslatorService {
     this.options.onState?.(state);
   }
 
-  private async runTranslation(docId: string, settings: PluginSettings): Promise<TranslationResult> {
+  private async runTranslation(docId: string, settings: PluginSettings, signal: AbortSignal): Promise<TranslationResult> {
     const paper = await this.options.readPaper(docId);
-    const previousTranslation = { ...paper.translation };
+    signal.throwIfAborted();
     const pdf = paper.attachments.find((attachment) => attachment.mimeType === "application/pdf");
     if (!pdf) throw new Error("当前论文没有可翻译的 PDF 附件");
     const fs = requireNode<typeof import("node:fs")>("fs", this.requireFn);
     const path = requireNode<typeof import("node:path")>("path", this.requireFn);
     const os = requireNode<typeof import("node:os")>("os", this.requireFn);
     const workspace = await this.kernel.getWorkspaceInfo();
+    signal.throwIfAborted();
     const dataRoot = path.resolve(workspace.workspaceDir, "data");
     const pdfPath = path.resolve(dataRoot, pdf.assetAddress);
     if (!isWithin(dataRoot, pdfPath, path.sep)) throw new Error("PDF 资源路径越出工作空间");
@@ -111,10 +122,11 @@ export class TranslatorService {
       pdfPath,
     ];
     const startedAt = Date.now();
-    this.activeDocId = docId;
     this.emit({ state: "running", docId, message: "正在启动 pdf2zh" });
     try {
+      signal.throwIfAborted();
       await this.spawn(executable, args, docId);
+      signal.throwIfAborted();
       const outputs = locateOutputs(outputDir, path.basename(pdfPath, path.extname(pdfPath)), fs, path);
       if (!outputs.mono) throw new Error("pdf2zh 未生成单语 PDF");
       validatePdf(outputs.mono, fs);
@@ -128,16 +140,21 @@ export class TranslatorService {
         const dualName = `${sanitizeDocumentName(paper.citekey)}-dual.pdf`;
         dual = await this.kernel.uploadAsset(settings.translationAssetsDir, dualBytes, dualName, "application/pdf");
       }
-      paper.translation = {
+      signal.throwIfAborted();
+      // 翻译可能持续很久，保存时重新读论文，保留期间新增的附件和数据库编辑。
+      const latest = await this.options.readPaper(docId);
+      signal.throwIfAborted();
+      const previousTranslation = { ...latest.translation };
+      latest.translation = {
         mono,
         dual,
         executable,
         args,
         completedAt: new Date().toISOString(),
       };
-      await this.options.persist(docId, paper);
+      await this.options.persist(docId, latest);
       const cleanup = settings.autoDeleteOldTranslations
-        ? await this.cleanupOldTranslations(previousTranslation, paper.translation)
+        ? await this.cleanupOldTranslations(previousTranslation, latest.translation)
         : { deleted: [], warnings: [] };
       const elapsedMs = Date.now() - startedAt;
       this.emit({ state: "success", docId, elapsedMs });
@@ -148,21 +165,15 @@ export class TranslatorService {
         deletedOldAssets: cleanup.deleted,
         cleanupWarnings: cleanup.warnings,
       };
-    } catch (error) {
-      const message = translationError(error);
-      this.emit({ state: "error", docId, message });
-      throw new Error(message);
     } finally {
-      this.child = null;
-      this.activeDocId = null;
       try { fs.rmSync(outputDir, { recursive: true, force: true }); } catch { /* system tmp cleanup */ }
     }
   }
 
   cancel(): void {
     for (const task of this.queue.splice(0)) task.reject(new Error("翻译已取消"));
-    if (!this.child) return;
-    this.child.kill("SIGTERM");
+    this.cancellation?.abort(new Error("翻译已取消"));
+    this.child?.kill("SIGTERM");
   }
 
   private spawn(executable: string, args: string[], docId: string): Promise<void> {
@@ -178,7 +189,7 @@ export class TranslatorService {
       const handleOutput = (chunk: Uint8Array) => {
         const line = new TextDecoder().decode(chunk);
         const progress = parseProgress(line);
-        this.options.onState?.({
+        this.emit({
           state: "running",
           docId,
           progress,

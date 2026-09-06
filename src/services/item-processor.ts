@@ -30,6 +30,7 @@ export interface ProcessResult {
 export type DuplicateResolver = (match: DuplicateMatch, incoming: PaperData) => Promise<DuplicateResolution>;
 
 export class ItemProcessor {
+  private importQueue: Promise<unknown> = Promise.resolve();
   constructor(
     private readonly kernel: KernelClient,
     private readonly templates: TemplateService,
@@ -38,40 +39,45 @@ export class ItemProcessor {
     private readonly libraries: LibraryService,
   ) {}
 
-  async process(
-    candidate: ImportCandidate,
-  ): Promise<ProcessResult> {
+  process(candidate: ImportCandidate): Promise<ProcessResult> {
+    // PDF 与 Connector 共用队列，查重、引用键分配和落库作为一个完整操作。
+    const task = this.importQueue.then(() => this.processCandidate(candidate));
+    this.importQueue = task.catch(() => undefined);
+    return task.finally(() => this.cleanupCandidate(candidate));
+  }
+
+  private async processCandidate(candidate: ImportCandidate): Promise<ProcessResult> {
     const settings = this.getSettings();
     if (!settings.defaultLibraryDocId) throw new Error("请先完成初始化并设置默认论文文献库");
     const library = await this.libraries.getLibrary(settings.defaultLibraryDocId);
     const incoming = paperDataFromCandidate(candidate);
     incoming.libraryId = library.docId;
-    // 一次整表渲染同时取引用键与论文记录：引用键去重与查重共用，避免重复渲染数据库
+    // 一次读取同时取引用键与论文记录，先查重再为新论文分配唯一引用键。
     const { papers, citekeys } = await this.libraries.listPapersAndCitekeys(library.docId);
-    incoming.citekey = uniqueCitekey(incoming.citekey, citekeys);
     const match = this.findDuplicate(incoming, papers);
     let resolution: DuplicateResolution | null = null;
     if (match) {
       resolution = await this.resolveDuplicate(match, incoming);
       if (resolution.action === "cancel") {
-        this.cleanupCandidate(candidate);
         return { action: "cancelled", docId: match.docId, title: incoming.canonical.title };
       }
     }
 
-    try {
-      incoming.attachments = await this.uploadAttachments(candidate.attachments, settings.assetsDir, incoming.citekey);
-      if (match && resolution?.action === "merge") {
-        const merged = mergePaperData(match.existing, incoming, resolution.overwrite);
-        await this.persistAndRefresh(match.docId, merged, undefined, true);
-        return { action: "merged", docId: match.docId, title: merged.canonical.title };
-      }
-      const copy = match && resolution?.action === "copy";
-      const docId = await this.createPaper(incoming, copy ?? false, library);
-      return { action: copy ? "copied" : "created", docId, title: incoming.canonical.title };
-    } finally {
-      this.cleanupCandidate(candidate);
+    if (match && resolution?.action === "merge") {
+      // 列表记录仅含数据库元数据；合并前补齐文档属性，避免丢失旧附件和译文。
+      const existing = await this.libraries.readPaper(match.docId);
+      incoming.attachments = await this.uploadAttachments(
+        candidate.attachments, settings.assetsDir, existing.citekey, existing.attachments,
+      );
+      const merged = mergePaperData(existing, incoming, resolution.overwrite);
+      await this.persistAndRefresh(match.docId, merged, undefined, true);
+      return { action: "merged", docId: match.docId, title: merged.canonical.title };
     }
+    incoming.citekey = uniqueCitekey(incoming.citekey, citekeys);
+    incoming.attachments = await this.uploadAttachments(candidate.attachments, settings.assetsDir, incoming.citekey);
+    const copy = match && resolution?.action === "copy";
+    const docId = await this.createPaper(incoming, copy ?? false, library);
+    return { action: copy ? "copied" : "created", docId, title: incoming.canonical.title };
   }
 
   /** 修复/刷新论文页：以数据库行为权威重建元数据摘要。 */
@@ -174,6 +180,7 @@ export class ItemProcessor {
     attachments: ImportAttachment[],
     assetsDir: string,
     citekey: string,
+    existing: PaperAttachment[] = [],
   ): Promise<PaperAttachment[]> {
     const output: PaperAttachment[] = [];
     for (let index = 0; index < attachments.length; index += 1) {
@@ -181,7 +188,7 @@ export class ItemProcessor {
       const bytes = attachment.bytes ?? (attachment.tempPath ? readFileBytes(attachment.tempPath) : null);
       if (!bytes) continue;
       const digest = await sha256(bytes);
-      if (output.some((item) => item.sha256 === digest)) continue;
+      if (existing.some((item) => item.sha256 === digest) || output.some((item) => item.sha256 === digest)) continue;
       const name = attachmentFilename(attachment, citekey, index);
       const assetAddress = await this.kernel.uploadAsset(assetsDir, bytes, name, attachment.mimeType);
       output.push({

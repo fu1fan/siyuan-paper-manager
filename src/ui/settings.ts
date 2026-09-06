@@ -18,12 +18,12 @@ export class SettingsPanel {
 
   constructor(
     private readonly pluginName: string,
-    initial: PluginSettings,
+    private readonly getSettings: () => PluginSettings,
     private readonly kernel: KernelClient,
     private readonly libraries: LibraryService,
     private readonly onSave: (settings: PluginSettings) => Promise<void>,
   ) {
-    this.draft = structuredClone(initial);
+    this.draft = structuredClone(getSettings());
     this.setting = new Setting({
       width: "820px",
       height: "680px",
@@ -35,6 +35,9 @@ export class SettingsPanel {
   open(): void { this.setting.open(this.pluginName); }
 
   private build(): HTMLElement {
+    this.draft = structuredClone(this.getSettings());
+    this.activeLibrary = undefined;
+    this.libraryEditor = undefined;
     const root = document.createElement("div");
     root.className = "paper-manager-form";
     const tabs = document.createElement("div");
@@ -155,6 +158,7 @@ export class SettingsPanel {
         if (doc) projectDocumentLabels.set(project.docId, documentLabel(doc));
       } catch { /* keep the stored ID visible */ }
     }));
+    if (this.activeLibrary !== selected) return;
     editor.innerHTML = `<hr class="b3-hr"><h3>${escapeHtml(selected.title)}</h3>
       <div class="paper-manager-preview">${escapeHtml(selected.hPath)} · 数据库 ${escapeHtml(selected.data.avId)}</div>
       <section class="paper-manager-library-section"><h4>项目定义</h4>
@@ -190,6 +194,10 @@ export class SettingsPanel {
   }
 
   private async save(): Promise<void> {
+    // 设置框确认后可能立即卸载 DOM，必须在第一次 await 前读取项目草稿。
+    const library = this.activeLibrary;
+    const list = this.libraryEditor?.querySelector<HTMLElement>("[data-project-list]");
+    const projects = list ? collectProjects(list) : undefined;
     try {
       const settings = normalizeSettings(this.draft);
       settings.onboardingCompleted = Boolean(settings.defaultLibraryDocId);
@@ -200,7 +208,7 @@ export class SettingsPanel {
       return;
     }
     try {
-      const applied = await this.applyLibraryChanges();
+      const applied = await this.applyLibraryChanges(library, projects);
       showMessage(applied ? `设置已保存；${applied}` : "论文管理设置已保存", 5000, "info");
     } catch (error) {
       showMessage(`设置已保存，但文献库改动应用失败：${message(error)}`, 7000, "error");
@@ -208,13 +216,8 @@ export class SettingsPanel {
   }
 
   /** 统一应用当前文献库编辑器的改动：项目定义。 */
-  private async applyLibraryChanges(): Promise<string> {
-    const editor = this.libraryEditor;
-    const library = this.activeLibrary;
-    if (!editor || !library || !editor.isConnected) return "";
-    const projectList = editor.querySelector<HTMLElement>("[data-project-list]");
-    if (!projectList) return "";
-    const projects = collectProjects(projectList);
+  private async applyLibraryChanges(library?: PaperLibraryInfo, projects?: LibraryProject[]): Promise<string> {
+    if (!library || !projects) return "";
     if (projectsEqual(projects, library.data.projects)) return "";
     await this.libraries.updateProjects(library.docId, projects);
     library.data.projects = projects;
@@ -261,6 +264,8 @@ function bindProjectRow(row: HTMLElement, kernel: KernelClient): void {
   let request = 0;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const choose = (document: DocumentSearchResult) => {
+    request += 1;
+    if (timer) clearTimeout(timer);
     search.value = documentLabel(document);
     docId.value = document.id;
     open.href = `siyuan://blocks/${document.id}`;
@@ -271,9 +276,9 @@ function bindProjectRow(row: HTMLElement, kernel: KernelClient): void {
     docId.value = "";
     open.hidden = true;
     if (timer) clearTimeout(timer);
+    const current = ++request;
     const keyword = search.value.trim();
     if (!keyword) { results.hidden = true; results.innerHTML = ""; return; }
-    const current = ++request;
     timer = setTimeout(() => { void (async () => {
       try {
         const documents = await kernel.searchDocuments(keyword, 12);
@@ -298,6 +303,8 @@ function bindProjectRow(row: HTMLElement, kernel: KernelClient): void {
   search.onfocus = () => { if (results.childElementCount || results.textContent) results.hidden = false; };
   search.onblur = () => setTimeout(() => { results.hidden = true; }, 180);
   row.querySelector<HTMLButtonElement>("[data-project-clear]")!.onclick = () => {
+    request += 1;
+    if (timer) clearTimeout(timer);
     search.value = "";
     docId.value = "";
     open.hidden = true;

@@ -72,3 +72,20 @@ describe("template capability mode", () => {
     expect(post).not.toHaveBeenCalled();
   });
 });
+
+
+it("preserves custom attributes when refreshing a metadata container", async () => {
+  let attrs: Record<string, string> = { "custom-section": "meta", "custom-user-label": "keep", style: "color: red" };
+  const expected = { ...attrs };
+  const kernel = {
+    getBlockKramdown: vi.fn(async () => ({ id: "meta", kramdown: "old content" })),
+    getBlockAttrs: vi.fn(async () => ({ ...attrs })),
+    updateBlock: vi.fn(async () => { attrs = {}; }),
+    setBlockAttrs: vi.fn(async (_id: string, value: Record<string, string>) => { attrs = value; }),
+  };
+  const service = new TemplateService(kernel as unknown as KernelClient, {
+    loadTemplate: async () => "{{{row\n# {{.title}}\n}}}",
+  });
+  await service.refreshMeta("doc", paper(), "meta");
+  expect(attrs).toEqual(expected);
+});

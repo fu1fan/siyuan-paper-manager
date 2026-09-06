@@ -69,12 +69,18 @@ describe.skipIf(process.platform === "win32")("translator integration", () => {
       });
     };
     let persisted = false;
+    let reads = 0;
+    const latest = paper({ ...current, canonical: { ...current.canonical, title: "翻译期间更新的标题" },
+      attachments: [...current.attachments, { title: "extra", mimeType: "text/html", assetAddress: "assets/extra.html", sha256: "extra" }],
+    });
     const translator = new TranslatorService(new KernelClient(post as any, fakeFetch as typeof fetch), {
       requireFn: createRequire(import.meta.url),
-      readPaper: async () => current,
+      readPaper: async () => ++reads === 1 ? current : latest,
       persist: async (_docId, updated) => {
         events.push("persist");
         persisted = true;
+        expect(updated.canonical.title).toBe("翻译期间更新的标题");
+        expect(updated.attachments).toHaveLength(2);
         expect(updated.translation.mono).toBe("assets/张2026示例论文-mono.pdf");
         expect(updated.translation.dual).toBe("assets/张2026示例论文-dual.pdf");
       },

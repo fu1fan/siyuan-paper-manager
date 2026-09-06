@@ -21,3 +21,8 @@ describe("citation export", () => {
     expect(latex("A & B_1")).toBe("A \\& B\\_1");
   });
 });
+
+it("escapes backslashes without escaping braces in the generated LaTeX command", async () => {
+  const { latex } = await import("../src/services/citation-export");
+  expect(latex('A\\B & {C} ~ ^')).toBe('A\\textbackslash{}B \\& \\{C\\} \\textasciitilde{} \\textasciicircum{}');
+});

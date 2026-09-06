@@ -1,5 +1,5 @@
 import { ATTR, LIBRARY_SCHEMA_VERSION } from "../constants";
-import { decodeLibraryData, encodeLibraryData } from "../core/codec";
+import { decodeLibraryData, encodeLibraryData, parseStoredJson } from "../core/codec";
 import type { AttributeViewRow, AttributeViewValue, KernelClient } from "../core/kernel";
 import { newNodeId } from "../core/node-id";
 import { retryUntil } from "../core/retry";
@@ -48,7 +48,11 @@ export class LibraryService {
   /** 串行化同一文献库的结构变更，避免并发初始化重复建列。 */
   private withLibraryLock<T>(docId: string, task: () => Promise<T>): Promise<T> {
     const next = (this.libraryLocks.get(docId) ?? Promise.resolve()).then(task, task);
-    this.libraryLocks.set(docId, next.catch(() => undefined));
+    const settled = next.then(() => undefined, () => undefined);
+    this.libraryLocks.set(docId, settled);
+    void settled.then(() => {
+      if (this.libraryLocks.get(docId) === settled) this.libraryLocks.delete(docId);
+    });
     return next;
   }
 
@@ -356,11 +360,12 @@ export class LibraryService {
       if (id) members.set(id, String(member.content ?? ""));
     }
     const rows = await this.allRows(library.data);
-    const stale = rows.filter((row) => {
-      const bound = boundBlockId(row);
-      return bound && !members.has(bound);
-    });
-    await this.kernel.removeAttributeViewBlocks(library.data.avId, stale.map((row) => row.id));
+    // 数据库绑定本身就是成员关系；缺少机器状态属性不代表应当删除该行。
+    // 属性索引可能滞后，也可能是用户直接绑定的论文，不能据此删掉元数据。
+    for (const row of rows) {
+      const docId = boundBlockId(row);
+      if (docId && !members.has(docId)) members.set(docId, "");
+    }
     let restoredRows = 0;
     const failed: LibrarySyncResult["failed"] = [];
     const missing = [...members].filter(([docId]) => !findBoundRow(rows, docId));
@@ -380,7 +385,7 @@ export class LibraryService {
       }
     }
     await this.backfillTitles(library);
-    return { papers: members.size, restoredRows, removedRows: stale.length, failed };
+    return { papers: members.size, restoredRows, removedRows: 0, failed };
   }
 
   /** 标题列后补：旧行的标题单元格为空时，用论文页首个 H1 回填。 */
@@ -663,7 +668,7 @@ export function paperFromRow(
   return {
     canonical: canonicalFromRow(library.data, row),
     citekey: fieldText(library.data, row, "citekey"),
-    libraryId: attrs[ATTR.libraryId] || library.docId,
+    libraryId: library.docId,
     attachments: parseAttachments(attrs[ATTR.attachments]),
     translation: {
       mono: attrs[ATTR.translationMono] || undefined,
@@ -725,7 +730,7 @@ function fieldUrl(data: PaperLibraryData, row: AttributeViewRow, field: LibraryM
 function parseAttachments(encoded: string | undefined): PaperData["attachments"] {
   if (!encoded) return [];
   try {
-    const parsed = JSON.parse(encoded) as unknown;
+    const parsed = parseStoredJson(encoded);
     if (!Array.isArray(parsed)) return [];
     return parsed.filter((item): item is PaperData["attachments"][number] =>
       Boolean(item) && typeof item === "object"

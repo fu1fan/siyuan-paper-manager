@@ -27,6 +27,7 @@ interface ConnectorSession {
   createdAt: number;
   updatedAt: number;
   expectedAttachments: number;
+  pendingUploads: number;
   timer?: ReturnType<typeof setTimeout>;
 }
 
@@ -185,24 +186,7 @@ export class ConnectorServer {
       this.respondJson(response, 400, { error: "items is required" });
       return;
     }
-    const sessionId = cleanId(payload.sessionID) || randomId();
-    if (this.completedSessions.has(sessionId)) {
-      this.respondJson(response, 201, { sessionID: sessionId });
-      return;
-    }
-    const now = Date.now();
-    const session: ConnectorSession = {
-      id: sessionId,
-      uri: string(payload.uri) || undefined,
-      items: items.map((raw, index) => ({ id: itemId(raw, index), raw: cloneRecord(raw) })),
-      attachments: [],
-      createdAt: now,
-      updatedAt: now,
-      expectedAttachments: expectedAttachmentCount(items),
-    };
-    this.sessions.set(sessionId, session);
-    this.scheduleDispatch(session, session.expectedAttachments ? this.options.attachmentWaitMs ?? 5 * 60_000 : undefined);
-    this.respondJson(response, 201, { sessionID: sessionId });
+    this.saveSession(payload, items, response);
   }
 
   private async handleSaveSnapshot(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -215,19 +199,24 @@ export class ConnectorServer {
           title: string(payload.title) || string(payload.url) || "网页快照",
           url: string(payload.url),
         }];
+    this.saveSession(payload, rawItems, response);
+  }
+
+  private saveSession(payload: Record<string, unknown>, items: Record<string, unknown>[], response: ServerResponse): void {
     const sessionId = cleanId(payload.sessionID) || randomId();
-    const now = Date.now();
-    const session: ConnectorSession = {
-      id: sessionId,
-      uri: string(payload.uri ?? payload.url) || undefined,
-      items: rawItems.map((raw, index) => ({ id: itemId(raw, index), raw: cloneRecord(raw) })),
-      attachments: [],
-      createdAt: now,
-      updatedAt: now,
-      expectedAttachments: expectedAttachmentCount(rawItems),
-    };
-    this.sessions.set(sessionId, session);
-    this.scheduleDispatch(session, session.expectedAttachments ? this.options.attachmentWaitMs ?? 5 * 60_000 : undefined);
+    // Connector 会重发请求；活动会话也必须幂等，不能覆盖已上传附件与定时器。
+    if (!this.sessions.has(sessionId) && !this.completedSessions.has(sessionId)) {
+      const now = Date.now();
+      const session: ConnectorSession = {
+        id: sessionId,
+        uri: string(payload.uri ?? payload.url) || undefined,
+        items: items.map((raw, index) => ({ id: itemId(raw, index), raw: cloneRecord(raw) })),
+        attachments: [], createdAt: now, updatedAt: now,
+        expectedAttachments: expectedAttachmentCount(items), pendingUploads: 0,
+      };
+      this.sessions.set(sessionId, session);
+      this.scheduleDispatch(session, session.expectedAttachments ? this.options.attachmentWaitMs ?? 5 * 60_000 : undefined);
+    }
     this.respondJson(response, 201, { sessionID: sessionId });
   }
 
@@ -238,13 +227,24 @@ export class ConnectorServer {
       this.respondJson(response, 404, { error: `unknown session: ${sessionId}` });
       return;
     }
-    const metadata = attachmentMetadata(request);
-    const attachment = await this.streamAttachment(request, metadata);
-    const existing = session.attachments.find((item) => item.id === attachment.id);
-    if (!existing) session.attachments.push(attachment);
+    session.pendingUploads += 1;
     session.updatedAt = Date.now();
-    if (session.attachments.length >= session.expectedAttachments) this.scheduleDispatch(session);
-    this.respondJson(response, 200, { id: attachment.id, progress: 100 });
+    try {
+      const attachment = await this.streamAttachment(request, attachmentMetadata(request));
+      if (this.sessions.get(sessionId) !== session) {
+        this.removeTempFile(attachment.tempPath);
+        this.respondJson(response, 409, { error: "session closed" });
+        return;
+      }
+      const existing = session.attachments.find((item) => item.id === attachment.id);
+      if (existing) this.removeTempFile(attachment.tempPath);
+      else session.attachments.push(attachment);
+      session.updatedAt = Date.now();
+      if (session.attachments.length >= session.expectedAttachments) this.scheduleDispatch(session);
+      this.respondJson(response, 200, { id: attachment.id, progress: 100 });
+    } finally {
+      session.pendingUploads -= 1;
+    }
   }
 
   private async handleStandaloneAttachment(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -289,6 +289,10 @@ export class ConnectorServer {
   private dispatchSession(sessionId: string): void {
     const session = this.sessions.get(sessionId);
     if (!session) return;
+    if (session.pendingUploads) {
+      this.scheduleDispatch(session);
+      return;
+    }
     this.sessions.delete(sessionId);
     this.completedSessions.set(sessionId, Date.now());
     for (const item of session.items) {
@@ -307,7 +311,7 @@ export class ConnectorServer {
   }
 
   private emitCandidate(candidate: ImportCandidate): void {
-    void Promise.resolve(this.options.onImport(candidate)).catch((error) => {
+    void Promise.resolve().then(() => this.options.onImport(candidate)).catch((error) => {
       this.options.onProtocolError?.(error instanceof Error ? error.message : String(error));
     });
   }
@@ -322,10 +326,15 @@ export class ConnectorServer {
     fs.mkdirSync(this.options.tempDirectory, { recursive: true });
     const id = cleanId(metadata.id) || randomId();
     const filename = safeFilename(metadata.filename || metadata.title || "attachment", mimeExtension(metadata.contentType ?? metadata.mimeType));
-    const tempPath = path.join(this.options.tempDirectory, `${Date.now()}-${id}-${filename}`);
-    await new Promise<void>((resolve, reject) => {
-      stream.pipeline(request, fs.createWriteStream(tempPath), (error) => error ? reject(error) : resolve());
-    });
+    const tempPath = path.join(this.options.tempDirectory, `${randomId()}-${id}-${filename}`);
+    try {
+      await new Promise<void>((resolve, reject) => {
+        stream.pipeline(request, fs.createWriteStream(tempPath), (error) => error ? reject(error) : resolve());
+      });
+    } catch (error) {
+      this.removeTempFile(tempPath);
+      throw error;
+    }
     return {
       id,
       connectorId: id,
@@ -340,7 +349,7 @@ export class ConnectorServer {
   private cleanupExpired(): void {
     const cutoff = Date.now() - (this.options.sessionTtlMs ?? CONNECTOR_SESSION_TTL_MS);
     for (const [id, session] of this.sessions) {
-      if (session.updatedAt < cutoff) {
+      if (!session.pendingUploads && session.updatedAt < cutoff) {
         if (session.timer) clearTimeout(session.timer);
         this.sessions.delete(id);
         for (const attachment of session.attachments) this.removeTempFile(attachment.tempPath);

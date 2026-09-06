@@ -26,7 +26,7 @@ function fixture() {
   ] } };
   const fake = {
     parentDocumentId: vi.fn(async () => "library-doc"),
-    getBlockAttrs: vi.fn(async (id: string) => id === "library-doc" ? { [ATTR.libraryData]: encodeLibraryData(data) } : {}),
+    getBlockAttrs: vi.fn(async (id: string) => id === "library-doc" ? { [ATTR.libraryData]: encodeLibraryData(data) } : { [ATTR.libraryId]: "stale-library" }),
     query: vi.fn(async () => [{ content: "库" }]),
     listRowsByAttribute: vi.fn(async () => [{ id: "library-doc", value: encodeLibraryData(data) }]),
     getAttributeView: vi.fn(async () => definition),
@@ -41,6 +41,7 @@ describe("paper binding independent of rendered views", () => {
   it("reads bound metadata even when the rendered view hides every row", async () => {
     const { fake, service } = fixture();
     expect((await service.readPaper("doc")).canonical.title).toBe("数据库中的真实标题");
+    expect((await service.readPaper("doc")).libraryId).toBe("library-doc");
     expect(fake.renderAttributeView).not.toHaveBeenCalled();
     expect(await service.findPaperEntry("unbound")).toBeNull();
   });

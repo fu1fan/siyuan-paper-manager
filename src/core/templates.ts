@@ -77,10 +77,12 @@ export class TemplateService {
     const blockId = knownBlockId ?? await retryUntil(() => this.kernel.findSectionBlock(docId, section), Boolean, 8, 250);
     if (!blockId) throw new Error(`未找到 ${section} 模板容器`);
     const content = await this.renderBuiltin(name, data);
-    const previous = await this.kernel.getBlockKramdown(blockId);
+    const [previous, previousAttrs] = await Promise.all([
+      this.kernel.getBlockKramdown(blockId), this.kernel.getBlockAttrs(blockId),
+    ]);
     if (!previous.kramdown) throw new Error(`无法读取 ${section} 容器 Kramdown`);
     await this.kernel.updateBlock(blockId, preserveRootIal(content, blockId, section), "markdown", true);
-    await this.kernel.setBlockAttrs(blockId, { [ATTR.section]: section });
+    await this.kernel.setBlockAttrs(blockId, { ...previousAttrs, [ATTR.section]: section });
     const attrs = await this.kernel.getBlockAttrs(blockId);
     if (attrs[ATTR.section] !== section) throw new Error(`${section} 容器标记在刷新后丢失`);
   }
