@@ -162,7 +162,7 @@ export class SettingsPanel {
     editor.innerHTML = `<hr class="b3-hr"><h3>${escapeHtml(selected.title)}</h3>
       <div class="paper-manager-preview">${escapeHtml(selected.hPath)} · 数据库 ${escapeHtml(selected.data.avId)}</div>
       <section class="paper-manager-library-section"><h4>项目定义</h4>
-        <p class="b3-label__text">项目名称用于数据库多选；可搜索并绑定一个思源项目文档。</p>
+        <p class="b3-label__text">保存后，项目名称会出现在本文献库「所属项目」的候选标签中，点击即可多选；可搜索并绑定一个思源项目文档。</p>
         <div class="paper-manager-project-list" data-project-list>${selected.data.projects.map((project) => projectRowHtml(
           project, project.docId ? projectDocumentLabels.get(project.docId) ?? project.docId : "",
         )).join("")}</div>

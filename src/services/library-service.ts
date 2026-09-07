@@ -172,6 +172,9 @@ export class LibraryService {
     }).filter((project) => project.name);
     const nextById = new Map(nextProjects.map((project) => [project.id, project]));
     const rows = await this.allRows(library.data);
+    await this.kernel.setAttributeViewSelectOptions(
+      library.data.avId, library.data.projectKeyId, nextProjects.map((project) => project.name), true,
+    );
     library.data.projects = nextProjects;
     library.data.updatedAt = new Date().toISOString();
     await this.saveLibraryData(libraryDocId, library.data);
@@ -507,6 +510,11 @@ export class LibraryService {
   private async ensureSchemaFields(library: PaperLibraryInfo): Promise<void> {
     await this.withLibraryLock(library.docId, async () => {
       const definition = await this.kernel.getAttributeView(library.data.avId);
+      if (library.data.projects.length) {
+        await this.kernel.setAttributeViewSelectOptions(
+          library.data.avId, library.data.projectKeyId, library.data.projects.map((project) => project.name), true,
+        );
+      }
       const keysByName = new Map<string, string[]>();
       for (const entry of definition.av.keyValues) {
         const list = keysByName.get(entry.key.name) ?? [];

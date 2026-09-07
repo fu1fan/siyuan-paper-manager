@@ -50,3 +50,25 @@ describe("attribute view kernel adapter", () => {
     });
   });
 });
+
+
+describe("project select presets", () => {
+  it("adds unused projects while preserving existing option colors and descriptions", async () => {
+    const calls: Array<{ endpoint: string; payload: Record<string, unknown> }> = [];
+    const kernel = new KernelClient(async (endpoint, payload) => {
+      calls.push({ endpoint, payload });
+      if (endpoint === "/api/av/getAttributeView") return { av: { keyValues: [{
+        key: { id: "projects", options: [{ name: "已有项目", color: "8", desc: "保留" }] },
+      }] } } as never;
+      return null as never;
+    });
+    await kernel.setAttributeViewSelectOptions("av", "projects", ["已有项目", "新项目", "新项目"], true);
+    expect(calls[1]?.payload.transactions).toEqual([{ doOperations: [{
+      action: "updateAttrViewColOptions", id: "projects", avID: "av",
+      data: [{ name: "已有项目", color: "8", desc: "保留" }, { name: "新项目", color: "2", desc: "" }],
+    }], undoOperations: [] }]);
+    calls.length = 0;
+    await kernel.setAttributeViewSelectOptions("av", "projects", ["已有项目"], true);
+    expect(calls.map((call) => call.endpoint)).toEqual(["/api/av/getAttributeView"]);
+  });
+});

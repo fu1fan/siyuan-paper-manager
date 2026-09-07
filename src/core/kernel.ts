@@ -76,7 +76,7 @@ export interface AttributeViewDefinition {
   av: {
     id: string;
     name: string;
-    keyValues: Array<{ key: { id: string; name: string; type: string }; values?: AttributeViewValue[] }>;
+    keyValues: Array<{ key: { id: string; name: string; type: string; options?: Array<{ name: string; color: string; desc?: string }> }; values?: AttributeViewValue[] }>;
     views?: Array<{ id: string; type: string; itemIds?: string[] }>;
   };
 }
@@ -167,7 +167,18 @@ export class KernelClient {
     });
   }
 
-  async setAttributeViewSelectOptions(avID: string, keyID: string, names: string[]): Promise<void> {
+  async setAttributeViewSelectOptions(avID: string, keyID: string, names: string[], preserveExisting = false): Promise<void> {
+    const options = preserveExisting
+      ? [...((await this.getAttributeView(avID)).av.keyValues.find(({ key }) => key.id === keyID)?.key.options ?? [])]
+      : [];
+    const existing = new Set(options.map((option) => option.name));
+    const originalCount = options.length;
+    for (const name of names) {
+      if (existing.has(name)) continue;
+      options.push({ name, color: String(options.length % 14 + 1), desc: "" });
+      existing.add(name);
+    }
+    if (preserveExisting && options.length === originalCount) return;
     await this.postImpl("/api/transactions", {
       reqId: Date.now(),
       session: "paper-manager",
@@ -177,7 +188,7 @@ export class KernelClient {
           action: "updateAttrViewColOptions",
           id: keyID,
           avID,
-          data: names.map((name, index) => ({ name, color: String(index % 14 + 1), desc: "" })),
+          data: options,
         }],
         undoOperations: [],
       }],

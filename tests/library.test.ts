@@ -26,6 +26,21 @@ function fullLibraryData(overrides: Partial<PaperLibraryData> = {}): PaperLibrar
 }
 
 describe("library database projection", () => {
+  it("presets projects even when the database has no paper rows", async () => {
+    const presets = vi.fn();
+    const save = vi.fn();
+    const fake = {
+      getBlockAttrs: async () => ({ [ATTR.libraryData]: encodeLibraryData(fullLibraryData()) }),
+      query: async () => [{ content: "库" }],
+      getAttributeView: async () => ({ av: { keyValues: [{ key: { id: "block", type: "block" }, values: [] }] } }),
+      setAttributeViewSelectOptions: presets,
+      setBlockAttrs: save,
+    } as unknown as KernelClient;
+    await new LibraryService(fake).updateProjects("library", [{ id: "p", name: " HBFServingSim " }]);
+    expect(presets).toHaveBeenCalledWith("av", "project-key", ["HBFServingSim"], true);
+    expect(decodeLibraryData(save.mock.calls[0]![1][ATTR.libraryData]).projects).toEqual([{ id: "p", name: "HBFServingSim" }]);
+  });
+
   it("projects canonical fields into SiYuan AV values", () => {
     const value = metadataFieldValue("authors", paper());
     expect(value.text?.content).toBe("张, 三");
