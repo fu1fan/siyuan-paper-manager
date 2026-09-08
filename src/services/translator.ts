@@ -1,6 +1,6 @@
 import type { ChildProcess } from "node:child_process";
 import type { PaperData } from "../types/paper";
-import type { PluginSettings } from "../types/settings";
+import { extractThreadArgs, normalizeTranslationThreads, type PluginSettings } from "../types/settings";
 import type { TranslationState } from "../types/status";
 import { getNodeRequire, type NodeRequire, requireNode } from "../core/env";
 import { KernelClient } from "../core/kernel";
@@ -33,12 +33,9 @@ interface QueuedTranslation {
 
 export class TranslatorService {
   private readonly requireFn: NodeRequire;
-  private child: ChildProcess | null = null;
-  private activeDocId: string | null = null;
+  private readonly active = new Map<string, { controller: AbortController; child?: ChildProcess; state: Extract<TranslationState, { state: "running" }> }>();
   private readonly queue: QueuedTranslation[] = [];
-  private pumping = false;
-  private cancellation: AbortController | null = null;
-  private lastRunning: { docId: string; progress?: number; message?: string } | null = null;
+  private concurrency = 1;
 
   constructor(private readonly kernel: KernelClient, private readonly options: TranslatorOptions) {
     const requireFn = options.requireFn ?? getNodeRequire();
@@ -47,56 +44,54 @@ export class TranslatorService {
   }
 
   isRunning(): boolean {
-    return this.activeDocId !== null || this.queue.length > 0;
+    return this.active.size > 0 || this.queue.length > 0;
   }
 
-  /** 多篇论文同时触发翻译时排队串行执行，状态栏显示当前进度与队列长度。 */
+  /** 多篇论文按设置的并行上限执行，状态栏显示当前进度与队列长度。 */
   translate(docId: string, settings: PluginSettings): Promise<TranslationResult> {
-    if (this.activeDocId === docId || this.queue.some((task) => task.docId === docId)) {
+    if (this.active.has(docId) || this.queue.some((task) => task.docId === docId)) {
       return Promise.reject(new Error("该论文已在翻译队列中"));
     }
     return new Promise<TranslationResult>((resolve, reject) => {
       this.queue.push({ docId, settings: structuredClone(settings), resolve, reject });
-      // 让状态栏立即反映新的队列长度；沿用最近一次进度，避免清空百分比
-      if (this.activeDocId && this.lastRunning) this.emit({ state: "running", ...this.lastRunning });
-      void this.pump();
+      this.concurrency = Math.max(1, Math.min(8, Math.floor(settings.translationConcurrency || 1)));
+      this.pump();
+      const running = this.active.values().next().value;
+      if (running) this.emit(running.state);
     });
   }
 
-  private async pump(): Promise<void> {
-    if (this.pumping) return;
-    this.pumping = true;
-    try {
-      while (this.queue.length) {
-        const task = this.queue.shift()!;
-        this.activeDocId = task.docId;
-        this.cancellation = new AbortController();
-        this.emit({ state: "running", docId: task.docId, message: "正在准备翻译" });
-        try {
-          task.resolve(await this.runTranslation(task.docId, task.settings, this.cancellation.signal));
-        } catch (error) {
-          const message = translationError(error);
-          this.emit({ state: "error", docId: task.docId, message });
-          task.reject(new Error(message));
-        } finally {
-          this.activeDocId = null;
-          this.cancellation = null;
-          this.child = null;
-        }
-      }
-    } finally {
-      this.pumping = false;
+  private pump(): void {
+    while (this.queue.length && this.active.size < this.concurrency) {
+      const task = this.queue.shift()!;
+      const controller = new AbortController();
+      const state: Extract<TranslationState, { state: "running" }> = { state: "running", docId: task.docId, message: "正在准备翻译" };
+      this.active.set(task.docId, { controller, state });
+      this.emit(state);
+      void this.runTranslation(task.docId, task.settings, controller.signal).then((result) => {
+        this.finish(task.docId, { state: "success", docId: task.docId, elapsedMs: result.elapsedMs });
+        task.resolve(result);
+      }, (error: unknown) => {
+        const message = translationError(error);
+        this.finish(task.docId, { state: "error", docId: task.docId, message });
+        task.reject(new Error(message));
+      });
     }
+  }
+
+  private finish(docId: string, state: TranslationState): void {
+    this.active.delete(docId);
+    this.pump();
+    const remaining = this.active.values().next().value;
+    this.emit(remaining?.state ?? state);
   }
 
   private emit(state: TranslationState): void {
     if (state.state === "running") {
-      this.lastRunning = { docId: state.docId, progress: state.progress, message: state.message };
-      this.options.onState?.({ ...state, queued: this.queue.length });
-      return;
-    }
-    this.lastRunning = null;
-    this.options.onState?.(state);
+      const task = this.active.get(state.docId);
+      if (task) task.state = state;
+      this.options.onState?.({ ...state, queued: this.queue.length, active: this.active.size });
+    } else this.options.onState?.(state);
   }
 
   private async runTranslation(docId: string, settings: PluginSettings, signal: AbortSignal): Promise<TranslationResult> {
@@ -120,7 +115,8 @@ export class TranslatorService {
       "-li", settings.translateFrom,
       "-lo", settings.translateTo,
       "-s", settings.translateService,
-      ...settings.pdf2zhArgs,
+      "--thread", String(normalizeTranslationThreads(settings.translationThreads)),
+      ...extractThreadArgs(settings.pdf2zhArgs).args,
       pdfPath,
     ];
     const startedAt = Date.now();
@@ -136,6 +132,7 @@ export class TranslatorService {
       const monoBytes = new Uint8Array(fs.readFileSync(outputs.mono));
       const monoName = `${sanitizeDocumentName(paper.citekey)}-mono.pdf`;
       const mono = await this.kernel.uploadAsset(settings.translationAssetsDir, monoBytes, monoName, "application/pdf");
+      signal.throwIfAborted();
       let dual: string | undefined;
       if (settings.translationDual && outputs.dual) {
         const dualBytes = new Uint8Array(fs.readFileSync(outputs.dual));
@@ -159,7 +156,6 @@ export class TranslatorService {
         ? await this.cleanupOldTranslations(previousTranslation, latest.translation)
         : { deleted: [], warnings: [] };
       const elapsedMs = Date.now() - startedAt;
-      this.emit({ state: "success", docId, elapsedMs });
       return {
         mono,
         dual,
@@ -174,8 +170,10 @@ export class TranslatorService {
 
   cancel(): void {
     for (const task of this.queue.splice(0)) task.reject(new Error("翻译已取消"));
-    this.cancellation?.abort(new Error("翻译已取消"));
-    this.child?.kill("SIGTERM");
+    for (const task of this.active.values()) {
+      task.controller.abort(new Error("翻译已取消"));
+      task.child?.kill("SIGTERM");
+    }
   }
 
   private spawn(executable: string, args: string[], docId: string): Promise<void> {
@@ -186,7 +184,8 @@ export class TranslatorService {
         windowsHide: true,
         stdio: ["ignore", "pipe", "pipe"],
       });
-      this.child = child;
+      const task = this.active.get(docId);
+      if (task) task.child = child;
       let stderr = "";
       const handleOutput = (chunk: Uint8Array) => {
         const line = new TextDecoder().decode(chunk);

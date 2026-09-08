@@ -14,6 +14,8 @@ export interface PluginSettings {
   translateFrom: string;
   translateTo: string;
   translateService: string;
+  translationConcurrency: number;
+  translationThreads: number;
   translationDual: boolean;
   autoDeleteOldTranslations: boolean;
   pdf2zhArgs: string[];
@@ -31,6 +33,8 @@ export const DEFAULT_SETTINGS: PluginSettings = {
   translateFrom: "en",
   translateTo: "zh",
   translateService: "google",
+  translationConcurrency: 1,
+  translationThreads: 4,
   translationDual: true,
   autoDeleteOldTranslations: false,
   pdf2zhArgs: [],
@@ -44,6 +48,7 @@ export function normalizeSettings(input: unknown): PluginSettings {
     : Array.isArray(raw.pdf2zhArgs)
       ? raw.pdf2zhArgs.filter((value): value is string => typeof value === "string")
       : DEFAULT_SETTINGS.pdf2zhArgs;
+  const threadArgs = extractThreadArgs(oldArgs);
   return {
     zoteroPort: validPort(raw.zoteroPort) ? Number(raw.zoteroPort) : DEFAULT_SETTINGS.zoteroPort,
     autoListen: bool(raw.autoListen, DEFAULT_SETTINGS.autoListen),
@@ -55,9 +60,11 @@ export function normalizeSettings(input: unknown): PluginSettings {
     translateFrom: string(raw.translateFrom, DEFAULT_SETTINGS.translateFrom),
     translateTo: string(raw.translateTo, DEFAULT_SETTINGS.translateTo),
     translateService: string(raw.translateService, DEFAULT_SETTINGS.translateService),
+    translationConcurrency: normalizeConcurrency(raw.translationConcurrency),
+    translationThreads: normalizeTranslationThreads(raw.translationThreads ?? threadArgs.threads),
     translationDual: bool(raw.translationDual, DEFAULT_SETTINGS.translationDual),
     autoDeleteOldTranslations: bool(raw.autoDeleteOldTranslations, DEFAULT_SETTINGS.autoDeleteOldTranslations),
-    pdf2zhArgs: oldArgs,
+    pdf2zhArgs: threadArgs.args,
     translationAssetsDir: normalizeAssetsDir(
       string(raw.translationAssetsDir ?? raw.translationOutDir, DEFAULT_SETTINGS.translationAssetsDir),
     ),
@@ -126,4 +133,32 @@ function optionalString(value: unknown): string {
 function validPort(value: unknown): boolean {
   const port = Number(value);
   return Number.isInteger(port) && port >= 1024 && port <= 65535;
+}
+
+export function normalizeConcurrency(value: unknown): number {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 1 ? Math.min(8, Math.floor(number)) : 1;
+}
+
+/** pdf2zh's --thread/-t controls translation workers within one PDF (default 4). */
+export function normalizeTranslationThreads(value: unknown): number {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 1 ? Math.min(128, Math.floor(number)) : 4;
+}
+
+/** Migrate valid legacy thread flags without disturbing other argument boundaries. */
+export function extractThreadArgs(input: string[]): { args: string[]; threads?: number } {
+  const args: string[] = [];
+  let threads: number | undefined;
+  for (let index = 0; index < input.length; index += 1) {
+    const arg = input[index]!;
+    if (arg === "--") { args.push(...input.slice(index)); break; }
+    const separate = arg === "-t" || arg === "--thread";
+    const value = separate ? input[index + 1] : arg.match(/^(?:--thread=|-t=?)(\d+)$/)?.[1];
+    if (value && /^\d+$/.test(value) && Number.isSafeInteger(Number(value)) && Number(value) > 0) {
+      threads = Number(value);
+      if (separate) index += 1;
+    } else args.push(arg);
+  }
+  return { args, threads };
 }

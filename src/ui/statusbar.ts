@@ -42,6 +42,7 @@ function render(element: HTMLElement, translation: TranslationState): void {
       const queued = translation.queued ?? 0;
       const label = [
         `翻译中${percent != null ? ` ${percent}%` : ""}`,
+        (translation.active ?? 1) > 1 ? `并行 ${translation.active}` : "",
         queued > 0 ? `队列 ${queued}` : "",
       ].filter(Boolean).join(" · ");
       element.replaceChildren(...[

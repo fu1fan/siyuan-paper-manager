@@ -17,7 +17,7 @@ export class SettingsPanel {
   private libraryEditor: HTMLElement | undefined;
 
   constructor(
-    private readonly pluginName: string,
+    private readonly displayName: string,
     private readonly getSettings: () => PluginSettings,
     private readonly kernel: KernelClient,
     private readonly libraries: LibraryService,
@@ -32,7 +32,7 @@ export class SettingsPanel {
     this.setting.addItem({ title: "", direction: "column", createActionElement: () => this.build() });
   }
 
-  open(): void { this.setting.open(this.pluginName); }
+  open(): void { this.setting.open(this.displayName); }
 
   private build(): HTMLElement {
     this.draft = structuredClone(this.getSettings());
@@ -88,17 +88,19 @@ export class SettingsPanel {
       <div class="paper-manager-preview">元数据模板与笔记模板随插件打包，不写入 data/templates。</div>`;
     panels.get("metadata")!.innerHTML = `
       ${switchField("中文检索（实验性）", "enableCnki", this.draft.enableCnki)}
-      <div class="paper-manager-preview">本地 XMP/文档属性 → DOI/Crossref → Citoid → 中文候选。</div>`;
+      <div class="paper-manager-preview">本地封面/摘要/XMP → DOI/Crossref → Citoid → 中文候选。</div>`;
     panels.get("translation")!.innerHTML = `
       ${textField("pdf2zh 路径", "pdf2zhPath", this.draft.pdf2zhPath)}
       ${textField("源语言", "translateFrom", this.draft.translateFrom)}
       ${textField("目标语言", "translateTo", this.draft.translateTo)}
-      ${textField("翻译服务", "translateService", this.draft.translateService)}
+      ${translationServiceField(this.draft.translateService)}
+      ${numberField("请求并发数（每篇 PDF，1–128）", "translationThreads", this.draft.translationThreads, 1, 128)}
+      ${numberField("同时翻译篇数（1–8）", "translationConcurrency", this.draft.translationConcurrency, 1, 8)}
       ${switchField("保留双语版", "translationDual", this.draft.translationDual)}
       ${switchField("重新翻译后删除旧版本", "autoDeleteOldTranslations", this.draft.autoDeleteOldTranslations)}
       ${textareaField("额外 CLI 参数", "pdf2zhArgs", serializeArgs(this.draft.pdf2zhArgs))}
       ${textField("翻译资源目录", "translationAssetsDir", this.draft.translationAssetsDir)}
-      <div class="paper-manager-preview">自动删除仅在新翻译及元数据保存成功后执行；删除失败不会影响新版本。</div>`;
+      <div class="paper-manager-preview">请求并发数对应 pdf2zh 的 --thread（-t），默认 4；同时翻译多篇时，总请求并发最多约为两项设置的乘积。服务所需密钥请在 pdf2zh 配置文件或环境变量中设置。并行篇数下次提交时生效，取消会停止全部任务。自动删除仅在新翻译及元数据保存成功后执行；删除失败不会影响新版本。</div>`;
     root.addEventListener("input", (event) => this.capture(event));
     root.addEventListener("change", (event) => this.capture(event));
     activate("library");
@@ -228,8 +230,8 @@ export class SettingsPanel {
 function textField(label: string, key: keyof PluginSettings, value: string): string {
   return `<label class="paper-manager-field"><span>${escapeHtml(label)}</span><input class="b3-text-field" data-key="${key}" value="${escapeHtml(value)}"></label>`;
 }
-function numberField(label: string, key: keyof PluginSettings, value: number): string {
-  return `<label class="paper-manager-field"><span>${escapeHtml(label)}</span><input class="b3-text-field" type="number" min="1024" max="65535" data-key="${key}" value="${value}"></label>`;
+function numberField(label: string, key: keyof PluginSettings, value: number, min = 1024, max = 65535): string {
+  return `<label class="paper-manager-field"><span>${escapeHtml(label)}</span><input class="b3-text-field" type="number" min="${min}" max="${max}" step="1" data-key="${key}" value="${value}"></label>`;
 }
 function switchField(label: string, key: keyof PluginSettings, value: boolean): string {
   return `<label class="paper-manager-field"><span>${escapeHtml(label)}</span><span><input type="checkbox" data-key="${key}" ${value ? "checked" : ""}></span></label>`;
@@ -338,3 +340,9 @@ async function actionMessage(action: () => Promise<string>): Promise<void> {
   catch (error) { showMessage(`文献库操作失败：${message(error)}`, 7000, "error"); }
 }
 function message(error: unknown): string { return error instanceof Error ? error.message : String(error); }
+
+function translationServiceField(value: string): string {
+  const services = ["google", "bing", "deepl", "openai", "ollama", "deepseek", "azure", "gemini", "silicon"];
+  if (!services.includes(value)) services.push(value);
+  return `<label class="paper-manager-field"><span>翻译服务</span><select class="b3-select" data-key="translateService">${services.map((service) => `<option value="${escapeHtml(service)}" ${service === value ? "selected" : ""}>${escapeHtml(service)}</option>`).join("")}</select></label>`;
+}

@@ -5,10 +5,11 @@ import { cleanCanonical } from "../core/normalize";
 import { normalizeDoi, titleSimilarity } from "../core/naming";
 import { containsHan, splitChineseName } from "../core/chinese";
 import { chineseLayoutTitle, pdfTextLines, type PdfLine } from "./pdf-layout";
+import { extractChineseThesis } from "./chinese-thesis";
 import { pdfDocumentOptions } from "./pdf-runtime";
 import * as pdfjs from "pdfjs-dist/legacy/build/pdf.mjs";
 
-interface PdfMetadataSnapshot {
+export interface PdfMetadataSnapshot {
   info: Record<string, unknown>;
   xmp: Record<string, string>;
   text: string;
@@ -19,6 +20,7 @@ export interface MetadataExtractorOptions {
   fetchImpl?: typeof fetch;
   enableCnki?: boolean;
   timeoutMs?: number;
+  pdfOptions?: Partial<DocumentInitParameters>;
 }
 
 export class MetadataExtractor {
@@ -37,11 +39,11 @@ export class MetadataExtractor {
     const warnings: string[] = [];
     let snapshot: PdfMetadataSnapshot = { info: {}, xmp: {}, text: "" };
     try {
-      snapshot = await inspectPdf(bytes);
+      snapshot = await inspectPdf(bytes, this.options.pdfOptions);
     } catch (error) {
       warnings.push(`PDF 本地解析失败：${message(error)}`);
     }
-    const detectedDoi = findDoi(snapshot.text)
+    const detectedDoi = findDoi(snapshot.pages?.slice(0, 3).flatMap((page) => page.map((line) => line.text)).join("\n") ?? snapshot.text)
       ?? normalizeDoi(snapshot.info.DOI ?? snapshot.xmp.doi);
     const local = localCandidate(snapshot, filename, detectedDoi);
     const candidates: MetadataCandidate[] = [local];
@@ -79,8 +81,8 @@ export class MetadataExtractor {
 
     const deduplicated = dedupeCandidates(candidates).sort((left, right) => right.confidence - left.confidence);
     const best = deduplicated[0] ?? filenameCandidate(filename, detectedDoi);
-    const selected = best.confidence >= 0.92 || deduplicated.length === 1
-      ? best
+    const selected = local.canonical.itemType === "thesis" && local.canonical.creators.length && local.canonical.date
+      ? local
       : mergeMetadata(local, best);
     return { selected, candidates: deduplicated, detectedDoi, warnings };
   }
@@ -92,7 +94,7 @@ export class MetadataExtractor {
   }
 
   private async crossrefByTitle(local: PaperCanonical): Promise<MetadataCandidate[]> {
-    const query = new URLSearchParams({ query: local.title, rows: "5", select: "DOI,title,author,published,container-title,publisher,URL,abstract,volume,issue,page,type,ISBN,ISSN,language" });
+    const query = new URLSearchParams({ "query.title": local.title, rows: "5", select: "DOI,title,author,published,container-title,publisher,URL,abstract,volume,issue,page,type,ISBN,ISSN" });
     const response = await this.fetchJson(`https://api.crossref.org/works?${query.toString()}`);
     const items = isRecord(response) && isRecord(response.message) && Array.isArray(response.message.items)
       ? response.message.items.filter(isRecord)
@@ -101,7 +103,7 @@ export class MetadataExtractor {
       const candidate = crossrefCandidate(item, 0, "标题检索");
       const score = metadataConfidence(local, candidate.canonical);
       return { ...candidate, confidence: score, reason: `Crossref 标题相似度 ${score.toFixed(2)}` };
-    }).filter((candidate) => candidate.confidence >= 0.55);
+    }).filter((candidate) => candidate.confidence >= (local.itemType === "thesis" ? 0.9 : 0.55));
   }
 
   private async citoidByDoi(doi: string): Promise<MetadataCandidate | null> {
@@ -148,10 +150,12 @@ export class MetadataExtractor {
       try {
         const response = await this.fetchImpl(url, { ...init, signal: controller.signal });
         if (response.ok) return response;
-        if (response.status !== 429 && response.status < 500) throw new Error(`HTTP ${response.status}`);
+        if (response.status !== 429 && response.status < 500) throw new PermanentHttpError(`HTTP ${response.status}`);
+        lastError = new Error(`HTTP ${response.status}`);
         const retryAfter = Math.min(5_000, Number(response.headers.get("Retry-After") || 0) * 1000);
         await sleep(retryAfter || 300 * 2 ** attempt);
       } catch (error) {
+        if (error instanceof PermanentHttpError) throw error;
         lastError = error;
         if (attempt < 2) await sleep(300 * 2 ** attempt);
       } finally {
@@ -181,7 +185,7 @@ export async function inspectPdf(bytes: Uint8Array, options: Partial<DocumentIni
       else if (Array.isArray(value)) xmp[key] = value.filter((item) => typeof item === "string").join("; ");
     }
     const pages: PdfLine[][] = [];
-    for (let pageNumber = 1; pageNumber <= Math.min(3, document.numPages); pageNumber += 1) {
+    for (let pageNumber = 1; pageNumber <= Math.min(8, document.numPages); pageNumber += 1) {
       const page = await document.getPage(pageNumber);
       const content = await page.getTextContent();
       pages.push(pdfTextLines(content.items.filter((item): item is TextItem => "str" in item)));
@@ -193,29 +197,34 @@ export async function inspectPdf(bytes: Uint8Array, options: Partial<DocumentIni
   }
 }
 
-function localCandidate(snapshot: PdfMetadataSnapshot, filename: string, doi?: string): MetadataCandidate {
+export function localCandidate(snapshot: PdfMetadataSnapshot, filename: string, doi?: string): MetadataCandidate {
   const embedded = firstString(snapshot.xmp["dc:title"], snapshot.info.Title);
   const usableEmbedded = embedded && !/^(?:untitled|未命名|Microsoft (?:Word|PowerPoint)|WPS|document\d*|CNKI)/i.test(embedded) ? embedded : "";
-  const layout = !usableEmbedded || !containsHan(usableEmbedded) ? chineseLayoutTitle(snapshot.pages ?? []) : undefined;
-  const title = layout?.title || usableEmbedded || filenameTitle(filename);
+  const layout = !usableEmbedded || !containsHan(usableEmbedded) ? chineseLayoutTitle(snapshot.pages?.slice(0, 3) ?? []) : undefined;
+  const thesis = extractChineseThesis(snapshot.pages ?? []);
+  let title = layout?.title || usableEmbedded || filenameTitle(filename);
+  const fileTitle = filename.replace(/_[^_]+\.pdf$/i, "");
+  if (title.replace(/DC[.．]DC/gi, "DC-DC") === fileTitle) title = fileTitle;
   const author = firstString(snapshot.xmp["dc:creator"], snapshot.info.Author);
-  const creators = author ? splitAuthors(author) : [];
+  const creators = thesis.author ? splitAuthors(thesis.author) : author && !/^(?:CNKI|TTKN|万方数据|Administrator|admin)$/i.test(author) ? splitAuthors(author) : [];
   const canonical = cleanCanonical({
-    itemType: layout?.thesis ? "thesis" : "journalArticle",
+    itemType: thesis.isThesis || layout?.thesis ? "thesis" : "journalArticle",
     title,
     creators,
+    publisher: thesis.publisher,
+    date: thesis.date,
     // PDF creation time is not the publication date.
     language: containsHan(title) ? "zh-CN" : undefined,
-    abstract: firstString(snapshot.xmp["dc:description"], snapshot.info.Subject),
+    abstract: thesis.abstract || firstString(snapshot.xmp["dc:description"], snapshot.info.Subject),
     doi,
-    tags: splitTags(firstString(snapshot.xmp["dc:subject"], snapshot.info.Keywords)),
+    tags: thesis.tags.length ? thesis.tags : splitTags(firstString(snapshot.xmp["dc:subject"], snapshot.info.Keywords)),
   });
   const hasEmbedded = title !== filenameTitle(filename) || creators.length > 0;
   return {
     canonical,
-    provider: layout ? "pdf-text" : hasEmbedded ? "xmp" : "filename",
-    confidence: doi ? 0.72 : layout ? 0.68 : hasEmbedded ? 0.58 : 0.3,
-    reason: layout ? "PDF 中文标题（字号与位置识别，请核对）" : hasEmbedded ? "PDF 内嵌元数据" : "文件名兜底",
+    provider: layout || thesis.author ? "pdf-text" : hasEmbedded ? "xmp" : "filename",
+    confidence: thesis.author && thesis.date && thesis.publisher ? 0.94 : doi ? 0.72 : layout ? 0.68 : hasEmbedded ? 0.58 : 0.3,
+    reason: thesis.author ? "PDF 学位论文封面与摘要（请核对）" : layout ? "PDF 中文标题（字号与位置识别，请核对）" : hasEmbedded ? "PDF 内嵌元数据" : "文件名兜底",
     raw: { info: snapshot.info, xmp: snapshot.xmp },
   };
 }
@@ -336,7 +345,8 @@ function metadataConfidence(local: PaperCanonical, candidate: PaperCanonical): n
 function mergeMetadata(local: MetadataCandidate, provider: MetadataCandidate): MetadataCandidate {
   const merged = { ...provider.canonical };
   for (const [key, value] of Object.entries(local.canonical)) {
-    if ((merged as Record<string, unknown>)[key] == null || (merged as Record<string, unknown>)[key] === "") {
+    const current = (merged as Record<string, unknown>)[key];
+    if (current == null || current === "" || (Array.isArray(current) && current.length === 0)) {
       (merged as Record<string, unknown>)[key] = value;
     }
   }
@@ -348,7 +358,8 @@ function dedupeCandidates(candidates: MetadataCandidate[]): MetadataCandidate[] 
   for (const candidate of candidates) {
     const key = candidate.canonical.doi || candidate.canonical.title.toLowerCase();
     const existing = map.get(key);
-    if (!existing || candidate.confidence > existing.confidence) map.set(key, candidate);
+    if (!existing) map.set(key, candidate);
+    else map.set(key, candidate.confidence > existing.confidence ? mergeMetadata(existing, candidate) : mergeMetadata(candidate, existing));
   }
   return [...map.values()];
 }
@@ -424,3 +435,5 @@ function message(error: unknown): string {
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
+
+class PermanentHttpError extends Error {}

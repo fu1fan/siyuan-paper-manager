@@ -92,10 +92,12 @@ describe("translator integration", () => {
         zoteroPort: 23119, autoListen: true,
         defaultLibraryDocId: "library-doc", onboardingCompleted: true, assetsDir: "/assets/",
         enableCnki: false, pdf2zhPath: executable, translateFrom: "en", translateTo: "zh",
-        translateService: "google", translationDual: true, autoDeleteOldTranslations: true,
+        translateService: "google", translationConcurrency: 1, translationThreads: 7, translationDual: true, autoDeleteOldTranslations: true,
         pdf2zhArgs: ["--config", String.raw`C:\Users\测试 User\config.json`, "", 'embedded"quote'], translationAssetsDir: "/assets/",
       });
       const received = JSON.parse(readFileSync(join(dataDir, "中文 input.pdf.args.json"), "utf8"));
+      expect(received.slice(received.indexOf("--thread"), received.indexOf("--thread") + 2)).toEqual(["--thread", "7"]);
+      expect(received.filter((arg: string) => arg === "--thread")).toHaveLength(1);
       expect(received.slice(-5)).toEqual(["--config", String.raw`C:\Users\测试 User\config.json`, "", 'embedded"quote', join(dataDir, "中文 input.pdf")]);
       expect(result.mono).toContain("-mono.pdf");
       expect(uploads).toHaveLength(2);

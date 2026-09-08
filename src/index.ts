@@ -56,7 +56,7 @@ export default class PaperManagerPlugin extends Plugin {
       });
     }
     this.settingsPanel = new SettingsPanel(
-      PLUGIN_NAME,
+      "论文管理",
       () => this.settings,
       this.kernelClient,
       this.libraries,

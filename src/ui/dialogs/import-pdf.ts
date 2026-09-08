@@ -41,9 +41,11 @@ export async function openImportPdfDialog(
       `来源：${selected.provider} · 置信度 ${selected.confidence.toFixed(2)}`,
       `标题：${c.title}`,
       `作者：${c.creators.map((creator) => `${creator.family}${creator.given ? `, ${creator.given}` : ""}`).join("；") || "未识别"}`,
-      `期刊：${c.journal || "未识别"}`,
+      c.itemType === "thesis" ? `类型：学位论文 · 学校：${c.publisher || "未识别"}` : `期刊：${c.journal || "未识别"}`,
       `日期：${c.date || "未识别"}`,
       `DOI：${c.doi || "未识别"}`,
+      `关键词：${c.tags.join("；") || "未识别"}`,
+      ...(c.abstract ? [`摘要：${c.abstract}`] : []),
       selected.reason,
     ].join("\n");
   };

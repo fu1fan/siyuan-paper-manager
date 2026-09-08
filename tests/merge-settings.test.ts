@@ -39,7 +39,8 @@ describe("settings", () => {
       pdf2zhArgs: "-t 4 --config 'my file.json'",
       assetsDir: "assets/library",
     });
-    expect(settings.pdf2zhArgs).toEqual(["-t", "4", "--config", "my file.json"]);
+    expect(settings.pdf2zhArgs).toEqual(["--config", "my file.json"]);
+    expect(settings.translationThreads).toBe(4);
     expect(settings.assetsDir).toBe("/assets/library/");
     expect(settings.autoDeleteOldTranslations).toBe(false);
   });
@@ -63,4 +64,28 @@ it("preserves Windows paths and round-trips editable arguments", () => {
   expect(splitArgString(String.raw`--config '\\server\共享 folder\'`))
     .toEqual(["--config", "\\\\server\\共享 folder\\"]);
   expect(splitArgString(`"" ''`)).toEqual(["", ""]);
+});
+
+it("migrates and bounds translation concurrency while preserving custom services", () => {
+  expect(normalizeSettings({}).translationConcurrency).toBe(1);
+  expect(normalizeSettings({ translationConcurrency: 3.8 }).translationConcurrency).toBe(3);
+  expect(normalizeSettings({ translationConcurrency: 100 }).translationConcurrency).toBe(8);
+  expect(normalizeSettings({ translationConcurrency: "invalid" }).translationConcurrency).toBe(1);
+  expect(normalizeSettings({ translateService: "openai:custom-model" }).translateService).toBe("openai:custom-model");
+});
+
+it.each(["-t 9", "--thread 9", "--thread=9", "-t9", "-t=9"])("migrates legacy thread option %s", (flag) => {
+  const result = normalizeSettings({ pdf2zhArgs: `${flag} --config 'my config.json'` });
+  expect(result.translationThreads).toBe(9);
+  expect(result.pdf2zhArgs).toEqual(["--config", "my config.json"]);
+});
+
+it("gives the dedicated request concurrency setting precedence and validates it independently", () => {
+  expect(normalizeSettings({}).translationThreads).toBe(4);
+  expect(normalizeSettings({ translationThreads: 0 }).translationThreads).toBe(4);
+  expect(normalizeSettings({ translationThreads: 1000 }).translationThreads).toBe(128);
+  const result = normalizeSettings({ translationThreads: 6, translationConcurrency: 2, pdf2zhArgs: ["-t", "3", "--thread=12", "--", "-t9"] });
+  expect(result.translationThreads).toBe(6);
+  expect(result.translationConcurrency).toBe(2);
+  expect(result.pdf2zhArgs).toEqual(["--", "-t9"]);
 });
