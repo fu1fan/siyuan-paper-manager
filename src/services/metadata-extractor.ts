@@ -1,13 +1,18 @@
+import type { TextItem, DocumentInitParameters } from "pdfjs-dist/types/src/display/api";
 import type { ExtractionResult, MetadataCandidate } from "../types/import";
 import type { PaperCanonical, PaperCreator } from "../types/paper";
 import { cleanCanonical } from "../core/normalize";
 import { normalizeDoi, titleSimilarity } from "../core/naming";
+import { containsHan, splitChineseName } from "../core/chinese";
+import { chineseLayoutTitle, pdfTextLines, type PdfLine } from "./pdf-layout";
+import { pdfDocumentOptions } from "./pdf-runtime";
 import * as pdfjs from "pdfjs-dist/legacy/build/pdf.mjs";
 
 interface PdfMetadataSnapshot {
   info: Record<string, unknown>;
   xmp: Record<string, string>;
   text: string;
+  pages?: PdfLine[][];
 }
 
 export interface MetadataExtractorOptions {
@@ -157,12 +162,13 @@ export class MetadataExtractor {
   }
 }
 
-async function inspectPdf(bytes: Uint8Array): Promise<PdfMetadataSnapshot> {
+export async function inspectPdf(bytes: Uint8Array, options: Partial<DocumentInitParameters> = pdfDocumentOptions()): Promise<PdfMetadataSnapshot> {
   const loading = pdfjs.getDocument({
+    ...options,
     data: bytes.slice(),
   });
-  const document = await loading.promise;
   try {
+    const document = await loading.promise;
     const metadata = await document.getMetadata().catch(() => null);
     const info = metadata?.info && typeof metadata.info === "object"
       ? metadata.info as unknown as Record<string, unknown>
@@ -172,29 +178,34 @@ async function inspectPdf(bytes: Uint8Array): Promise<PdfMetadataSnapshot> {
     for (const key of ["dc:title", "dc:creator", "dc:description", "dc:subject", "prism:doi"]) {
       const value = xmpObject?.get?.(key);
       if (typeof value === "string") xmp[key === "prism:doi" ? "doi" : key] = value;
+      else if (Array.isArray(value)) xmp[key] = value.filter((item) => typeof item === "string").join("; ");
     }
-    const pages: string[] = [];
+    const pages: PdfLine[][] = [];
     for (let pageNumber = 1; pageNumber <= Math.min(3, document.numPages); pageNumber += 1) {
       const page = await document.getPage(pageNumber);
       const content = await page.getTextContent();
-      pages.push(content.items.map((item) => "str" in item ? item.str : "").join(" "));
+      pages.push(pdfTextLines(content.items.filter((item): item is TextItem => "str" in item)));
       page.cleanup();
     }
-    return { info, xmp, text: pages.join("\n") };
+    return { info, xmp, text: pages.map((lines) => lines.map((line) => line.text).join("\n")).join("\n"), pages };
   } finally {
     await loading.destroy();
   }
 }
 
 function localCandidate(snapshot: PdfMetadataSnapshot, filename: string, doi?: string): MetadataCandidate {
-  const title = firstString(snapshot.xmp["dc:title"], snapshot.info.Title) || filenameTitle(filename);
+  const embedded = firstString(snapshot.xmp["dc:title"], snapshot.info.Title);
+  const usableEmbedded = embedded && !/^(?:untitled|未命名|Microsoft (?:Word|PowerPoint)|WPS|document\d*|CNKI)/i.test(embedded) ? embedded : "";
+  const layout = !usableEmbedded || !containsHan(usableEmbedded) ? chineseLayoutTitle(snapshot.pages ?? []) : undefined;
+  const title = layout?.title || usableEmbedded || filenameTitle(filename);
   const author = firstString(snapshot.xmp["dc:creator"], snapshot.info.Author);
   const creators = author ? splitAuthors(author) : [];
   const canonical = cleanCanonical({
-    itemType: "journalArticle",
+    itemType: layout?.thesis ? "thesis" : "journalArticle",
     title,
     creators,
-    date: firstString(snapshot.info.CreationDate),
+    // PDF creation time is not the publication date.
+    language: containsHan(title) ? "zh-CN" : undefined,
     abstract: firstString(snapshot.xmp["dc:description"], snapshot.info.Subject),
     doi,
     tags: splitTags(firstString(snapshot.xmp["dc:subject"], snapshot.info.Keywords)),
@@ -202,9 +213,9 @@ function localCandidate(snapshot: PdfMetadataSnapshot, filename: string, doi?: s
   const hasEmbedded = title !== filenameTitle(filename) || creators.length > 0;
   return {
     canonical,
-    provider: hasEmbedded ? "xmp" : "filename",
-    confidence: doi ? 0.72 : hasEmbedded ? 0.58 : 0.3,
-    reason: hasEmbedded ? "PDF 内嵌元数据" : "文件名兜底",
+    provider: layout ? "pdf-text" : hasEmbedded ? "xmp" : "filename",
+    confidence: doi ? 0.72 : layout ? 0.68 : hasEmbedded ? 0.58 : 0.3,
+    reason: layout ? "PDF 中文标题（字号与位置识别，请核对）" : hasEmbedded ? "PDF 内嵌元数据" : "文件名兜底",
     raw: { info: snapshot.info, xmp: snapshot.xmp },
   };
 }
@@ -362,8 +373,9 @@ function filenameTitle(filename: string): string {
 }
 
 function splitAuthors(value: string): PaperCreator[] {
-  return value.split(/[;；、]|\s+and\s+/i).map((name) => name.trim()).filter(Boolean).map((name) => {
-    if (containsCjk(name) && !name.includes(" ")) return { family: name.slice(0, 1), given: name.slice(1), creatorType: "author" };
+  return value.split(/[;；、，]|\s+and\s+/i).map((name) => name.trim()).filter(Boolean).map((name) => {
+    const chinese = splitChineseName(name);
+    if (chinese) return { ...chinese, creatorType: "author" };
     const parts = name.split(/\s+/);
     return { family: parts.at(-1) ?? name, given: parts.slice(0, -1).join(" "), creatorType: "author" };
   });

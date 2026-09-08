@@ -1,5 +1,6 @@
 import type { ImportCandidate, ZoteroCreator } from "../types/import";
 import type { PaperCanonical, PaperCreator, PaperData } from "../types/paper";
+import { splitChineseName } from "./chinese";
 import { generateCitekey, normalizeDoi } from "./naming";
 
 export function canonicalFromRaw(raw: Record<string, unknown>): PaperCanonical {
@@ -97,7 +98,8 @@ function normalizeCreator(value: ZoteroCreator): PaperCreator | null {
   const family = string(value.lastName ?? value.family) || (full ? full.split(/\s+/).at(-1) ?? full : "");
   const given = string(value.firstName ?? value.given) || (full ? full.split(/\s+/).slice(0, -1).join(" ") : "");
   if (!family && !given) return null;
-  return { family, given, creatorType: string(value.creatorType) || "author" };
+  const chinese = !given && value.fieldMode !== 1 ? splitChineseName(family) : undefined;
+  return { family: chinese?.family ?? family, given: chinese?.given ?? given, creatorType: string(value.creatorType) || "author" };
 }
 
 function string(value: unknown): string {

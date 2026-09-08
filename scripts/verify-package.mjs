@@ -5,6 +5,12 @@ const root = resolve(import.meta.dirname, "..");
 const dist = resolve(root, "dist");
 const required = [
   "plugin.json",
+  "pdfjs/pdf.worker.min.mjs",
+  "pdfjs/cmaps/UniGB-UCS2-H.bcmap",
+  "pdfjs/standard_fonts/FoxitSerif.pfb",
+  "pdfjs/wasm/openjpeg.wasm",
+  "pdfjs/LICENSE",
+  "third-party/pinyin-pro.LICENSE",
   "index.js",
   "index.css",
   "README.md",

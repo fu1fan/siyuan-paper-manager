@@ -1,3 +1,4 @@
+import { version } from "../../package.json";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import {
   CONNECTOR_API_VERSION,
@@ -13,6 +14,10 @@ import { getNodeRequire, type NodeRequire, requireNode } from "../core/env";
 interface ConnectorItem {
   id: string;
   raw: Record<string, unknown>;
+  imported: boolean;
+  docId?: string;
+  error?: string;
+  delivered: Set<string>;
 }
 
 interface StoredAttachment extends ImportAttachment {
@@ -28,6 +33,8 @@ interface ConnectorSession {
   updatedAt: number;
   expectedAttachments: number;
   pendingUploads: number;
+  processing?: Promise<void>;
+  attachmentStatus: Map<string, { id: string; parentItemId: string; title: string; progress: number | false; error?: string }>;
   timer?: ReturnType<typeof setTimeout>;
 }
 
@@ -35,7 +42,8 @@ export interface ConnectorServerOptions {
   port: number;
   tempDirectory: string;
   requireFn?: NodeRequire;
-  onImport: (candidate: ImportCandidate) => void | Promise<void>;
+  onImport: (candidate: ImportCandidate) => string | void | Promise<string | void>;
+  onAdditionalAttachments?: (docId: string, attachments: ImportAttachment[]) => Promise<void>;
   onStatus?: (status: { listening: boolean; port: number; error?: string }) => void;
   onProtocolError?: (message: string) => void;
   graceMs?: number;
@@ -47,7 +55,6 @@ export class ConnectorServer {
   private readonly requireFn: NodeRequire;
   private server: import("node:http").Server | null = null;
   private readonly sessions = new Map<string, ConnectorSession>();
-  private readonly completedSessions = new Map<string, number>();
   private cleanupTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(private readonly options: ConnectorServerOptions) {
@@ -65,7 +72,7 @@ export class ConnectorServer {
         const message = error instanceof Error ? error.message : String(error);
         console.error("[paper-manager] Connector 请求失败", error);
         this.options.onProtocolError?.(message);
-        if (!response.headersSent) this.respondJson(response, 500, { error: message });
+        if (!response.headersSent) this.respondJson(response, error instanceof ProtocolError ? error.status : 500, { error: message });
         else response.end();
       });
     });
@@ -91,14 +98,16 @@ export class ConnectorServer {
     this.cleanupTimer = null;
     for (const session of this.sessions.values()) {
       if (session.timer) clearTimeout(session.timer);
-      for (const attachment of session.attachments) this.removeTempFile(attachment.tempPath);
     }
+    const sessions = [...this.sessions.values()];
     this.sessions.clear();
     if (this.server) {
       const server = this.server;
       this.server = null;
-      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await new Promise<void>((resolve) => { server.close(() => resolve()); server.closeAllConnections(); });
     }
+    await Promise.allSettled(sessions.map((session) => session.processing));
+    for (const session of sessions) for (const attachment of session.attachments) this.removeTempFile(attachment.tempPath);
     this.options.onStatus?.({ listening: false, port: this.options.port });
   }
 
@@ -117,6 +126,7 @@ export class ConnectorServer {
     const url = new URL(request.url || "/", "http://127.0.0.1");
     const route = url.pathname;
     if (route === "/connector/ping" && (request.method === "GET" || request.method === "POST")) {
+      if (request.method === "POST") await readJson(request, MAX_JSON_BODY_BYTES);
       this.handlePing(response);
       return;
     }
@@ -131,19 +141,23 @@ export class ConnectorServer {
       case "/connector/saveSnapshot":
         await this.handleSaveSnapshot(request, response);
         return;
-      case "/connector/saveAttachment":
       case "/connector/saveSingleFile":
+        await this.handleSingleFile(request, response);
+        return;
+      case "/connector/saveAttachment":
         await this.handleAttachment(request, response, url);
         return;
       case "/connector/saveStandaloneAttachment":
-        await this.handleStandaloneAttachment(request, response);
+        await this.handleStandaloneAttachment(request, response, url);
         return;
       case "/connector/sessionProgress":
-        this.handleSessionProgress(response, url);
+        await this.handleSessionProgress(request, response, url);
         return;
       case "/connector/getSelectedCollection":
         this.respondJson(response, 200, {
           editable: true,
+          libraryEditable: true,
+          targets: [{ id: "siyuan-paper-manager", name: "SiYuan Paper Manager", type: "library", libraryID: 1, level: 0, filesEditable: true }],
           id: "siyuan-paper-manager",
           name: "SiYuan Paper Manager",
           libraryID: 1,
@@ -151,8 +165,13 @@ export class ConnectorServer {
           filesEditable: true,
         });
         return;
+      case "/connector/hasAttachmentResolvers":
+        await readJson(request, MAX_JSON_BODY_BYTES);
+        this.respondJson(response, 200, false);
+        return;
       case "/connector/updateSession":
       case "/connector/delaySync":
+        await readJson(request, MAX_JSON_BODY_BYTES);
         this.respondJson(response, 200, {});
         return;
       default:
@@ -172,10 +191,9 @@ export class ConnectorServer {
         googleDocsAddNoteEnabled: false,
         googleDocsCitationExplorerEnabled: false,
         supportsAttachmentUpload: true,
-        translatorsHash: "siyuan-paper-manager-v1",
-        sortedTranslatorHash: "siyuan-paper-manager-v1-sorted",
+        // Do not advertise a translator database: Connector manages its own translators.
       },
-      version: "SiYuan Paper Manager 0.4.0",
+      version: `SiYuan Paper Manager ${version}`,
     });
   }
 
@@ -205,80 +223,169 @@ export class ConnectorServer {
   private saveSession(payload: Record<string, unknown>, items: Record<string, unknown>[], response: ServerResponse): void {
     const sessionId = cleanId(payload.sessionID) || randomId();
     // Connector 会重发请求；活动会话也必须幂等，不能覆盖已上传附件与定时器。
-    if (!this.sessions.has(sessionId) && !this.completedSessions.has(sessionId)) {
+    if (!this.sessions.has(sessionId)) {
       const now = Date.now();
       const session: ConnectorSession = {
         id: sessionId,
         uri: string(payload.uri ?? payload.url) || undefined,
-        items: items.map((raw, index) => ({ id: itemId(raw, index), raw: cloneRecord(raw) })),
+        items: items.map((raw, index) => ({ id: itemId(raw, index), raw: cloneRecord(raw), imported: false, delivered: new Set<string>() })),
         attachments: [], createdAt: now, updatedAt: now,
-        expectedAttachments: expectedAttachmentCount(items), pendingUploads: 0,
+        expectedAttachments: expectedAttachmentCount(items), pendingUploads: 0, attachmentStatus: new Map(),
       };
+      for (const item of session.items) {
+        for (const raw of Array.isArray(item.raw.attachments) ? item.raw.attachments.filter(isRecord) : []) {
+          if (raw.snapshot === false || raw.linkMode === "linked_url") continue;
+          const id = cleanId(raw.id);
+          if (id) session.attachmentStatus.set(id, { id, parentItemId: item.id, title: string(raw.title), progress: 0 });
+        }
+      }
       this.sessions.set(sessionId, session);
       this.scheduleDispatch(session, session.expectedAttachments ? this.options.attachmentWaitMs ?? 5 * 60_000 : undefined);
     }
-    this.respondJson(response, 201, { sessionID: sessionId });
+    const session = this.sessions.get(sessionId)!;
+    session.updatedAt = Date.now();
+    this.respondJson(response, 201, { sessionID: sessionId, items: session.items.map((item) => ({ ...item.raw, id: item.id })), saveSingleFile: true });
   }
 
   private async handleAttachment(request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> {
-    const sessionId = cleanId(url.searchParams.get("sessionID") ?? url.searchParams.get("session"));
-    const session = this.sessions.get(sessionId);
-    if (!session) {
-      this.respondJson(response, 404, { error: `unknown session: ${sessionId}` });
+    const session = this.requireSession(url.searchParams.get("sessionID") ?? url.searchParams.get("session"));
+    const metadata = attachmentMetadata(request);
+    metadata.contentType ||= header(request, "content-type").split(";", 1)[0];
+    const parent = this.attachmentParent(session, metadata.parentItemID ?? metadata.parentItem);
+    if (parent.error) throw new ProtocolError(409, `论文导入失败：${parent.error}`);
+    metadata.parentItemID = parent.id;
+    metadata.id = cleanId(metadata.id) || randomId();
+    const known = session.attachmentStatus.get(metadata.id);
+    if (known && known.parentItemId !== parent.id) throw new ProtocolError(400, "附件ID已属于另一篇论文");
+    const previous = session.attachments.find((item) => item.id === metadata.id);
+    if (previous && session.attachmentStatus.get(metadata.id)?.progress !== false) {
+      request.resume();
+      this.respondJson(response, 201, { id: metadata.id, progress: 100 });
       return;
+    }
+    if (previous) {
+      this.removeTempFile(previous.tempPath);
+      session.attachments = session.attachments.filter((attachment) => attachment !== previous);
+      parent.delivered.delete(metadata.id);
     }
     session.pendingUploads += 1;
     session.updatedAt = Date.now();
+    session.attachmentStatus.set(metadata.id, { id: metadata.id, parentItemId: parent.id, title: metadata.title || "附件", progress: 0 });
     try {
-      const attachment = await this.streamAttachment(request, attachmentMetadata(request));
-      if (this.sessions.get(sessionId) !== session) {
+      const attachment = await this.streamAttachment(request, metadata);
+      if (this.sessions.get(session.id) !== session) {
         this.removeTempFile(attachment.tempPath);
-        this.respondJson(response, 409, { error: "session closed" });
-        return;
+        throw new ProtocolError(409, "session closed");
       }
-      const existing = session.attachments.find((item) => item.id === attachment.id);
-      if (existing) this.removeTempFile(attachment.tempPath);
-      else session.attachments.push(attachment);
-      session.updatedAt = Date.now();
-      if (session.attachments.length >= session.expectedAttachments) this.scheduleDispatch(session);
-      this.respondJson(response, 200, { id: attachment.id, progress: 100 });
+      this.storeAttachment(session, attachment);
+    } catch (error) {
+      session.attachmentStatus.get(metadata.id)!.progress = false;
+      session.attachmentStatus.get(metadata.id)!.error = errorMessage(error);
+      throw error;
     } finally {
       session.pendingUploads -= 1;
+      session.updatedAt = Date.now();
+      // Modern Connectors omit the attachment list in saveItems. Keep the session
+      // and patch its existing document even if the download finishes much later.
+      if (session.items.some((item) => item.imported) || this.attachmentsArrived(session)) this.scheduleDispatch(session);
     }
+    if (parent.imported) await this.flushAttachment(session, metadata.id);
+    this.respondJson(response, 201, { id: metadata.id, progress: 100 });
   }
 
-  private async handleStandaloneAttachment(request: IncomingMessage, response: ServerResponse): Promise<void> {
+  private async handleSingleFile(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    const payload = await readJson(request, 64 * 1024 * 1024);
+    const session = this.requireSession(payload.sessionID);
+    if (typeof payload.snapshotContent !== "string" || !payload.snapshotContent.trim()) throw new ProtocolError(400, "snapshotContent must be HTML text");
+    const rawItem = Array.isArray(payload.items) ? payload.items.find(isRecord) : undefined;
+    const parent = this.attachmentParent(session, payload.parentItemID ?? rawItem?.id);
+    if (parent.error) throw new ProtocolError(409, `论文导入失败：${parent.error}`);
+    const placeholder = [...session.attachmentStatus.values()].find((entry) => entry.parentItemId === parent.id && session.items.some((item) =>
+      Array.isArray(item.raw.attachments) && item.raw.attachments.some((a) => isRecord(a) && cleanId(a.id) === entry.id && a.mimeType === "text/html")));
+    const id = cleanId(payload.id) || placeholder?.id || `snapshot-${parent.id}`;
+    const existing = session.attachments.find((attachment) => attachment.id === id);
+    if (!existing || session.attachmentStatus.get(id)?.progress === false) {
+      if (existing) {
+        this.removeTempFile(existing.tempPath);
+        session.attachments = session.attachments.filter((attachment) => attachment !== existing);
+        parent.delivered.delete(id);
+      }
+      const fs = requireNode<typeof import("node:fs")>("fs", this.requireFn);
+      const path = requireNode<typeof import("node:path")>("path", this.requireFn);
+      const tempPath = path.join(this.options.tempDirectory, `${randomId()}-${id}.html`);
+      fs.writeFileSync(tempPath, payload.snapshotContent, "utf8");
+      this.storeAttachment(session, { id, connectorId: id, parentItemId: parent.id,
+        title: string(payload.title) || "网页快照", mimeType: "text/html", sourceUrl: string(payload.url) || session.uri, tempPath });
+    }
+    if (session.items.some((item) => item.imported) || this.attachmentsArrived(session)) this.scheduleDispatch(session);
+    if (parent.imported) await this.flushAttachment(session, id);
+    response.statusCode = 204;
+    response.end();
+  }
+
+  private async handleStandaloneAttachment(request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> {
     const metadata = attachmentMetadata(request);
+    metadata.contentType ||= header(request, "content-type").split(";", 1)[0];
+    const sessionId = cleanId(url.searchParams.get("sessionID")) || randomId();
+    let session = this.sessions.get(sessionId);
+    if (session?.items[0]?.imported) { request.resume(); this.respondJson(response, 201, { canRecognize: false }); return; }
+    metadata.id = cleanId(metadata.id) || `standalone-${sessionId}`;
     const attachment = await this.streamAttachment(request, metadata);
-    const raw: Record<string, unknown> = {
-      itemType: "attachment",
-      title: metadata.title || metadata.filename || "独立附件",
-      url: metadata.url,
-    };
-    this.emitCandidate({
-      id: attachment.id,
-      source: SOURCE.connector,
-      canonical: canonicalFromRaw(raw),
-      raw,
-      attachments: [attachment],
-    });
-    this.respondJson(response, 201, { id: attachment.id, progress: 100 });
+    const id = attachment.parentItemId = "standalone";
+    const raw = { id, itemType: "document", title: metadata.title || metadata.filename || "独立附件", url: metadata.url };
+    if (!session) {
+      session = { id: sessionId, uri: string(metadata.url), items: [{ id, raw, imported: false, delivered: new Set() }],
+        attachments: [], attachmentStatus: new Map(), createdAt: Date.now(), updatedAt: Date.now(), expectedAttachments: 1, pendingUploads: 0 };
+      this.sessions.set(sessionId, session);
+    }
+    this.storeAttachment(session, attachment);
+    this.scheduleDispatch(session);
+    this.respondJson(response, 201, { id: attachment.id, canRecognize: false });
   }
 
-  private handleSessionProgress(response: ServerResponse, url: URL): void {
-    const id = cleanId(url.searchParams.get("sessionID") ?? url.searchParams.get("session"));
+  private requireSession(value: unknown): ConnectorSession {
+    const id = cleanId(value);
     const session = this.sessions.get(id);
-    if (!session) {
-      this.respondJson(response, 200, { done: this.completedSessions.has(id), items: [] });
-      return;
-    }
+    if (!session) throw new ProtocolError(404, `unknown session: ${id}`);
+    return session;
+  }
+
+  private attachmentParent(session: ConnectorSession, value: unknown): ConnectorItem {
+    const id = cleanId(value);
+    const parent = id ? session.items.find((item) => item.id === id) : session.items.length === 1 ? session.items[0] : undefined;
+    if (!parent) throw new ProtocolError(400, "附件缺少有效的 parentItemID，无法确定所属论文");
+    return parent;
+  }
+
+  private storeAttachment(session: ConnectorSession, attachment: StoredAttachment): void {
+    const existing = session.attachments.findIndex((item) => item.id === attachment.id);
+    if (existing >= 0) {
+      if (session.attachmentStatus.get(attachment.id)?.progress !== false) { this.removeTempFile(attachment.tempPath); return; }
+      this.removeTempFile(session.attachments[existing]?.tempPath);
+      session.attachments[existing] = attachment;
+    } else session.attachments.push(attachment);
+    for (const item of session.items) item.delivered.delete(attachment.id);
+    session.updatedAt = Date.now();
+    session.attachmentStatus.set(attachment.id, { id: attachment.id, parentItemId: attachment.parentItemId!, title: attachment.title, progress: 0 });
+  }
+
+  private attachmentsArrived(session: ConnectorSession): boolean {
+    return session.attachments.length + [...session.attachmentStatus.values()].filter((status) => status.progress === false).length >= session.expectedAttachments;
+  }
+
+  private async handleSessionProgress(request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> {
+    const payload = await readJson(request, MAX_JSON_BODY_BYTES);
+    const session = this.requireSession(payload.sessionID ?? url.searchParams.get("sessionID") ?? url.searchParams.get("session"));
     this.respondJson(response, 200, {
-      done: false,
-      items: session.items.map((item) => ({ id: item.id, progress: attachmentProgress(session, item) })),
+      done: !session.pendingUploads && !session.processing && session.items.every((item) => item.imported || item.error)
+        && [...session.attachmentStatus.values()].every((entry) => entry.progress === 100 || entry.progress === false),
+      items: session.items.map((item) => ({ id: item.id, title: string(item.raw.title), progress: item.error ? false : item.imported ? 100 : 0,
+        error: item.error, attachments: [...session.attachmentStatus.values()].filter((entry) => entry.parentItemId === item.id) })),
     });
   }
 
   private scheduleDispatch(session: ConnectorSession, delayMs?: number): void {
+    if (!this.server || this.sessions.get(session.id) !== session) return;
     if (session.timer) clearTimeout(session.timer);
     session.timer = setTimeout(
       () => this.dispatchSession(session.id),
@@ -286,34 +393,53 @@ export class ConnectorServer {
     );
   }
 
+  private async flushAttachment(session: ConnectorSession, id: string): Promise<void> {
+    await session.processing;
+    this.dispatchSession(session.id);
+    await session.processing;
+    const status = session.attachmentStatus.get(id);
+    if (status?.progress === false) throw new ProtocolError(500, status.error || "附件保存失败");
+  }
+
   private dispatchSession(sessionId: string): void {
     const session = this.sessions.get(sessionId);
     if (!session) return;
-    if (session.pendingUploads) {
-      this.scheduleDispatch(session);
-      return;
+    if ((session.pendingUploads && !session.items.every((item) => item.imported)) || session.processing) { this.scheduleDispatch(session); return; }
+    for (const entry of session.attachmentStatus.values()) {
+      if (!session.pendingUploads && entry.progress === 0 && !session.attachments.some((attachment) => attachment.id === entry.id)) {
+        entry.progress = false;
+        entry.error = "等待附件超时，稍后上传仍可补充";
+      }
     }
-    this.sessions.delete(sessionId);
-    this.completedSessions.set(sessionId, Date.now());
-    for (const item of session.items) {
-      const matched = session.attachments.filter((attachment) =>
-        attachment.parentItemId === item.id || (!attachment.parentItemId && session.items.length === 1));
-      this.emitCandidate({
-        id: `${sessionId}:${item.id}`,
-        source: SOURCE.connector,
-        canonical: canonicalFromRaw(item.raw),
-        raw: item.raw,
-        attachments: matched,
-        sourceUrl: session.uri,
-        sessionId,
-      });
-    }
+    session.processing = this.importSession(session).finally(() => { session.processing = undefined; });
   }
 
-  private emitCandidate(candidate: ImportCandidate): void {
-    void Promise.resolve().then(() => this.options.onImport(candidate)).catch((error) => {
-      this.options.onProtocolError?.(error instanceof Error ? error.message : String(error));
-    });
+  private async importSession(session: ConnectorSession): Promise<void> {
+    for (const item of session.items) {
+      if (this.sessions.get(session.id) !== session || item.error) continue;
+      const matched = session.attachments.filter((attachment) => attachment.parentItemId === item.id && !item.delivered.has(attachment.id));
+      if (item.imported && !matched.length) continue;
+      try {
+        if (!item.imported) {
+          const docId = await this.options.onImport({ id: `${session.id}:${item.id}`, source: SOURCE.connector,
+            canonical: canonicalFromRaw(item.raw), raw: item.raw, attachments: matched, sourceUrl: session.uri, sessionId: session.id });
+          item.docId = docId || undefined;
+          item.imported = true;
+        } else {
+          if (!item.docId || !this.options.onAdditionalAttachments) throw new Error("已保存文献无法接收迟到附件，请重新导入PDF");
+          await this.options.onAdditionalAttachments(item.docId, matched);
+        }
+        for (const attachment of matched) session.attachmentStatus.get(attachment.id)!.progress = 100;
+      } catch (error) {
+        const message = errorMessage(error);
+        if (!item.imported) item.error = message;
+        for (const attachment of matched) Object.assign(session.attachmentStatus.get(attachment.id)!, { progress: false, error: message });
+        this.options.onProtocolError?.(`论文「${string(item.raw.title)}」保存失败：${message}`);
+      } finally {
+        for (const attachment of matched) { item.delivered.add(attachment.id); this.removeTempFile(attachment.tempPath); }
+        session.updatedAt = Date.now();
+      }
+    }
   }
 
   private async streamAttachment(
@@ -349,15 +475,13 @@ export class ConnectorServer {
   private cleanupExpired(): void {
     const cutoff = Date.now() - (this.options.sessionTtlMs ?? CONNECTOR_SESSION_TTL_MS);
     for (const [id, session] of this.sessions) {
-      if (!session.pendingUploads && session.updatedAt < cutoff) {
+      if (!session.pendingUploads && !session.processing && session.updatedAt < cutoff) {
         if (session.timer) clearTimeout(session.timer);
         this.sessions.delete(id);
         for (const attachment of session.attachments) this.removeTempFile(attachment.tempPath);
       }
     }
-    for (const [id, completedAt] of this.completedSessions) {
-      if (completedAt < cutoff) this.completedSessions.delete(id);
-    }
+
   }
 
   private removeTempFile(pathname: string | undefined): void {
@@ -376,6 +500,8 @@ export class ConnectorServer {
     response.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
     response.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Metadata, X-Zotero-Version, X-Zotero-Connector-API-Version");
     response.setHeader("X-Zotero-Version", "7.0.0");
+    response.setHeader("Access-Control-Expose-Headers", "X-Zotero-Version");
+    response.setHeader("Access-Control-Allow-Private-Network", "true");
     response.setHeader("Cache-Control", "no-store");
   }
 
@@ -392,37 +518,35 @@ async function readJson(request: IncomingMessage, maxBytes: number): Promise<Rec
   for await (const chunk of request) {
     const bytes = typeof chunk === "string" ? new TextEncoder().encode(chunk) : new Uint8Array(chunk);
     size += bytes.byteLength;
-    if (size > maxBytes) throw new Error(`JSON 请求超过 ${maxBytes} 字节限制`);
+    if (size > maxBytes) throw new ProtocolError(413, `JSON 请求超过 ${maxBytes} 字节限制`);
     chunks.push(bytes);
   }
   const body = new Uint8Array(size);
   let offset = 0;
   for (const chunk of chunks) { body.set(chunk, offset); offset += chunk.byteLength; }
   if (!body.length) return {};
-  const parsed = JSON.parse(new TextDecoder().decode(body)) as unknown;
-  if (!isRecord(parsed)) throw new Error("JSON 请求体必须是对象");
+  let parsed: unknown;
+  try { parsed = JSON.parse(new TextDecoder().decode(body)); } catch { throw new ProtocolError(400, "Invalid JSON request body"); }
+  if (!isRecord(parsed)) throw new ProtocolError(400, "JSON 请求体必须是对象");
   return parsed;
 }
 
 function attachmentMetadata(request: IncomingMessage): ZoteroAttachmentMetadata {
   const raw = header(request, "x-metadata");
-  if (!raw) return {};
+  if (!raw) throw new ProtocolError(400, "X-Metadata header is required");
   try {
     const parsed = JSON.parse(raw) as unknown;
-    return isRecord(parsed) ? parsed as ZoteroAttachmentMetadata : {};
+    if (!isRecord(parsed)) throw new Error("not an object");
+    const metadata = parsed as ZoteroAttachmentMetadata;
+    if (metadata.title) metadata.title = decodeHeaderTitle(metadata.title);
+    return metadata;
   } catch {
-    return {};
+    throw new ProtocolError(400, "Invalid X-Metadata header");
   }
 }
 
-function attachmentProgress(session: ConnectorSession, item: ConnectorItem): number {
-  const expected = Array.isArray(item.raw.attachments) ? item.raw.attachments.length : 0;
-  const completed = session.attachments.filter((attachment) => attachment.parentItemId === item.id).length;
-  return expected ? Math.min(100, Math.round((completed / expected) * 100)) : completed ? 100 : 0;
-}
-
 function expectedAttachmentCount(items: Record<string, unknown>[]): number {
-  return items.reduce((total, item) => total + (Array.isArray(item.attachments) ? item.attachments.length : 0), 0);
+  return items.reduce((total, item) => total + (Array.isArray(item.attachments) ? item.attachments.filter((a) => isRecord(a) && a.snapshot !== false && a.linkMode !== "linked_url").length : 0), 0);
 }
 
 function header(request: IncomingMessage, name: string): string {
@@ -475,4 +599,18 @@ function connectorStartError(error: unknown): string {
     if (error.code === "EACCES") return "没有监听该端口的权限";
   }
   return error instanceof Error ? error.message : String(error);
+}
+
+class ProtocolError extends Error {
+  constructor(readonly status: number, message: string) { super(message); }
+}
+function errorMessage(error: unknown): string { return error instanceof Error ? error.message : String(error); }
+
+export function decodeHeaderTitle(value: string): string {
+  return value.replace(/=\?UTF-8\?([BQ])\?([^?]*)\?=/gi, (original, encoding: string, body: string) => {
+    try {
+      if (encoding.toUpperCase() === "B") return Buffer.from(body, "base64").toString("utf8");
+      return decodeURIComponent(body.replace(/_/g, " ").replace(/=([0-9A-F]{2})/gi, "%$1"));
+    } catch { return original; }
+  });
 }

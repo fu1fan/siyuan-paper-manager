@@ -1,3 +1,5 @@
+import { pinyin } from "pinyin-pro";
+import { splitChineseName } from "./chinese";
 import type { PaperCanonical } from "../types/paper";
 
 export function normalizeDoi(value: unknown): string | undefined {
@@ -34,7 +36,9 @@ export function normalizeTitle(value: string): string {
 
 export function generateCitekey(canonical: PaperCanonical): string {
   const creator = canonical.creators.find((item) => item.creatorType === "author") ?? canonical.creators[0];
-  const family = transliterateKey(creator?.family || "anon") || "anon";
+  const rawFamily = creator?.family || "anon";
+  const surname = !creator?.given ? splitChineseName(rawFamily)?.family ?? rawFamily : rawFamily;
+  const family = transliterateKey(surname, true) || "anon";
   const year = canonical.date?.match(/(?:19|20)\d{2}/)?.[0] ?? "nd";
   const titleToken = firstTitleToken(canonical.title);
   return `${family}${year}${titleToken}`.toLowerCase().slice(0, 64);
@@ -78,8 +82,9 @@ function firstTitleToken(title: string): string {
   return transliterateKey(latin).slice(0, 16) || "paper";
 }
 
-function transliterateKey(value: string): string {
-  return value.normalize("NFKD").replace(/[^\p{L}\p{N}]/gu, "");
+function transliterateKey(value: string, surname = false): string {
+  return pinyin(value.normalize("NFKC"), { toneType: "none", type: "array", mode: surname ? "surname" : "normal", v: true })
+    .join("").normalize("NFKD").replace(/[^a-zA-Z0-9]/g, "");
 }
 
 function bigrams(value: string): string[] {

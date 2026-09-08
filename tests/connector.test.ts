@@ -32,7 +32,9 @@ describe("ConnectorServer", () => {
     const base = `http://127.0.0.1:${port}`;
     const ping = await fetch(`${base}/connector/ping`, { method: "POST" });
     expect(ping.status).toBe(200);
-    expect((await ping.json()).prefs.supportsAttachmentUpload).toBe(true);
+    const prefs = (await ping.json()).prefs;
+    expect(prefs.supportsAttachmentUpload).toBe(true);
+    expect(prefs.translatorsHash).toBeUndefined();
 
     const tooNew = await fetch(`${base}/connector/ping`, {
       method: "POST",
@@ -62,7 +64,7 @@ describe("ConnectorServer", () => {
       },
       body: new Uint8Array([37, 80, 68, 70, 45]),
     });
-    expect(attachment.status).toBe(200);
+    expect(attachment.status).toBe(201);
     await new Promise((resolve) => setTimeout(resolve, 80));
     expect(received).toHaveLength(2);
     expect(received.find((item) => item.canonical.title === "Paper A")?.attachments).toHaveLength(1);
@@ -122,9 +124,117 @@ describe("ConnectorServer", () => {
     await new Promise((resolve) => setTimeout(resolve, 100));
     expect(received).toHaveLength(0);
     request.end("last chunk");
-    expect(await finished).toBe(200);
+    expect(await finished).toBe(201);
     await vi.waitFor(() => expect(received).toHaveLength(1));
     expect(received[0]?.attachments).toHaveLength(1);
+  });
+
+  async function boot(onImport: (candidate: ImportCandidate) => string | void | Promise<string | void>,
+    onAdditionalAttachments?: (docId: string, attachments: ImportCandidate["attachments"]) => Promise<void>) {
+    const port = await freePort();
+    directory = mkdtempSync(join(tmpdir(), "connector-protocol-"));
+    connector = new ConnectorServer({ port, tempDirectory: directory, requireFn: createRequire(import.meta.url),
+      graceMs: 15, attachmentWaitMs: 50, onImport, onAdditionalAttachments, onProtocolError: vi.fn() });
+    await connector.start();
+    const base = `http://127.0.0.1:${port}/connector/`;
+    const post = (route: string, data: unknown) => fetch(`${base}${route}`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data),
+    });
+    const upload = (session: string, id: string, parentItemID: string, content = "%PDF-1.4 test", title = "Full Text PDF") => fetch(`${base}saveAttachment?sessionID=${session}`, {
+      method: "POST", headers: { "Content-Type": "application/pdf", "X-Metadata": JSON.stringify({ id, parentItemID, title, contentType: "application/pdf" }) }, body: content,
+    });
+    return { post, upload, base };
+  }
+
+  it("matches modern Connector saves: late PDFs attach to the original document and retries are idempotent", async () => {
+    const onImport = vi.fn(async () => "doc-arxiv");
+    const late = vi.fn(async (docId: string, attachments: ImportCandidate["attachments"]) => {
+      expect(docId).toBe("doc-arxiv");
+      expect(readFileSync(attachments[0]!.tempPath!, "utf8")).toContain("%PDF-");
+      expect(attachments[0]?.title).toBe("中文全文 PDF");
+    });
+    const { post, upload } = await boot(onImport, late);
+    // Current Connector removes downloaded attachments from the saveItems payload.
+    const save = { sessionID: "arxiv", items: [{ id: "paper", title: "Can Large Language Models Anticipate Behavior?", attachments: [] }] };
+    expect((await post("saveItems", save)).status).toBe(201);
+    await vi.waitFor(() => expect(onImport).toHaveBeenCalledTimes(1));
+    const pending = await (await post("sessionProgress", { sessionID: "arxiv" })).json();
+    expect(pending.items[0].progress).toBe(100);
+    const title = "=?UTF-8?Q?=E4=B8=AD=E6=96=87=E5=85=A8=E6=96=87_PDF?=";
+    expect((await upload("arxiv", "pdf", "paper", "%PDF-1.4", title)).status).toBe(201);
+    await vi.waitFor(() => expect(late).toHaveBeenCalledTimes(1));
+    const progress = await (await post("sessionProgress", { sessionID: "arxiv" })).json();
+    expect(progress).toMatchObject({ done: true, items: [{ id: "paper", progress: 100, attachments: [{ id: "pdf", progress: 100 }] }] });
+    await post("saveItems", save);
+    expect((await upload("arxiv", "pdf", "paper")).status).toBe(201);
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(onImport).toHaveBeenCalledTimes(1);
+    expect(late).toHaveBeenCalledTimes(1);
+    expect((await (await post("hasAttachmentResolvers", { sessionID: "arxiv", itemID: "paper" })).json())).toBe(false);
+    expect(readdirSync(directory)).toHaveLength(0);
+  });
+
+  it("routes late attachments in a multi-item save and rejects ambiguous parents", async () => {
+    const onImport = vi.fn(async (candidate: ImportCandidate) => `doc-${candidate.canonical.title}`);
+    const late = vi.fn(async () => {});
+    const { post, upload } = await boot(onImport, late);
+    await post("saveItems", { sessionID: "multi", items: [{ id: "a", title: "A", attachments: [] }, { id: "b", title: "B", attachments: [] }] });
+    await vi.waitFor(() => expect(onImport).toHaveBeenCalledTimes(2));
+    expect((await upload("multi", "pdf", "")).status).toBe(400);
+    expect((await upload("multi", "pdf", "b")).status).toBe(201);
+    await vi.waitFor(() => expect(late).toHaveBeenCalledWith("doc-B", expect.arrayContaining([expect.objectContaining({ parentItemId: "b" })])));
+  });
+
+  it("accepts JSON SingleFile snapshots and deduplicates retries", async () => {
+    const onImport = vi.fn(async () => "doc-web");
+    const late = vi.fn(async (_doc: string, attachments: ImportCandidate["attachments"]) => {
+      expect(attachments[0]?.mimeType).toBe("text/html");
+      expect(readFileSync(attachments[0]!.tempPath!, "utf8")).toBe("<!doctype html><p>中文页面</p>");
+    });
+    const { post } = await boot(onImport, late);
+    await post("saveSnapshot", { sessionID: "web", url: "https://example.org/", title: "网页" });
+    await vi.waitFor(() => expect(onImport).toHaveBeenCalledTimes(1));
+    const snapshot = { sessionID: "web", snapshotContent: "<!doctype html><p>中文页面</p>", url: "https://example.org/", title: "Snapshot" };
+    expect((await post("saveSingleFile", snapshot)).status).toBe(204);
+    await vi.waitFor(() => expect(late).toHaveBeenCalledTimes(1));
+    expect((await post("saveSingleFile", snapshot)).status).toBe(204);
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(late).toHaveBeenCalledTimes(1);
+    expect((await (await post("sessionProgress", { sessionID: "web" })).json()).done).toBe(true);
+  });
+
+  it("reports persistence failure instead of claiming success", async () => {
+    const { post } = await boot(async () => { throw new Error("database write failed"); });
+    await post("saveItems", { sessionID: "fail", items: [{ id: "paper", title: "Paper" }] });
+    await vi.waitFor(async () => {
+      const progress = await (await post("sessionProgress", { sessionID: "fail" })).json();
+      expect(progress.items[0]).toMatchObject({ progress: false, error: "database write failed" });
+    });
+    expect((await post("sessionProgress", { sessionID: "missing" })).status).toBe(404);
+  });
+
+  it("returns an error on late persistence failure and permits an idempotent retry", async () => {
+    const onImport = vi.fn(async () => "doc");
+    const late = vi.fn(async () => {}).mockRejectedValueOnce(new Error("upload failed"));
+    const { post, upload } = await boot(onImport, late);
+    await post("saveItems", { sessionID: "retry-fail", items: [{ id: "paper", title: "Paper" }] });
+    await vi.waitFor(() => expect(onImport).toHaveBeenCalledTimes(1));
+    expect((await upload("retry-fail", "pdf", "paper")).status).toBe(500);
+    const failed = await (await post("sessionProgress", { sessionID: "retry-fail" })).json();
+    expect(failed.items[0].attachments[0]).toMatchObject({ progress: false, error: "upload failed" });
+    expect((await upload("retry-fail", "pdf", "paper")).status).toBe(201);
+    expect(late).toHaveBeenCalledTimes(2);
+    expect(onImport).toHaveBeenCalledTimes(1);
+    expect((await (await post("sessionProgress", { sessionID: "retry-fail" })).json()).items[0].attachments[0].progress).toBe(100);
+  });
+
+  it("does not wait for linked-only attachments", async () => {
+    const onImport = vi.fn(async () => "doc");
+    const { post } = await boot(onImport);
+    await post("saveItems", { sessionID: "linked", items: [{ id: "a", title: "A", attachments: [{ id: "url", snapshot: false, url: "https://example.org/" }] }] });
+    await vi.waitFor(() => expect(onImport).toHaveBeenCalledTimes(1));
+    const progress = await (await post("sessionProgress", { sessionID: "linked" })).json();
+    expect(progress).toMatchObject({ done: true, items: [{ attachments: [] }] });
   });
 
 });

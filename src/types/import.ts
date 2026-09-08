@@ -11,6 +11,7 @@ export interface ZoteroCreator {
 export interface ZoteroAttachmentMetadata {
   id?: string;
   parentItemID?: string;
+  parentItem?: string;
   title?: string;
   url?: string;
   contentType?: string;
@@ -42,7 +43,7 @@ export interface ImportCandidate {
 
 export interface MetadataCandidate {
   canonical: PaperCanonical;
-  provider: "xmp" | "crossref" | "citoid" | "cnki" | "filename";
+  provider: "pdf-text" | "xmp" | "crossref" | "citoid" | "cnki" | "filename";
   confidence: number;
   reason: string;
   raw?: Record<string, unknown>;

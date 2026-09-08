@@ -139,6 +139,7 @@ export default class PaperManagerPlugin extends Plugin {
         port: this.settings.zoteroPort,
         tempDirectory: getPluginTempDir(PLUGIN_NAME),
         onImport: (candidate) => this.enqueueImport(candidate),
+        onAdditionalAttachments: (docId, attachments) => this.processor.addAttachments(docId, attachments),
         onStatus: (status) => this.statusStore.update({
           connector: status.error
             ? { state: "error", message: status.error }
@@ -172,12 +173,15 @@ export default class PaperManagerPlugin extends Plugin {
     else await this.startConnector();
   }
 
-  private async enqueueImport(candidate: Parameters<ItemProcessor["process"]>[0]): Promise<void> {
+  private async enqueueImport(candidate: Parameters<ItemProcessor["process"]>[0]): Promise<string | undefined> {
     try {
       const result = await this.processor.process(candidate);
-      if (result.action !== "cancelled") showMessage(`论文${actionLabel(result.action)}：${result.title}`, 5000, "info");
+      if (result.action === "cancelled") throw new Error("用户已取消导入");
+      showMessage(`论文${actionLabel(result.action)}：${result.title}`, 5000, "info");
+      return result.docId;
     } catch (error) {
       showMessage(`论文导入失败：${error instanceof Error ? error.message : String(error)}`, 7000, "error");
+      throw error;
     }
   }
 

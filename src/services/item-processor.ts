@@ -46,6 +46,23 @@ export class ItemProcessor {
     return task.finally(() => this.cleanupCandidate(candidate));
   }
 
+  /** Late Connector files use the existing document and the same import queue. */
+  addAttachments(docId: string, attachments: ImportAttachment[]): Promise<void> {
+    const task = this.importQueue.then(async () => {
+      const before = await this.libraries.readPaper(docId);
+      const added = await this.uploadAttachments(attachments, this.getSettings().assetsDir, before.citekey, before.attachments);
+      if (!added.length) return;
+      // Metadata/translation may have changed while the upload was in progress.
+      const latest = await this.libraries.readPaper(docId);
+      latest.attachments = [...latest.attachments, ...added.filter((attachment) => !latest.attachments.some((old) => old.sha256 === attachment.sha256))];
+      await this.persistAndRefresh(docId, latest);
+    });
+    this.importQueue = task.catch(() => undefined);
+    return task.finally(() => {
+      for (const attachment of attachments) if (attachment.tempPath) unlinkIfExists(attachment.tempPath);
+    });
+  }
+
   private async processCandidate(candidate: ImportCandidate): Promise<ProcessResult> {
     const settings = this.getSettings();
     if (!settings.defaultLibraryDocId) throw new Error("请先完成初始化并设置默认论文文献库");

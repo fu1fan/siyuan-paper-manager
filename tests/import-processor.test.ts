@@ -79,3 +79,31 @@ it("keeps the import queue usable after a failure", async () => {
   await expect(failed).rejects.toThrow("offline");
   expect((await next).action).toBe("created");
 });
+
+
+it("adds late files to the existing paper while preserving edits and translations made during upload", async () => {
+  const { processor, libraries, kernel, resolver } = setup([]);
+  const before = paper({ canonical: { ...paper().canonical, title: "Before" } });
+  const latest = paper({
+    canonical: { ...before.canonical, title: "User edited" },
+    attachments: [{ title: "Existing", mimeType: "text/html", assetAddress: "assets/old.html", sha256: "old" }],
+    translation: { mono: "assets/new-mono.pdf" },
+  });
+  libraries.readPaper.mockResolvedValueOnce(before).mockResolvedValueOnce(latest);
+  await processor.addAttachments("existing-doc", [{ title: "Full Text PDF", mimeType: "application/pdf", bytes: new Uint8Array([37, 80, 68, 70, 45]) }]);
+  expect(kernel.createDocument).not.toHaveBeenCalled();
+  expect(resolver).not.toHaveBeenCalled();
+  const persisted = kernel.setBlockAttrs.mock.calls.at(-1)![1];
+  expect(JSON.parse(persisted[ATTR.attachments]!)).toHaveLength(2);
+  expect(persisted[ATTR.translationMono]).toBe("assets/new-mono.pdf");
+  expect(libraries.syncPaper).toHaveBeenCalledWith("existing-doc", expect.objectContaining({ canonical: expect.objectContaining({ title: "User edited" }) }), false);
+});
+
+it("deduplicates late attachment content without rewriting the paper", async () => {
+  const { processor, libraries, kernel } = setup([]);
+  const bytes = new Uint8Array([37, 80, 68, 70, 45]);
+  libraries.readPaper.mockResolvedValue(paper({ attachments: [{ title: "PDF", mimeType: "application/pdf", assetAddress: "assets/existing.pdf", sha256: await sha256(bytes) }] }));
+  await processor.addAttachments("doc", [{ title: "Retry", bytes, mimeType: "application/pdf" }]);
+  expect(kernel.uploadAsset).not.toHaveBeenCalled();
+  expect(kernel.setBlockAttrs).not.toHaveBeenCalled();
+});
