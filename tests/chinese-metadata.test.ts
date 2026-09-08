@@ -1,4 +1,4 @@
-import { resolve, sep } from "node:path";
+import { resolve } from "node:path";
 import { generateCitekey, uniqueCitekey } from "../src/core/naming";
 import { splitChineseName } from "../src/core/chinese";
 import { canonicalFromRaw } from "../src/core/normalize";
@@ -74,6 +74,6 @@ it("sets browser worker and CJK asset URLs for the installed plugin", () => {
 });
 
 it("extracts Chinese glyphs requiring the shipped Adobe CMap", async () => {
-  const result = await inspectPdf(chinesePdf(true), { cMapUrl: `${resolve("node_modules/pdfjs-dist/cmaps")}${sep}`, cMapPacked: true });
+  const result = await inspectPdf(chinesePdf(true), { cMapUrl: `${resolve("node_modules/pdfjs-dist/cmaps").replaceAll("\\", "/")}/`, cMapPacked: true });
   expect(result.text).toContain("基于深度学习的状态估计方法");
 });
