@@ -4,7 +4,7 @@ import type { DocumentSearchResult, KernelClient } from "../core/kernel";
 import type { LibraryService, PaperLibraryInfo } from "../services/library-service";
 import type { LibraryProject } from "../types/library";
 import type { PluginSettings } from "../types/settings";
-import { normalizeSettings, splitArgString } from "../types/settings";
+import { normalizeSettings, serializeArgs, splitArgString } from "../types/settings";
 import { escapeHtml } from "./dom";
 import { openOnboardingDialog } from "./dialogs/onboarding";
 
@@ -96,7 +96,7 @@ export class SettingsPanel {
       ${textField("翻译服务", "translateService", this.draft.translateService)}
       ${switchField("保留双语版", "translationDual", this.draft.translationDual)}
       ${switchField("重新翻译后删除旧版本", "autoDeleteOldTranslations", this.draft.autoDeleteOldTranslations)}
-      ${textareaField("额外 CLI 参数", "pdf2zhArgs", this.draft.pdf2zhArgs.join(" "))}
+      ${textareaField("额外 CLI 参数", "pdf2zhArgs", serializeArgs(this.draft.pdf2zhArgs))}
       ${textField("翻译资源目录", "translationAssetsDir", this.draft.translationAssetsDir)}
       <div class="paper-manager-preview">自动删除仅在新翻译及元数据保存成功后执行；删除失败不会影响新版本。</div>`;
     root.addEventListener("input", (event) => this.capture(event));

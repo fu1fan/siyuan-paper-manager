@@ -213,7 +213,7 @@ export default class PaperManagerPlugin extends Plugin {
   }
 
   private async selfCheck(): Promise<void> {
-    const report = buildEnvironmentReport(this.settings, this.statusStore.get());
+    const report = await buildEnvironmentReport(this.settings, this.statusStore.get());
     const rows = Object.entries(report).map(([name, result]) =>
       `<tr><td>${result.ok ? "✅" : "⚠️"}</td><td>${escapeHtml(reportLabel(name))}</td><td>${escapeHtml(result.detail)}</td></tr>`).join("");
     new Dialog({

@@ -16,6 +16,8 @@ export interface TranslationResult {
 
 export interface TranslatorOptions {
   requireFn?: NodeRequire;
+  /** Override process launch for cross-platform integration tests. */
+  spawnProcess?: (command: string, args: string[], options: import("node:child_process").SpawnOptions) => ChildProcess;
   onState?: (state: TranslationState) => void;
   /** 从数据库行重建论文数据（数据库权威）。 */
   readPaper: (docId: string) => Promise<PaperData>;
@@ -111,7 +113,7 @@ export class TranslatorService {
     const pdfPath = path.resolve(dataRoot, pdf.assetAddress);
     if (!isWithin(dataRoot, pdfPath, path.sep)) throw new Error("PDF 资源路径越出工作空间");
     if (!fs.existsSync(pdfPath)) throw new Error(`PDF 文件不存在：${pdf.assetAddress}`);
-    const executable = resolveExecutable(settings.pdf2zhPath, this.requireFn);
+    const executable = await resolveExecutable(settings.pdf2zhPath, this.requireFn);
     const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "siyuan-paper-translate-"));
     const args = [
       "-o", outputDir,
@@ -179,7 +181,7 @@ export class TranslatorService {
   private spawn(executable: string, args: string[], docId: string): Promise<void> {
     const childProcess = requireNode<typeof import("node:child_process")>("child_process", this.requireFn);
     return new Promise((resolve, reject) => {
-      const child = childProcess.spawn(executable, args, {
+      const child = (this.options.spawnProcess ?? childProcess.spawn)(executable, args, {
         shell: false,
         windowsHide: true,
         stdio: ["ignore", "pipe", "pipe"],
@@ -257,26 +259,45 @@ export function parseProgress(output: string): number | undefined {
   return last != null && last >= 0 && last <= 100 ? last : undefined;
 }
 
-export function resolveExecutable(configured: string, requireFn: NodeRequire): string {
+export async function resolveExecutable(
+  configured: string,
+  requireFn: NodeRequire,
+  platform: NodeJS.Platform = process.platform,
+): Promise<string> {
   const fs = requireNode<typeof import("node:fs")>("fs", requireFn);
-  const path = requireNode<typeof import("node:path")>("path", requireFn);
+  const paths = requireNode<typeof import("node:path")>("path", requireFn);
+  const path = platform === "win32" ? paths.win32 : paths.posix;
   const os = requireNode<typeof import("node:os")>("os", requireFn);
   const childProcess = requireNode<typeof import("node:child_process")>("child_process", requireFn);
-  const value = configured.trim() || "pdf2zh";
-  if (path.isAbsolute(value) || value.includes(path.sep)) {
-    if (fs.existsSync(value)) return value;
-    throw new Error(`pdf2zh 可执行文件不存在：${value}`);
+  const value = (configured.trim().replace(/^(["'])(.*)\1$/, "$2").trim()) || "pdf2zh";
+  const isFile = (candidate: string): boolean => {
+    try { return fs.statSync(candidate).isFile(); } catch { return false; }
+  };
+  const isBatch = (candidate: string) => platform === "win32" && /\.(cmd|bat)$/i.test(candidate);
+  const batchError = () => new Error("不支持 .cmd/.bat 启动脚本，请填写 pip/uv 安装的 pdf2zh.exe 路径");
+  if (isBatch(value)) throw batchError();
+  if (path.isAbsolute(value) || /[\\/]/.test(value)) {
+    if (isFile(value)) return value;
+    throw new Error(`pdf2zh 可执行文件不存在或不是文件：${value}`);
   }
-  const lookup = process.platform === "win32" ? "where" : "which";
-  const found = childProcess.spawnSync(lookup, [value], { encoding: "utf8", shell: false, windowsHide: true });
-  const resolved = found.status === 0 ? found.stdout.trim().split(/\r?\n/)[0] : "";
-  if (resolved && fs.existsSync(resolved)) return resolved;
-  for (const candidate of [
+  const lookup = platform === "win32" ? "where.exe" : "which";
+  const matches = await new Promise<string[]>((resolve) => {
+    childProcess.execFile(lookup, [value], {
+      encoding: "utf8", shell: false, windowsHide: true, timeout: 3000, maxBuffer: 64 * 1024,
+    }, (error, stdout) => resolve(error ? [] : stdout.trim().split(/\r?\n/).filter(Boolean)));
+  });
+  const candidates = [...matches,
     path.join(os.homedir(), ".local", "bin", value),
-    path.join(os.homedir(), ".local", "bin", `${value}.exe`),
-  ]) {
-    if (fs.existsSync(candidate)) return candidate;
+    ...(platform === "win32" && !/\.exe$/i.test(value)
+      ? [path.join(os.homedir(), ".local", "bin", `${value}.exe`)] : []),
+  ].filter(isFile);
+  if (platform === "win32") {
+    const exe = candidates.find((candidate) => /\.exe$/i.test(candidate));
+    if (exe) return exe;
   }
+  const resolved = candidates.find((candidate) => !isBatch(candidate));
+  if (resolved) return resolved;
+  if (candidates.some(isBatch)) throw batchError();
   throw new Error("未检测到 pdf2zh，请先安装并在设置中填写可执行路径");
 }
 

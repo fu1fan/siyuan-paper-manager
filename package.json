@@ -1,6 +1,6 @@
 {
   "name": "siyuan-paper-manager",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "description": "SiYuan paper libraries backed by native databases, Zotero Connector imports, citation export, PDF metadata, and pdf2zh translation",
   "type": "module",
   "private": true,

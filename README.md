@@ -91,6 +91,36 @@ pip install pdf2zh
 - 首次运行需下载排版模型，国内网络建议先设 `HF_ENDPOINT=https://hf-mirror.com`；
 - 在 插件设置 → 翻译 中可配置路径、源/目标语言、翻译服务（google/deepl/openai…）、额外 CLI 参数、是否保留双语版、是否自动删除旧版本。
 
+### Windows使用说明
+
+Windows思源桌面端支持通过pip／uv安装的`pdf2zh.exe`；不支持将`.cmd`／`.bat`脚本作为翻译入口。
+
+```powershell
+# 安装（任选其一）
+uv tool install --python 3.12 pdf2zh
+py -3.12 -m pip install pdf2zh
+# 查找入口
+where.exe pdf2zh
+```
+
+安装或修改PATH后，请完全退出并重新启动思源。若自动检测失败，在“pdf2zh路径”填入查到的完整exe路径，例如`C:\Users\Alice\.local\bin\pdf2zh.exe`。路径包含空格也无需自行转义；外围成对引号会自动去除。
+
+“额外CLI参数”支持中文、空格及Windows反斜杠路径，例如：
+
+```text
+--config "C:\Users\Alice\My Config\config.json"
+```
+
+参数保存后重新打开设置会自动补充必要的引号。普通反斜杠按字面保留；双引号前连续反斜杠采用Windows参数规则（若路径末尾为反斜杠，应在结束双引号前写成两个反斜杠），也可以用单引号包裹路径，内部反斜杠全部保留。旧版本已经吞掉反斜杠并保存的参数无法自动恢复，需要重新填写。
+
+如果需要模型下载镜像，可在PowerShell中设置当前用户环境变量，然后完全退出并重新启动思源：
+
+```powershell
+[Environment]::SetEnvironmentVariable("HF_ENDPOINT", "https://hf-mirror.com", "User")
+```
+
+仅设置`$env:HF_ENDPOINT`只影响当前PowerShell及其之后启动的子进程，不能改变已经运行的思源环境。环境自检会运行`pdf2zh --help`，最多等待15秒；“启动检查通过”只说明CLI能启动，不代表模型下载、翻译服务或真实PDF翻译已验证。
+
 ## 数据与同步规则
 
 **文献库文档属性** `custom-paper-library-data`：明文 JSON（schema v3），记录数据库 ID、全部字段列 ID、项目定义和时间戳。

@@ -64,32 +64,45 @@ export function normalizeSettings(input: unknown): PluginSettings {
   };
 }
 
+/** Shell-free argument syntax: Windows double-quote escaping plus literal single quotes. */
 export function splitArgString(value: string): string[] {
   const output: string[] = [];
   let current = "";
   let quote: "'" | '"' | null = null;
-  let escaped = false;
-  for (const char of value.trim()) {
-    if (escaped) {
-      current += char;
-      escaped = false;
-    } else if (char === "\\") {
-      escaped = true;
-    } else if (quote) {
-      if (char === quote) quote = null;
+  let started = false;
+  for (let i = 0; i < value.length; i += 1) {
+    const char = value[i]!;
+    if (quote === "'") {
+      if (char === "'") quote = null;
       else current += char;
-    } else if (char === "'" || char === '"') {
-      quote = char;
-    } else if (/\s/.test(char)) {
-      if (current) output.push(current);
+    } else if (char === "\\") {
+      let count = 1;
+      while (value[i + 1] === "\\") { count += 1; i += 1; }
+      if (value[i + 1] === '"') {
+        current += "\\".repeat(Math.floor(count / 2));
+        i += 1;
+        if (count % 2) current += '"';
+        else quote = quote === '"' ? null : '"';
+      } else current += "\\".repeat(count);
+    } else if (char === '"') {
+      quote = quote === '"' ? null : '"';
+    } else if (char === "'" && !quote) {
+      quote = "'";
+    } else if (/\s/.test(char) && !quote) {
+      if (started) output.push(current);
       current = "";
-    } else {
-      current += char;
-    }
+      started = false;
+      continue;
+    } else current += char;
+    started = true;
   }
-  if (escaped) current += "\\";
-  if (current) output.push(current);
+  if (started) output.push(current);
   return output;
+}
+
+/** Always quote tokens so edits round-trip spaces, empty values and backslashes. */
+export function serializeArgs(args: readonly string[]): string {
+  return args.map((arg) => `"${arg.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\+)$/g, "$1$1")}"`).join(" ");
 }
 
 export function normalizeAssetsDir(value: string): string {

@@ -1,4 +1,6 @@
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { readFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRequire } from "node:module";
@@ -34,17 +36,16 @@ describe("metadata extraction helpers", () => {
   });
 });
 
-describe.skipIf(process.platform === "win32")("translator integration", () => {
+describe("translator integration", () => {
   it("runs a fake pdf2zh executable, validates PDFs, uploads, and persists", async () => {
     const root = mkdtempSync(join(tmpdir(), "paper-manager-translator-test-"));
     const dataDir = join(root, "data", "assets");
     mkdirSync(dataDir, { recursive: true });
-    writeFileSync(join(dataDir, "input.pdf"), "%PDF-1.4\ninput");
-    const executable = join(root, "fake-pdf2zh.sh");
-    writeFileSync(executable, `#!/bin/sh\nout=""\nlast=""\nwhile [ "$#" -gt 0 ]; do\n  if [ "$1" = "-o" ]; then shift; out="$1"; else last="$1"; fi\n  shift\ndone\nbase=$(basename "$last" .pdf)\nprintf '%%PDF-1.4\\nmono' > "$out/$base-mono.pdf"\nprintf '%%PDF-1.4\\ndual' > "$out/$base-dual.pdf"\necho '100%'\n`);
-    chmodSync(executable, 0o755);
+    writeFileSync(join(dataDir, "中文 input.pdf"), "%PDF-1.4\ninput");
+    const executable = process.execPath;
+    const fixture = fileURLToPath(new URL("./fixtures/fake-pdf2zh.mjs", import.meta.url));
     const current = paper({
-      attachments: [{ title: "input.pdf", mimeType: "application/pdf", assetAddress: "assets/input.pdf", sha256: "x" }],
+      attachments: [{ title: "中文 input.pdf", mimeType: "application/pdf", assetAddress: "assets/中文 input.pdf", sha256: "x" }],
       translation: { mono: "assets/old-mono.pdf", dual: "assets/old-dual.pdf" },
     });
     const uploads: string[] = [];
@@ -75,6 +76,7 @@ describe.skipIf(process.platform === "win32")("translator integration", () => {
     });
     const translator = new TranslatorService(new KernelClient(post as any, fakeFetch as typeof fetch), {
       requireFn: createRequire(import.meta.url),
+      spawnProcess: (command, args, options) => spawn(command, [fixture, ...args], options),
       readPaper: async () => ++reads === 1 ? current : latest,
       persist: async (_docId, updated) => {
         events.push("persist");
@@ -91,8 +93,10 @@ describe.skipIf(process.platform === "win32")("translator integration", () => {
         defaultLibraryDocId: "library-doc", onboardingCompleted: true, assetsDir: "/assets/",
         enableCnki: false, pdf2zhPath: executable, translateFrom: "en", translateTo: "zh",
         translateService: "google", translationDual: true, autoDeleteOldTranslations: true,
-        pdf2zhArgs: [], translationAssetsDir: "/assets/",
+        pdf2zhArgs: ["--config", String.raw`C:\Users\测试 User\config.json`, "", 'embedded"quote'], translationAssetsDir: "/assets/",
       });
+      const received = JSON.parse(readFileSync(join(dataDir, "中文 input.pdf.args.json"), "utf8"));
+      expect(received.slice(-5)).toEqual(["--config", String.raw`C:\Users\测试 User\config.json`, "", 'embedded"quote', join(dataDir, "中文 input.pdf")]);
       expect(result.mono).toContain("-mono.pdf");
       expect(uploads).toHaveLength(2);
       expect(persisted).toBe(true);

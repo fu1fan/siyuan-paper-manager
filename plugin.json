@@ -2,7 +2,7 @@
   "name": "siyuan-paper-manager",
   "author": "fu1fan",
   "url": "https://github.com/fu1fan/siyuan-paper-manager",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "minAppVersion": "3.8.1",
   "backends": [
     "all"

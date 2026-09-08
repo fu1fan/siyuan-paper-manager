@@ -1,5 +1,5 @@
 import { findCanonicalConflicts, mergePaperData } from "../src/core/merge";
-import { normalizeSettings, splitArgString } from "../src/types/settings";
+import { normalizeSettings, serializeArgs, splitArgString } from "../src/types/settings";
 import { paper } from "./fixtures";
 
 describe("merge policy", () => {
@@ -52,4 +52,15 @@ describe("settings", () => {
     expect(splitArgString("--foo \\\"bar baz\\\" -t 2")).toEqual(["--foo", '"bar', 'baz"', "-t", "2"]);
     expect(splitArgString('--foo "bar baz" -t 2')).toEqual(["--foo", "bar baz", "-t", "2"]);
   });
+});
+
+it("preserves Windows paths and round-trips editable arguments", () => {
+  const args = ["--config", String.raw`C:\Users\中文 User\config.json`, "C:/Users/Alice/a.json",
+    String.raw`\\server\共享\file.pdf`, "", 'a"b', "single'quote", "end\\", "two\\\\", "a\\\"b"];
+  expect(splitArgString(serializeArgs(args))).toEqual(args);
+  expect(splitArgString(String.raw`--config "C:\Users\Alice\config.json"`))
+    .toEqual(["--config", String.raw`C:\Users\Alice\config.json`]);
+  expect(splitArgString(String.raw`--config '\\server\共享 folder\'`))
+    .toEqual(["--config", "\\\\server\\共享 folder\\"]);
+  expect(splitArgString(`"" ''`)).toEqual(["", ""]);
 });
