@@ -6,7 +6,6 @@ import { retryUntil } from "../core/retry";
 import type {
   LibraryDatabaseField,
   LibraryMetadataField,
-  LibraryProject,
   PaperLibraryData,
 } from "../types/library";
 import {
@@ -32,7 +31,7 @@ export interface LibrarySyncResult {
   failed: Array<{ docId: string; message: string }>;
 }
 
-export interface LibraryPaperRecord { docId: string; paper: PaperData; projectIds: string[] }
+export interface LibraryPaperRecord { docId: string; paper: PaperData; projectNames: string[] }
 
 export interface PaperEntry {
   library: PaperLibraryInfo;
@@ -114,6 +113,8 @@ export class LibraryService {
       fieldKeyIds[field] = keyId;
       previousKeyId = keyId;
     }
+    // 仅新库默认提供；不纳入管理字段，避免给旧库补列或覆盖用户备注。
+    await this.kernel.addAttributeViewKey(avId, newNodeId(), "备注", "text", previousKeyId);
     const now = new Date().toISOString();
     const data: PaperLibraryData = {
       schemaVersion: LIBRARY_SCHEMA_VERSION,
@@ -122,7 +123,6 @@ export class LibraryService {
       fieldKeyIds,
       projectKeyId,
       databaseKeyIds,
-      projects: [],
       createdAt: now,
       updatedAt: now,
     };
@@ -154,42 +154,6 @@ export class LibraryService {
       catch (error) { console.warn("[paper-manager] 数据库字段对齐失败，可在设置中修复", docId, error); }
     }
     return library;
-  }
-
-  async updateProjects(libraryDocId: string, projects: LibraryProject[]): Promise<void> {
-    const library = await this.getLibrary(libraryDocId);
-    const previousProjects = new Map(library.data.projects.map((project) => [project.name, project.id]));
-    const ids = new Set<string>();
-    const names = new Set<string>();
-    const nextProjects = projects.map((project) => {
-      const id = project.id || newNodeId();
-      if (ids.has(id)) throw new Error(`项目 ID 重复：${id}`);
-      ids.add(id);
-      const name = project.name.trim();
-      if (name && names.has(name)) throw new Error(`项目名称重复：${name}`);
-      if (name) names.add(name);
-      return { id, name, docId: project.docId?.trim() || undefined };
-    }).filter((project) => project.name);
-    const nextById = new Map(nextProjects.map((project) => [project.id, project]));
-    const rows = await this.allRows(library.data);
-    await this.kernel.setAttributeViewSelectOptions(
-      library.data.avId, library.data.projectKeyId, nextProjects.map((project) => project.name), true,
-    );
-    library.data.projects = nextProjects;
-    library.data.updatedAt = new Date().toISOString();
-    await this.saveLibraryData(libraryDocId, library.data);
-    for (const row of rows) {
-      const names = selectContents(row, library.data.projectKeyId);
-      const renamed = names.map((name) => {
-        const id = previousProjects.get(name);
-        return id ? nextById.get(id)?.name ?? name : name;
-      });
-      if (renamed.some((name, index) => name !== names[index])) {
-        await this.kernel.setAttributeViewCell(
-          library.data.avId, library.data.projectKeyId, row.id, selectValue(renamed, "mSelect"),
-        );
-      }
-    }
   }
 
   /**
@@ -481,16 +445,14 @@ export class LibraryService {
   ): Promise<{ papers: LibraryPaperRecord[]; citekeys: string[] }> {
     const library = await this.getLibrary(libraryDocId);
     const rows = await this.allRows(library.data);
-    const projectIdsByName = new Map(library.data.projects.map((project) => [project.name, project.id]));
     const citekeyKeyId = library.data.fieldKeyIds.citekey;
     const papers: LibraryPaperRecord[] = [];
     const citekeys: string[] = [];
     for (const row of rows) {
       const docId = boundBlockId(row);
       if (!docId) continue;
-      const projectIds = selectContents(row, library.data.projectKeyId)
-        .map((name) => projectIdsByName.get(name)).filter((id): id is string => Boolean(id));
-      papers.push({ docId, paper: paperFromRow(library, row, docId), projectIds });
+      const projectNames = selectContents(row, library.data.projectKeyId);
+      papers.push({ docId, paper: paperFromRow(library, row, docId), projectNames });
       if (citekeyKeyId && docId !== exceptDocId) {
         const value = row.cells.find((cell) => cell.value.keyID === citekeyKeyId)?.value.text?.content?.trim();
         if (value) citekeys.push(value);
@@ -510,11 +472,6 @@ export class LibraryService {
   private async ensureSchemaFields(library: PaperLibraryInfo): Promise<void> {
     await this.withLibraryLock(library.docId, async () => {
       const definition = await this.kernel.getAttributeView(library.data.avId);
-      if (library.data.projects.length) {
-        await this.kernel.setAttributeViewSelectOptions(
-          library.data.avId, library.data.projectKeyId, library.data.projects.map((project) => project.name), true,
-        );
-      }
       const keysByName = new Map<string, string[]>();
       for (const entry of definition.av.keyValues) {
         const list = keysByName.get(entry.key.name) ?? [];

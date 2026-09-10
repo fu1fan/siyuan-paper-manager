@@ -22,18 +22,13 @@ it("does not use CNKI authors or creation dates, or parse journal body as thesis
   expect(extractChineseThesis([[{ text: "作者：张三 2019年5月", x: 0, y: 0, size: 12 }]]).author).toBeUndefined();
 });
 
-it("uses valid Crossref title fields and retains local creators when enrichment is empty", async () => {
+it("skips Crossref title requests for Chinese PDFs without a DOI", async () => {
   // Remove DOI without changing byte offsets in the valid fixture.
   const bytes = chinesePdf();
   const content = Buffer.from(bytes).toString().replaceAll(Buffer.from("10.1234", "utf16le").swap16().toString("hex").toUpperCase(), Buffer.from("XX.XXXX", "utf16le").swap16().toString("hex").toUpperCase());
-  const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
-    const url = new URL(String(input));
-    expect(url.searchParams.get("query.title")).toContain("基于深度学习");
-    expect(url.searchParams.get("select")!.split(",")).not.toContain("language");
-    return new Response(JSON.stringify({ message: { items: [{ title: [url.searchParams.get("query.title")], DOI: "10.1/test" }] } }));
-  });
+  const fetchImpl = vi.fn();
   const result = await new MetadataExtractor({ fetchImpl }).extract(new Uint8Array(Buffer.from(content)), "test.pdf");
-  expect(fetchImpl).toHaveBeenCalledTimes(1);
+  expect(fetchImpl).not.toHaveBeenCalled();
   expect(result.selected.canonical.creators[0]?.family).toBe("欧阳");
 });
 

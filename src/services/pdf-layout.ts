@@ -5,6 +5,7 @@ export interface PdfLine {
   x: number;
   y: number;
   size: number;
+  segments?: Array<{ text: string; x: number; width: number }>;
 }
 export interface PdfTextItem {
   str: string;
@@ -33,13 +34,19 @@ export function pdfTextLines(items: PdfTextItem[]): PdfLine[] {
   return rows.map((row) => {
     const items = row.items.sort((a, b) => a.transform[4]! - b.transform[4]!);
     let text = "";
+    const segments: Array<{ text: string; x: number; width: number }> = [];
     for (const [index, item] of items.entries()) {
       const previous = items[index - 1];
       const gap = previous ? item.transform[4]! - (previous.transform[4]! + previous.width) : 0;
       text += `${gap > 1 ? " " : ""}${item.str}`;
+      const last = segments.at(-1);
+      const size = Math.hypot(item.transform[2] ?? 0, item.transform[3] ?? 0) || item.height || 1;
+      if (!last || gap > size * 0.8) segments.push({ text: item.str, x: item.transform[4] ?? 0, width: item.width });
+      else { last.text += `${gap > 1 ? " " : ""}${item.str}`; last.width = (item.transform[4] ?? 0) + item.width - last.x; }
     }
     const hanItems = items.filter((item) => containsHan(item.str));
     return {
+      segments: segments.map((segment) => ({ ...segment, text: normalizePdfText(segment.text) })),
       text: normalizePdfText(text), x: items[0]?.transform[4] ?? 0, y: row.y,
       size: Math.max(...(hanItems.length ? hanItems : items)
         .map((item) => Math.hypot(item.transform[2] ?? 0, item.transform[3] ?? 0) || item.height || 1)),

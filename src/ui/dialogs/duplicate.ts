@@ -17,21 +17,22 @@ export function resolveDuplicateDialog(match: DuplicateMatch, incoming: PaperDat
         ? "citekey 相同，但 DOI 或标题疑似冲突"
         : "citekey 与标题相同";
     const rows = match.conflicts.map((conflict) => `
-      <label>
-        <input type="checkbox" data-field="${escapeHtml(conflict.field)}">
-        <strong>${escapeHtml(fieldLabel(conflict.field))}</strong><br>
-        <small>现有：${escapeHtml(display(conflict.existing))}</small><br>
-        <small>传入：${escapeHtml(display(conflict.incoming))}</small>
-      </label>`).join("");
+      <section class="paper-manager-conflict">
+        <label class="paper-manager-import-toggle"><input type="checkbox" data-field="${escapeHtml(conflict.field)}"><strong>覆盖${escapeHtml(fieldLabel(conflict.field))}</strong></label>
+        <div class="paper-manager-comparison">
+          <details><summary>现有值</summary><div class="paper-manager-paper-long">${escapeHtml(display(conflict.existing))}</div></details>
+          <details><summary>传入值</summary><div class="paper-manager-paper-long">${escapeHtml(display(conflict.incoming))}</div></details>
+        </div>
+      </section>`).join("");
     const dialog = new Dialog({
       title: "检测到重复论文",
       width: "680px",
-      content: `<div class="b3-dialog__content">
+      content: `<div class="b3-dialog__content paper-manager-dialog"><div class="paper-manager-dialog-scroll paper-manager-form">
         <p><strong>${escapeHtml(reason)}</strong></p>
         <p>现有：${escapeHtml(match.existing.canonical.title)}<br>传入：${escapeHtml(incoming.canonical.title)}</p>
-        <p>默认合并只填补空字段、补充去重后的附件，不覆盖阅读笔记。勾选下列字段才会用传入值覆盖：</p>
+        <p class="paper-manager-hint">默认合并只填补空字段、补充去重后的附件，不覆盖阅读笔记。勾选下列字段才会用传入值覆盖：</p>
         <div class="paper-manager-conflicts">${rows || "<p>没有字段冲突。</p>"}</div>
-        <div class="paper-manager-actions" data-actions></div>
+        </div><div class="paper-manager-dialog-footer"><div class="paper-manager-actions" data-actions></div></div>
       </div>`,
       destroyCallback: () => {
         if (!completed) { completed = true; resolve({ action: "cancel" }); }

@@ -21,7 +21,7 @@ function setup(records: LibraryPaperRecord[], resolver: DuplicateResolver = vi.f
     listPapersAndCitekeys: vi.fn(async () => ({ papers: [...records], citekeys: records.map((r) => r.paper.citekey) })),
     readPaper: vi.fn(async () => paper()),
     syncPaper: vi.fn(async (docId: string, data: ReturnType<typeof paper>) => {
-      if (!records.some((r) => r.docId === docId)) records.push({ docId, paper: data, projectIds: [] });
+      if (!records.some((r) => r.docId === docId)) records.push({ docId, paper: data, projectNames: [] });
       return "item";
     }),
   };
@@ -38,7 +38,7 @@ function candidate(): ImportCandidate {
 it("detects a duplicate without DOI before assigning a citekey suffix", async () => {
   const incoming = candidate();
   const existing = paper({ canonical: incoming.canonical, citekey: generateCitekey(incoming.canonical) });
-  const { processor, resolver, kernel } = setup([{ docId: "existing", paper: existing, projectIds: [] }]);
+  const { processor, resolver, kernel } = setup([{ docId: "existing", paper: existing, projectNames: [] }]);
   expect((await processor.process(incoming)).action).toBe("merged");
   expect(resolver).toHaveBeenCalledWith(expect.objectContaining({ reason: "citekey-title" }), expect.anything());
   expect(kernel.createDocument).not.toHaveBeenCalled();
@@ -53,7 +53,7 @@ it("preserves old attachments and translations and avoids uploading an identical
     attachments: [{ title: "original", mimeType: "application/pdf", assetAddress: "assets/old.pdf", sha256: await sha256(bytes) }],
     translation: { mono: "assets/old-mono.pdf", dual: "assets/old-dual.pdf" },
   });
-  const { processor, libraries, kernel } = setup([{ docId: "existing", paper: { ...existing, attachments: [], translation: {} }, projectIds: [] }]);
+  const { processor, libraries, kernel } = setup([{ docId: "existing", paper: { ...existing, attachments: [], translation: {} }, projectNames: [] }]);
   libraries.readPaper.mockResolvedValue(existing);
   await processor.process(incoming);
   expect(kernel.uploadAsset).not.toHaveBeenCalled();
@@ -105,5 +105,33 @@ it("deduplicates late attachment content without rewriting the paper", async () 
   libraries.readPaper.mockResolvedValue(paper({ attachments: [{ title: "PDF", mimeType: "application/pdf", assetAddress: "assets/existing.pdf", sha256: await sha256(bytes) }] }));
   await processor.addAttachments("doc", [{ title: "Retry", bytes, mimeType: "application/pdf" }]);
   expect(kernel.uploadAsset).not.toHaveBeenCalled();
+  expect(kernel.setBlockAttrs).not.toHaveBeenCalled();
+});
+
+it("edits metadata while preserving current attachments, translations and unrelated database changes", async () => {
+  const { processor, libraries, kernel } = setup([]);
+  const baseline = paper().canonical;
+  const latest = paper({ canonical: { ...baseline, publisher: "Concurrent publisher" },
+    attachments: [{ title: "PDF", mimeType: "application/pdf", assetAddress: "assets/keep.pdf", sha256: "keep" }],
+    translation: { mono: "assets/translation.pdf" } });
+  libraries.readPaper.mockResolvedValue(latest);
+  await processor.editMetadata("existing", baseline, { ...baseline, title: "Edited title", abstract: undefined });
+  const saved = libraries.syncPaper.mock.calls[0]![1];
+  expect(saved.canonical).toMatchObject({ title: "Edited title", publisher: "Concurrent publisher" });
+  expect(saved.canonical.abstract).toBeUndefined();
+  expect(saved.attachments).toEqual(latest.attachments);
+  expect(saved.translation).toEqual(latest.translation);
+  expect(saved.citekey).toBe(latest.citekey);
+  expect(libraries.syncPaper).toHaveBeenNthCalledWith(1, "existing", saved, true);
+  expect(kernel.createDocument).not.toHaveBeenCalled();
+  expect(kernel.uploadAsset).not.toHaveBeenCalled();
+});
+
+it("rejects concurrent edits of the same metadata field before writing", async () => {
+  const { processor, libraries, kernel } = setup([]);
+  const baseline = paper().canonical;
+  libraries.readPaper.mockResolvedValue(paper({ canonical: { ...baseline, title: "Changed elsewhere" } }));
+  await expect(processor.editMetadata("existing", baseline, { ...baseline, title: "My edit" })).rejects.toThrow("已在数据库中更改");
+  expect(libraries.syncPaper).not.toHaveBeenCalled();
   expect(kernel.setBlockAttrs).not.toHaveBeenCalled();
 });

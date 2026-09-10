@@ -14,13 +14,13 @@ export async function openOnboardingDialog(
   const dialog = new Dialog({
     title,
     width: "680px",
-    content: `<div class="b3-dialog__content paper-manager-form">
-      <div class="paper-manager-preview">文献库是一个真实文档，插件会在其中插入思源数据库；导入的论文会成为该文档的子文档。</div>
+    content: `<div class="b3-dialog__content paper-manager-dialog">
+      <div class="paper-manager-dialog-scroll paper-manager-form"><p class="paper-manager-hint">文献库是一个真实文档，插件会在其中插入思源数据库；导入的论文会成为该文档的子文档。</p>
       <label class="paper-manager-field"><span>笔记本</span><select class="b3-select" data-notebook>${notebooks.map((notebook) =>
         `<option value="${escapeHtml(notebook.id)}">${escapeHtml(notebook.name)}</option>`).join("")}</select></label>
       <label class="paper-manager-field"><span>文献库名称</span><input class="b3-text-field" data-title value="论文文献库"></label>
       <label class="paper-manager-field"><span>文档路径</span><input class="b3-text-field" data-path value="/论文文献库"></label>
-      <div class="paper-manager-actions" data-actions></div>
+      </div><div class="paper-manager-dialog-footer"><div class="paper-manager-actions" data-actions></div></div>
     </div>`,
   });
   const actions = dialog.element.querySelector<HTMLElement>("[data-actions]")!;

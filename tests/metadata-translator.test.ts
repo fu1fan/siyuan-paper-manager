@@ -91,7 +91,7 @@ describe("translator integration", () => {
       const result = await translator.translate("doc", {
         zoteroPort: 23119, autoListen: true,
         defaultLibraryDocId: "library-doc", onboardingCompleted: true, assetsDir: "/assets/",
-        enableCnki: false, pdf2zhPath: executable, translateFrom: "en", translateTo: "zh",
+        autoExtractMetadata: true, enableZoteroRecognizer: false, enableCnki: false, cnkiTimeoutSeconds: 10, pdf2zhPath: executable, translateFrom: "en", translateTo: "zh",
         translateService: "google", translationConcurrency: 1, translationThreads: 7, translationDual: true, autoDeleteOldTranslations: true,
         pdf2zhArgs: ["--config", String.raw`C:\Users\测试 User\config.json`, "", 'embedded"quote'], translationAssetsDir: "/assets/",
       });

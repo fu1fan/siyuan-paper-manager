@@ -43,7 +43,7 @@ export interface ImportCandidate {
 
 export interface MetadataCandidate {
   canonical: PaperCanonical;
-  provider: "pdf-text" | "xmp" | "crossref" | "citoid" | "cnki" | "filename";
+  provider: "zotero" | "arxiv" | "bibtex" | "pdf-text" | "xmp" | "crossref" | "citoid" | "cnki" | "filename";
   confidence: number;
   reason: string;
   raw?: Record<string, unknown>;

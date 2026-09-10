@@ -1,3 +1,4 @@
+import { CnkiClient } from "../src/services/cnki-client";
 import { resolve } from "node:path";
 import { generateCitekey, uniqueCitekey } from "../src/core/naming";
 import { splitChineseName } from "../src/core/chinese";
@@ -76,4 +77,15 @@ it("sets browser worker and CJK asset URLs for the installed plugin", () => {
 it("extracts Chinese glyphs requiring the shipped Adobe CMap", async () => {
   const result = await inspectPdf(chinesePdf(true), { cMapUrl: `${resolve("node_modules/pdfjs-dist/cmaps").replaceAll("\\", "/")}/`, cMapPacked: true });
   expect(result.text).toContain("基于深度学习的状态估计方法");
+});
+
+it("keeps local candidates usable when optional CNKI fetch fails", async () => {
+  const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+    if (String(input).startsWith("https://kns.cnki.net/")) throw new TypeError("Failed to fetch");
+    return new Response(JSON.stringify({ message: {} }), { status: 404 });
+  });
+  const result = await new MetadataExtractor({ enableCnki: true, fetchImpl, cnkiClient: new CnkiClient({ verify: async () => {}, request: async () => { throw new TypeError("Failed to fetch"); } }) }).extract(chinesePdf(), "download.pdf");
+  expect(result.selected.canonical.title).toContain("基于深度学习");
+  expect(result.selected.canonical.creators[0]).toMatchObject({ family: "欧阳", given: "明" });
+  expect(result.warnings).toContainEqual(expect.stringMatching(/知网在线补充检索未完成.*Failed to fetch.*已有候选仍可使用/));
 });

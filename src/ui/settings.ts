@@ -1,8 +1,6 @@
 import { Setting, showMessage } from "siyuan";
-import { newNodeId } from "../core/node-id";
-import type { DocumentSearchResult, KernelClient } from "../core/kernel";
+import type { KernelClient } from "../core/kernel";
 import type { LibraryService, PaperLibraryInfo } from "../services/library-service";
-import type { LibraryProject } from "../types/library";
 import type { PluginSettings } from "../types/settings";
 import { normalizeSettings, serializeArgs, splitArgString } from "../types/settings";
 import { escapeHtml } from "./dom";
@@ -13,8 +11,6 @@ type TabName = "library" | "receiving" | "storage" | "metadata" | "translation";
 export class SettingsPanel {
   readonly setting: Setting;
   private draft: PluginSettings;
-  private activeLibrary: PaperLibraryInfo | undefined;
-  private libraryEditor: HTMLElement | undefined;
 
   constructor(
     private readonly displayName: string,
@@ -36,12 +32,12 @@ export class SettingsPanel {
 
   private build(): HTMLElement {
     this.draft = structuredClone(this.getSettings());
-    this.activeLibrary = undefined;
-    this.libraryEditor = undefined;
     const root = document.createElement("div");
-    root.className = "paper-manager-form";
+    root.className = "paper-manager-form paper-manager-settings";
     const tabs = document.createElement("div");
     tabs.className = "paper-manager-tabs";
+    tabs.setAttribute("role", "tablist");
+    tabs.setAttribute("aria-label", "论文管理设置");
     const panels = new Map<TabName, HTMLElement>();
     const names: Array<[TabName, string]> = [
       ["library", "文献库"], ["receiving", "导入与接收"], ["storage", "论文存储"],
@@ -64,7 +60,7 @@ export class SettingsPanel {
     for (const [name, label] of names) {
       const tab = document.createElement("button");
       tab.type = "button";
-      tab.className = "b3-button b3-button--outline";
+      tab.className = "paper-manager-tab";
       tab.textContent = label;
       tab.dataset.tab = name;
       tab.setAttribute("role", "tab");
@@ -87,8 +83,16 @@ export class SettingsPanel {
       ${textField("附件目录", "assetsDir", this.draft.assetsDir)}
       <div class="paper-manager-preview">元数据模板与笔记模板随插件打包，不写入 data/templates。</div>`;
     panels.get("metadata")!.innerHTML = `
+      ${switchField("自动提取元数据", "autoExtractMetadata", this.draft.autoExtractMetadata)}
+      <p class="paper-manager-hint">选择 PDF 后自动提取并联网补充。关闭后仍可在导入页点击「提取元数据」。</p>
+      ${switchField("使用 Zotero 在线识别", "enableZoteroRecognizer", this.draft.enableZoteroRecognizer)}
+      <p class="paper-manager-hint">开启后，提取时会将 PDF 前五页文本、排版、内嵌元数据及文件名发送至 Zotero 官方识别服务。</p>
       ${switchField("中文检索（实验性）", "enableCnki", this.draft.enableCnki)}
-      <div class="paper-manager-preview">本地封面/摘要/XMP → DOI/Crossref → Citoid → 中文候选。</div>`;
+      ${numberField("知网单次请求超时（秒，1–120）", "cnkiTimeoutSeconds", this.draft.cnkiTimeoutSeconds, 1, 120)}
+      <div class="paper-manager-preview">默认 10 秒。分别用于搜索、详情和引用补充的单次网络请求，包含连接及完整响应接收时间；不包含手动验证等待。保存后下次检索生效。</div>
+      <label class="paper-manager-field"><span>知网站点</span><select class="b3-select" data-key="cnkiRegion"><option value="mainland" ${this.draft.cnkiRegion !== "oversea" ? "selected" : ""}>中国大陆</option><option value="oversea" ${this.draft.cnkiRegion === "oversea" ? "selected" : ""}>海外</option></select></label>
+      <div class="paper-manager-preview">知网检索需要思源桌面端。首次检索或会话过期时会打开知网窗口；请完成验证后返回继续，同一会话会自动复用。</div>
+      <div class="paper-manager-preview">提取结果会展示多个候选，导入前可核对并编辑标题、作者与摘要。</div>`;
     panels.get("translation")!.innerHTML = `
       ${textField("pdf2zh 路径", "pdf2zhPath", this.draft.pdf2zhPath)}
       ${textField("源语言", "translateFrom", this.draft.translateFrom)}
@@ -149,42 +153,14 @@ export class SettingsPanel {
     const editor = container.querySelector<HTMLElement>("[data-library-editor]");
     if (!editor) return;
     const selected = libraries.find((library) => library.docId === this.draft.defaultLibraryDocId) ?? libraries[0];
-    if (!selected) { editor.innerHTML = ""; this.activeLibrary = undefined; this.libraryEditor = undefined; return; }
-    this.activeLibrary = selected;
-    this.libraryEditor = editor;
-    const projectDocumentLabels = new Map<string, string>();
-    await Promise.all(selected.data.projects.map(async (project) => {
-      if (!project.docId) return;
-      try {
-        const doc = await this.kernel.getDocumentInfo(project.docId);
-        if (doc) projectDocumentLabels.set(project.docId, documentLabel(doc));
-      } catch { /* keep the stored ID visible */ }
-    }));
-    if (this.activeLibrary !== selected) return;
+    if (!selected) { editor.innerHTML = ""; return; }
     editor.innerHTML = `<hr class="b3-hr"><h3>${escapeHtml(selected.title)}</h3>
       <div class="paper-manager-preview">${escapeHtml(selected.hPath)} · 数据库 ${escapeHtml(selected.data.avId)}</div>
-      <section class="paper-manager-library-section"><h4>项目定义</h4>
-        <p class="b3-label__text">保存后，项目名称会出现在本文献库「所属项目」的候选标签中，点击即可多选；可搜索并绑定一个思源项目文档。</p>
-        <div class="paper-manager-project-list" data-project-list>${selected.data.projects.map((project) => projectRowHtml(
-          project, project.docId ? projectDocumentLabels.get(project.docId) ?? project.docId : "",
-        )).join("")}</div>
-        <button type="button" class="b3-button b3-button--outline" data-project-add>添加项目</button>
-      </section>
-      <div class="paper-manager-preview">项目的修改会随右下角「保存」一起应用；列的显示与排序请直接在数据库视图中操作。</div>
+      <div class="paper-manager-preview">请直接在数据库「所属项目」中填写或选择项目，可多选；列的显示与排序也在数据库视图中操作。</div>
       <div class="paper-manager-actions">
         <button type="button" class="b3-button b3-button--text" data-sync>重新同步</button>
         <button type="button" class="b3-button b3-button--text" data-repair>修复数据库</button>
       </div>`;
-    const projectList = editor.querySelector<HTMLElement>("[data-project-list]")!;
-    for (const row of projectList.querySelectorAll<HTMLElement>("[data-project-row]")) bindProjectRow(row, this.kernel);
-    editor.querySelector<HTMLButtonElement>("[data-project-add]")!.onclick = () => {
-      const wrapper = document.createElement("div");
-      wrapper.innerHTML = projectRowHtml({ id: newNodeId(), name: "" }, "");
-      const row = wrapper.firstElementChild as HTMLElement;
-      projectList.append(row);
-      bindProjectRow(row, this.kernel);
-      row.querySelector<HTMLInputElement>("[data-project-name]")?.focus();
-    };
     editor.querySelector<HTMLButtonElement>("[data-sync]")!.onclick = () => void actionMessage(async () => {
       const result = await this.libraries.syncLibrary(selected.docId);
       return `同步完成：${result.papers} 篇，恢复 ${result.restoredRows} 行，移除 ${result.removedRows} 行，失败 ${result.failed.length} 篇`;
@@ -196,10 +172,6 @@ export class SettingsPanel {
   }
 
   private async save(): Promise<void> {
-    // 设置框确认后可能立即卸载 DOM，必须在第一次 await 前读取项目草稿。
-    const library = this.activeLibrary;
-    const list = this.libraryEditor?.querySelector<HTMLElement>("[data-project-list]");
-    const projects = list ? collectProjects(list) : undefined;
     try {
       const settings = normalizeSettings(this.draft);
       settings.onboardingCompleted = Boolean(settings.defaultLibraryDocId);
@@ -209,21 +181,7 @@ export class SettingsPanel {
       showMessage(`设置保存失败：${message(error)}`, 5000, "error");
       return;
     }
-    try {
-      const applied = await this.applyLibraryChanges(library, projects);
-      showMessage(applied ? `设置已保存；${applied}` : "论文管理设置已保存", 5000, "info");
-    } catch (error) {
-      showMessage(`设置已保存，但文献库改动应用失败：${message(error)}`, 7000, "error");
-    }
-  }
-
-  /** 统一应用当前文献库编辑器的改动：项目定义。 */
-  private async applyLibraryChanges(library?: PaperLibraryInfo, projects?: LibraryProject[]): Promise<string> {
-    if (!library || !projects) return "";
-    if (projectsEqual(projects, library.data.projects)) return "";
-    await this.libraries.updateProjects(library.docId, projects);
-    library.data.projects = projects;
-    return "项目已保存";
+    showMessage("论文管理设置已保存", 5000, "info");
   }
 }
 
@@ -234,7 +192,7 @@ function numberField(label: string, key: keyof PluginSettings, value: number, mi
   return `<label class="paper-manager-field"><span>${escapeHtml(label)}</span><input class="b3-text-field" type="number" min="${min}" max="${max}" step="1" data-key="${key}" value="${value}"></label>`;
 }
 function switchField(label: string, key: keyof PluginSettings, value: boolean): string {
-  return `<label class="paper-manager-field"><span>${escapeHtml(label)}</span><span><input type="checkbox" data-key="${key}" ${value ? "checked" : ""}></span></label>`;
+  return `<label class="paper-manager-field"><span>${escapeHtml(label)}</span><span><input class="b3-switch" type="checkbox" data-key="${key}" ${value ? "checked" : ""}></span></label>`;
 }
 function textareaField(label: string, key: keyof PluginSettings, value: string): string {
   return `<label class="paper-manager-field paper-manager-field--column"><span>${escapeHtml(label)}</span><textarea class="b3-text-field" rows="4" data-key="${key}">${escapeHtml(value)}</textarea></label>`;
@@ -242,97 +200,6 @@ function textareaField(label: string, key: keyof PluginSettings, value: string):
 function librarySelector(libraries: PaperLibraryInfo[], selected: string): string {
   return `<label class="paper-manager-field"><span>默认文献库</span><select class="b3-select" data-default-library>${libraries.map((library) =>
     `<option value="${escapeHtml(library.docId)}" ${library.docId === selected ? "selected" : ""}>${escapeHtml(library.title)}</option>`).join("")}</select></label>`;
-}
-
-function projectRowHtml(project: LibraryProject, document: string): string {
-  return `<div class="paper-manager-project-row" data-project-row data-project-id="${escapeHtml(project.id)}">
-    <input class="b3-text-field" data-project-name placeholder="项目名称" value="${escapeHtml(project.name)}">
-    <div class="paper-manager-project-document">
-      <input class="b3-text-field" data-project-search autocomplete="off" placeholder="搜索并绑定项目文档（可选）" value="${escapeHtml(document)}">
-      <input type="hidden" data-project-doc-id value="${escapeHtml(project.docId ?? "")}">
-      <div class="paper-manager-document-results" data-document-results hidden></div>
-    </div>
-    <a class="b3-button b3-button--text" data-project-open ${project.docId ? `href="siyuan://blocks/${escapeHtml(project.docId)}"` : "hidden"} title="打开绑定文档">↗</a>
-    <button type="button" class="b3-button b3-button--text" data-project-clear title="清除文档绑定">清除</button>
-    <button type="button" class="b3-button b3-button--text" data-project-remove title="删除项目">删除</button>
-  </div>`;
-}
-
-function bindProjectRow(row: HTMLElement, kernel: KernelClient): void {
-  const search = row.querySelector<HTMLInputElement>("[data-project-search]")!;
-  const docId = row.querySelector<HTMLInputElement>("[data-project-doc-id]")!;
-  const results = row.querySelector<HTMLElement>("[data-document-results]")!;
-  const open = row.querySelector<HTMLAnchorElement>("[data-project-open]")!;
-  let request = 0;
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const choose = (document: DocumentSearchResult) => {
-    request += 1;
-    if (timer) clearTimeout(timer);
-    search.value = documentLabel(document);
-    docId.value = document.id;
-    open.href = `siyuan://blocks/${document.id}`;
-    open.hidden = false;
-    results.hidden = true;
-  };
-  search.oninput = () => {
-    docId.value = "";
-    open.hidden = true;
-    if (timer) clearTimeout(timer);
-    const current = ++request;
-    const keyword = search.value.trim();
-    if (!keyword) { results.hidden = true; results.innerHTML = ""; return; }
-    timer = setTimeout(() => { void (async () => {
-      try {
-        const documents = await kernel.searchDocuments(keyword, 12);
-        if (current !== request) return;
-        results.innerHTML = documents.length
-          ? documents.map((document) => `<button type="button" data-document-id="${escapeHtml(document.id)}"><strong>${escapeHtml(document.title)}</strong><small>${escapeHtml(document.hPath)}</small></button>`).join("")
-          : "<span>没有匹配的文档</span>";
-        results.hidden = false;
-        for (const button of results.querySelectorAll<HTMLButtonElement>("[data-document-id]")) {
-          button.onclick = () => {
-            const document = documents.find((candidate) => candidate.id === button.dataset.documentId);
-            if (document) choose(document);
-          };
-        }
-      } catch (error) {
-        if (current !== request) return;
-        results.textContent = `搜索失败：${message(error)}`;
-        results.hidden = false;
-      }
-    })(); }, 220);
-  };
-  search.onfocus = () => { if (results.childElementCount || results.textContent) results.hidden = false; };
-  search.onblur = () => setTimeout(() => { results.hidden = true; }, 180);
-  row.querySelector<HTMLButtonElement>("[data-project-clear]")!.onclick = () => {
-    request += 1;
-    if (timer) clearTimeout(timer);
-    search.value = "";
-    docId.value = "";
-    open.hidden = true;
-    results.hidden = true;
-  };
-  row.querySelector<HTMLButtonElement>("[data-project-remove]")!.onclick = () => row.remove();
-}
-
-function collectProjects(list: HTMLElement): LibraryProject[] {
-  return Array.from(list.querySelectorAll<HTMLElement>("[data-project-row]"), (row) => ({
-    id: row.dataset.projectId || newNodeId(),
-    name: row.querySelector<HTMLInputElement>("[data-project-name]")!.value.trim(),
-    docId: row.querySelector<HTMLInputElement>("[data-project-doc-id]")!.value.trim() || undefined,
-  })).filter((project) => project.name);
-}
-
-function documentLabel(document: DocumentSearchResult): string {
-  return `${document.title}${document.hPath ? ` · ${document.hPath}` : ""}`;
-}
-
-function projectsEqual(left: LibraryProject[], right: LibraryProject[]): boolean {
-  return left.length === right.length && left.every((project, index) => {
-    const other = right[index];
-    return other && project.id === other.id && project.name === other.name
-      && (project.docId ?? "") === (other.docId ?? "");
-  });
 }
 
 async function actionMessage(action: () => Promise<string>): Promise<void> {

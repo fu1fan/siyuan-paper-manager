@@ -18,12 +18,6 @@ export type LibraryMetadataField =
   | "issn"
   | "url";
 
-export interface LibraryProject {
-  id: string;
-  name: string;
-  docId?: string;
-}
-
 export type LibraryDatabaseField = "addedAt" | "readingStatus" | "rating";
 
 /**
@@ -37,7 +31,6 @@ export interface PaperLibraryDataV3 {
   fieldKeyIds: Partial<Record<LibraryMetadataField, string>>;
   projectKeyId: string;
   databaseKeyIds: Partial<Record<LibraryDatabaseField, string>>;
-  projects: LibraryProject[];
   createdAt: string;
   updatedAt: string;
 }

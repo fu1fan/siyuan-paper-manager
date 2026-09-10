@@ -89,3 +89,9 @@ it("gives the dedicated request concurrency setting precedence and validates it 
   expect(result.translationConcurrency).toBe(2);
   expect(result.pdf2zhArgs).toEqual(["--", "-t9"]);
 });
+
+it("preserves PDF extraction preferences and defaults online Zotero recognition to opt-in", () => {
+  expect(normalizeSettings({})).toMatchObject({ autoExtractMetadata: true, enableZoteroRecognizer: false });
+  expect(normalizeSettings({ autoExtractMetadata: false, enableZoteroRecognizer: true }))
+    .toMatchObject({ autoExtractMetadata: false, enableZoteroRecognizer: true });
+});

@@ -4,6 +4,7 @@ import type {
   DuplicateMatch,
   DuplicateResolution,
   PaperAttachment,
+  PaperCanonical,
   PaperData,
 } from "../types/paper";
 import type { PluginSettings } from "../types/settings";
@@ -95,6 +96,30 @@ export class ItemProcessor {
     const copy = match && resolution?.action === "copy";
     const docId = await this.createPaper(incoming, copy ?? false, library);
     return { action: copy ? "copied" : "created", docId, title: incoming.canonical.title };
+  }
+
+  /** Save only edited fields against a fresh database snapshot. */
+  editMetadata(docId: string, baseline: PaperCanonical, draft: PaperCanonical): Promise<void> {
+    const task = this.importQueue.then(async () => {
+      if (!draft.title.trim()) throw new Error("标题不能为空");
+      const latest = await this.libraries.readPaper(docId);
+      for (const key of new Set([...Object.keys(baseline), ...Object.keys(draft)]) as Set<keyof PaperCanonical>) {
+        if (JSON.stringify(baseline[key]) === JSON.stringify(draft[key])) continue;
+        if (JSON.stringify(latest.canonical[key]) !== JSON.stringify(baseline[key])
+          && JSON.stringify(latest.canonical[key]) !== JSON.stringify(draft[key])) {
+          throw new Error(`字段 ${key} 已在数据库中更改，请重新打开编辑页后再保存`);
+        }
+      }
+      for (const key of new Set([...Object.keys(baseline), ...Object.keys(draft)]) as Set<keyof PaperCanonical>) {
+        if (JSON.stringify(baseline[key]) !== JSON.stringify(draft[key])) Object.assign(latest.canonical, { [key]: draft[key] });
+      }
+      // Commit the database first: it remains authoritative if summary rendering fails.
+      await this.syncPaperWithRetry(docId, latest, true);
+      const sections = await this.templates.ensureSections(docId, latest);
+      await this.persistAndRefresh(docId, latest, sections.meta);
+    });
+    this.importQueue = task.catch(() => undefined);
+    return task;
   }
 
   /** 修复/刷新论文页：以数据库行为权威重建元数据摘要。 */

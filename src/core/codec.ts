@@ -14,7 +14,6 @@ export function decodeLibraryData(encoded: string): PaperLibraryData {
       throw new Error(`不支持的 schemaVersion: ${String(parsed.schemaVersion)}`);
     }
     if (!parsed.avId || !parsed.avBlockId || !parsed.projectKeyId) throw new Error("数据库标识不完整");
-    if (!Array.isArray(parsed.projects)) throw new Error("项目定义无效");
     // v1/v2 的 selectedFields 与 columnOrder 随数据库权威化移除：列全部创建，
     // 显示与排序交给思源数据库视图。
     return {
@@ -24,7 +23,6 @@ export function decodeLibraryData(encoded: string): PaperLibraryData {
       fieldKeyIds: parsed.fieldKeyIds ?? {},
       projectKeyId: parsed.projectKeyId,
       databaseKeyIds: parsed.databaseKeyIds ?? {},
-      projects: parsed.projects,
       createdAt: parsed.createdAt ?? new Date().toISOString(),
       updatedAt: parsed.updatedAt ?? new Date().toISOString(),
     };

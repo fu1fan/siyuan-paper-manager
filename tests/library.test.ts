@@ -8,6 +8,7 @@ import {
   LIBRARY_METADATA_FIELDS,
   type PaperLibraryData,
 } from "../src/types/library";
+import { exportCitations } from "../src/services/citation-export";
 import { paper } from "./fixtures";
 
 function fullLibraryData(overrides: Partial<PaperLibraryData> = {}): PaperLibraryData {
@@ -18,7 +19,6 @@ function fullLibraryData(overrides: Partial<PaperLibraryData> = {}): PaperLibrar
     fieldKeyIds: Object.fromEntries(LIBRARY_METADATA_FIELDS.map((field) => [field, `${field}-key`])),
     projectKeyId: "project-key",
     databaseKeyIds: { addedAt: "addedAt-key", readingStatus: "readingStatus-key", rating: "rating-key" },
-    projects: [],
     createdAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z",
     ...overrides,
@@ -26,19 +26,49 @@ function fullLibraryData(overrides: Partial<PaperLibraryData> = {}): PaperLibrar
 }
 
 describe("library database projection", () => {
-  it("presets projects even when the database has no paper rows", async () => {
-    const presets = vi.fn();
-    const save = vi.fn();
+  it("exports projects directly from database values, including manual additions and renames", async () => {
+    let names = ["手动项目", "另一个项目"];
+    const data = { ...fullLibraryData(), projects: [{ id: "old-id", name: "旧项目", docId: "old-note" }] };
     const fake = {
-      getBlockAttrs: async () => ({ [ATTR.libraryData]: encodeLibraryData(fullLibraryData()) }),
+      getBlockAttrs: async () => ({ [ATTR.libraryData]: JSON.stringify(data) }),
       query: async () => [{ content: "库" }],
-      getAttributeView: async () => ({ av: { keyValues: [{ key: { id: "block", type: "block" }, values: [] }] } }),
-      setAttributeViewSelectOptions: presets,
-      setBlockAttrs: save,
+      getAttributeView: async () => ({ av: { keyValues: [
+        { key: { id: "block", type: "block" }, values: [{ blockID: "item", block: { id: "doc", content: "论文" } }] },
+        { key: { id: "project-key", type: "mSelect" }, values: [{ blockID: "item", mSelect: names.map((content) => ({ content })) }] },
+        { key: { id: "citekey-key", type: "text" }, values: [{ blockID: "item", text: { content: "manual2026" } }] },
+      ] } }),
     } as unknown as KernelClient;
-    await new LibraryService(fake).updateProjects("library", [{ id: "p", name: " HBFServingSim " }]);
-    expect(presets).toHaveBeenCalledWith("av", "project-key", ["HBFServingSim"], true);
-    expect(decodeLibraryData(save.mock.calls[0]![1][ATTR.libraryData]).projects).toEqual([{ id: "p", name: "HBFServingSim" }]);
+    const service = new LibraryService(fake);
+    for (const current of [["手动项目", "另一个项目"], ["重命名项目"], []]) {
+      names = current;
+      const records = await service.listPapers("library");
+      expect(records[0]!.projectNames).toEqual(current);
+      const selected = current.length ? records.filter((record) => record.projectNames.includes(current[0]!)) : records;
+      expect(exportCitations(selected.map((record) => record.paper), "bibtex").content).toContain("manual2026");
+    }
+  });
+
+  it("leaves existing libraries and manual project options untouched during discovery", async () => {
+    const data = { ...fullLibraryData(), projects: [{ id: "old", name: "旧项目", docId: "note" }] };
+    const add = vi.fn();
+    const remove = vi.fn();
+    const save = vi.fn();
+    const options = vi.fn();
+    const fake = {
+      listRowsByAttribute: async () => [{ id: "library", value: JSON.stringify(data) }],
+      getAttributeView: async () => ({ av: { keyValues: [
+        ...LIBRARY_METADATA_FIELDS.map((field) => ({ key: { id: data.fieldKeyIds[field], name: LIBRARY_FIELD_LABELS[field], type: "text" } })),
+        ...Object.entries(LIBRARY_DATABASE_FIELD_LABELS).map(([field, name]) => ({ key: { id: `${field}-key`, name, type: "select" } })),
+        { key: { id: "project-key", name: "所属项目", type: "mSelect", options: [{ name: "手动项目", color: "3" }] } },
+      ] } }),
+      addAttributeViewKey: add, removeAttributeViewKey: remove,
+      setBlockAttrs: save, setAttributeViewSelectOptions: options,
+    } as unknown as KernelClient;
+    await new LibraryService(fake).discoverLibraries();
+    expect(add).not.toHaveBeenCalled();
+    expect(remove).not.toHaveBeenCalled();
+    expect(save).not.toHaveBeenCalled();
+    expect(options.mock.calls.some((call) => call[1] === "project-key")).toBe(false);
   });
 
   it("projects canonical fields into SiYuan AV values", () => {
@@ -146,7 +176,8 @@ describe("library database projection", () => {
     const library = await new LibraryService(fake).createLibrary("box", "/论文文献库", "论文文献库");
 
     expect(library.docId).toBe("library-doc");
-    expect(addedKeys).toHaveLength(1 + 3 + LIBRARY_METADATA_FIELDS.length);
+    expect(addedKeys).toHaveLength(1 + 3 + LIBRARY_METADATA_FIELDS.length + 1);
+    expect(addedKeys.at(-1)).toEqual({ name: "备注", type: "text" });
     expect(addedKeys[0]).toEqual({ name: "所属项目", type: "mSelect" });
     expect(decodeLibraryData(savedAttrs[ATTR.libraryData]!).schemaVersion).toBe(3);
     expect(warn).toHaveBeenCalledWith(
@@ -341,7 +372,7 @@ describe("library database projection", () => {
 
 describe("library data decoding", () => {
   it("round-trips plain JSON payloads", () => {
-    const data = fullLibraryData({ projects: [{ id: "p1", name: "项目一" }] });
+    const data = fullLibraryData();
     expect(decodeLibraryData(encodeLibraryData(data))).toEqual(data);
   });
 
@@ -362,7 +393,7 @@ describe("library data decoding", () => {
     expect(decoded.schemaVersion).toBe(3);
     expect(decoded.fieldKeyIds).toEqual({ citekey: "cite-key" });
     expect(decoded.databaseKeyIds).toEqual({ rating: "rating-key" });
-    expect(decoded.projects).toEqual([{ id: "p1", name: "项目一" }]);
+    expect("projects" in decoded).toBe(false);
     expect("selectedFields" in decoded).toBe(false);
     expect("columnOrder" in decoded).toBe(false);
   });

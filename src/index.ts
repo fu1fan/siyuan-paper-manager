@@ -1,3 +1,5 @@
+import { openMetadataEditor } from "./ui/dialogs/edit-metadata";
+import { disposeCnkiClient } from "./services/cnki-desktop";
 import { Dialog, Plugin, confirm, getFrontend, showMessage } from "siyuan";
 import { ATTR, PLUGIN_NAME } from "./constants";
 import { canUseNode, getPluginTempDir } from "./core/env";
@@ -67,6 +69,10 @@ export default class PaperManagerPlugin extends Plugin {
       importPdf: () => openImportPdfDialog(this.processor, () => this.settings),
       translate: (docId) => this.translate(docId),
       repair: (docId) => this.repair(docId),
+      editMetadata: async (docId) => {
+        const paper = await this.libraries.readPaper(docId);
+        await openMetadataEditor(paper, () => this.settings, draft => this.processor.editMetadata(docId, paper.canonical, draft));
+      },
       exportLibrary: (docId) => openCitationExportDialog(this.libraries, docId),
       openSettings: () => this.settingsPanel.open(),
       selfCheck: () => this.selfCheck(),
@@ -83,6 +89,7 @@ export default class PaperManagerPlugin extends Plugin {
   }
 
   onunload(): void {
+    disposeCnkiClient();
     console.log("[paper-manager] onunload");
     for (const cleanup of this.cleanup.splice(0)) cleanup();
     this.translator?.cancel();
@@ -219,13 +226,14 @@ export default class PaperManagerPlugin extends Plugin {
   private async selfCheck(): Promise<void> {
     const report = await buildEnvironmentReport(this.settings, this.statusStore.get());
     const rows = Object.entries(report).map(([name, result]) =>
-      `<tr><td>${result.ok ? "✅" : "⚠️"}</td><td>${escapeHtml(reportLabel(name))}</td><td>${escapeHtml(result.detail)}</td></tr>`).join("");
-    new Dialog({
+      `<section class="paper-manager-check-row"><div><strong>${escapeHtml(reportLabel(name))}</strong><span class="paper-manager-check-state" data-ok="${result.ok}">${result.ok ? "正常" : name === "template" && this.statusStore.get().templateMode === "unknown" ? "待验证" : "需处理"}</span></div><p>${escapeHtml(result.detail)}</p></section>`).join("");
+    const dialog = new Dialog({
       title: "论文管理环境自检",
       width: "680px",
-      content: `<div class="b3-dialog__content"><table class="b3-typography"><tbody>${rows}</tbody></table>
-        <p>打包模板由插件内置引擎渲染，不会写入思源 data/templates 目录。</p></div>`,
+      content: `<div class="b3-dialog__content paper-manager-dialog"><div class="paper-manager-dialog-scroll paper-manager-form">${rows}
+        <p class="paper-manager-hint">元数据与阅读笔记模板已内置。</p></div><div class="paper-manager-dialog-footer"><div class="paper-manager-actions"><button class="b3-button b3-button--cancel" data-check-close>关闭</button></div></div></div>`,
     });
+    dialog.element.querySelector<HTMLButtonElement>("[data-check-close]")!.onclick = () => dialog.destroy();
   }
 }
 

@@ -7,6 +7,7 @@ export type DocKind = "library" | "paper" | null;
 export interface PaperUiActions {
   importPdf: () => Promise<void>;
   translate: (docId: string) => Promise<void>;
+  editMetadata: (docId: string) => Promise<void>;
   repair: (docId: string) => Promise<void>;
   exportLibrary: (docId?: string) => Promise<void>;
   openSettings: () => void;
@@ -31,6 +32,11 @@ export function registerPaperUi(
     langKey: "export-library-citations",
     langText: "论文管理：导出文献库引用",
     callback: () => { void run(() => actions.exportLibrary(currentDocumentId() ?? undefined)); },
+  });
+  plugin.addCommand({
+    langKey: "edit-paper-metadata",
+    langText: "论文管理：元数据编辑",
+    callback: () => { void withCurrentDoc(actions.editMetadata); },
   });
   plugin.addCommand({
     langKey: "refresh-paper-meta",
@@ -77,6 +83,7 @@ export function registerPaperUi(
 function openQuickMenu(event: MouseEvent, actions: PaperUiActions): void {
   const menu = new Menu("paper-manager-quick-menu");
   menu.addItem({ icon: "iconDownload", label: "导入本地 PDF", click: () => run(actions.importPdf) });
+  menu.addItem({ icon: "iconEdit", label: "元数据编辑", click: () => withCurrentDoc(actions.editMetadata) });
   menu.addItem({ icon: "iconLanguage", label: "翻译当前论文", click: () => withCurrentDoc(actions.translate) });
   menu.addItem({ icon: "iconRefresh", label: "刷新当前论文元数据摘要", click: () => withCurrentDoc(actions.repair) });
   menu.addItem({ icon: "iconUpload", label: "导出文献库引用", click: () => run(() => actions.exportLibrary(currentDocumentId() ?? undefined)) });
@@ -127,6 +134,7 @@ async function addPaperItems(
     }
     if (kind !== "paper") return;
     menu.addSeparator?.();
+    menu.addItem({ icon: "iconEdit", label: "元数据编辑", click: () => run(() => actions.editMetadata(docId)) });
     menu.addItem({ icon: "iconLanguage", label: "翻译本文档", click: () => run(() => actions.translate(docId)) });
     menu.addItem({ icon: "iconRefresh", label: "刷新元数据摘要", click: () => run(() => actions.repair(docId)) });
   } catch (error) {

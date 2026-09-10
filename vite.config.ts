@@ -23,6 +23,8 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": resolve(import.meta.dirname, "src"),
+      "node-fetch": resolve(import.meta.dirname, "src/services/citation-fetch.ts"),
+      "sync-fetch": resolve(import.meta.dirname, "src/services/citation-fetch.ts"),
     },
   },
   test: {

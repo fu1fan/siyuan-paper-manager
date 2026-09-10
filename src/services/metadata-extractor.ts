@@ -1,3 +1,10 @@
+import { recognizerPage } from "./zotero-recognizer";
+import { metadataFetch } from "./metadata-http";
+import { bibtexCandidates } from "./bibtex-input";
+import { englishPdfMetadata } from "./english-pdf";
+import { desktopCnkiClient } from "./cnki-desktop";
+import { trustedCnkiUrl, type CnkiClient, type CnkiRegion } from "./cnki-client";
+import { parseCnkiDetail, parseCnkiEndnote } from "./cnki-metadata";
 import type { TextItem, DocumentInitParameters } from "pdfjs-dist/types/src/display/api";
 import type { ExtractionResult, MetadataCandidate } from "../types/import";
 import type { PaperCanonical, PaperCreator } from "../types/paper";
@@ -14,11 +21,17 @@ export interface PdfMetadataSnapshot {
   xmp: Record<string, string>;
   text: string;
   pages?: PdfLine[][];
+  recognizer?: { metadata: Record<string, unknown>; totalPages: number; pages: unknown[][] };
 }
 
 export interface MetadataExtractorOptions {
   fetchImpl?: typeof fetch;
   enableCnki?: boolean;
+  enableZoteroRecognizer?: boolean;
+  cnkiClient?: CnkiClient;
+  cnkiRegion?: CnkiRegion;
+  cnkiTimeoutSeconds?: number;
+  signal?: AbortSignal;
   timeoutMs?: number;
   pdfOptions?: Partial<DocumentInitParameters>;
 }
@@ -28,7 +41,7 @@ export class MetadataExtractor {
   private readonly timeoutMs: number;
 
   constructor(private readonly options: MetadataExtractorOptions = {}) {
-    const fetchImpl = options.fetchImpl ?? globalThis.fetch;
+    const fetchImpl = options.fetchImpl ?? metadataFetch;
     // Keep the browser receiver for Electron/Chromium native fetch. Invoking a
     // raw fetch reference as `this.fetchImpl()` otherwise throws Illegal invocation.
     this.fetchImpl = (input, init) => fetchImpl.call(globalThis, input, init);
@@ -43,11 +56,18 @@ export class MetadataExtractor {
     } catch (error) {
       warnings.push(`PDF 本地解析失败：${message(error)}`);
     }
+    this.options.signal?.throwIfAborted();
     const detectedDoi = findDoi(snapshot.pages?.slice(0, 3).flatMap((page) => page.map((line) => line.text)).join("\n") ?? snapshot.text)
       ?? normalizeDoi(snapshot.info.DOI ?? snapshot.xmp.doi);
     const local = localCandidate(snapshot, filename, detectedDoi);
     const candidates: MetadataCandidate[] = [local];
 
+    const arxiv = findArxiv(snapshot.pages?.slice(0, 2).flatMap(page => page.map(line => line.text)).join("\n") ?? "");
+    if (arxiv) {
+      local.canonical.url ||= `https://arxiv.org/abs/${arxiv}`;
+      try { candidates.push(...(await this.lookup(`arXiv:${arxiv}`)).candidates); }
+      catch (error) { warnings.push(`arXiv 补充失败：${message(error)}`); }
+    }
     if (detectedDoi) {
       try {
         const crossref = await this.crossrefByDoi(detectedDoi);
@@ -63,7 +83,7 @@ export class MetadataExtractor {
           warnings.push(`Citoid 查询失败：${message(error)}`);
         }
       }
-    } else if (local.canonical.title && local.provider !== "filename") {
+    } else if (!candidates.some(candidate => candidate.provider === "arxiv") && local.canonical.title && !containsCjk(local.canonical.title) && local.provider !== "filename") {
       try {
         candidates.push(...await this.crossrefByTitle(local.canonical));
       } catch (error) {
@@ -75,16 +95,75 @@ export class MetadataExtractor {
       try {
         candidates.push(...await this.cnkiByTitle(local.canonical));
       } catch (error) {
-        warnings.push(`中文检索失败：${message(error)}`);
+        warnings.push(`知网在线补充检索未完成（${message(error)}）；已有候选仍可使用，请核对后导入。如不需要联网补充，可在设置中关闭「中文检索（实验性）」`);
       }
     }
 
+    if (this.options.enableZoteroRecognizer && snapshot.recognizer && snapshot.text.trim()) {
+      try {
+        const response = await this.fetchWithRetry("https://services.zotero.org/recognizer/recognize", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...snapshot.recognizer, fileName: filename }),
+        }, 1);
+        const raw: unknown = await response.json();
+        if (isRecord(raw)) {
+          if (string(raw.title)) candidates.push({ provider: "zotero", confidence: 0.93, reason: "Zotero 在线识别（请核对）", raw,
+            canonical: canonicalFromCitoid({ ...raw, creators: raw.authors, date: raw.year, abstractNote: raw.abstract, DOI: raw.doi, publicationTitle: raw.container }) });
+          const identifier = string(raw.arxiv) ? `arXiv:${raw.arxiv}` : string(raw.doi) || string(raw.isbn);
+          if (identifier && !candidates.some(candidate => candidate.provider === "arxiv" && findArxiv(candidate.canonical.url ?? "")?.replace(/v\d+$/, "") === findArxiv(identifier)?.replace(/v\d+$/, ""))) {
+            try { candidates.push(...(await this.lookup(identifier)).candidates); }
+            catch (error) { this.options.signal?.throwIfAborted(); warnings.push(`Zotero 标识符补充失败：${message(error)}`); }
+          }
+        }
+      } catch (error) { this.options.signal?.throwIfAborted(); warnings.push(`Zotero 在线识别失败：${message(error)}`); }
+    }
+    this.options.signal?.throwIfAborted();
     const deduplicated = dedupeCandidates(candidates).sort((left, right) => right.confidence - left.confidence);
     const best = deduplicated[0] ?? filenameCandidate(filename, detectedDoi);
     const selected = local.canonical.itemType === "thesis" && local.canonical.creators.length && local.canonical.date
       ? local
       : mergeMetadata(local, best);
     return { selected, candidates: deduplicated, detectedDoi, warnings };
+  }
+
+  /** BibLib-style identifier lookup, using structured Zotero JSON from Citoid. */
+  async lookup(input: string): Promise<ExtractionResult> {
+    this.options.signal?.throwIfAborted();
+    const value = input.trim();
+    if (!value) throw new Error("请输入 DOI、URL、arXiv、ISBN、PMID 或 PMCID");
+    if (value.startsWith("@")) {
+      const candidates = bibtexCandidates(value);
+      if (!candidates.length) throw new Error("BibTeX 中没有可识别的文献");
+      return { selected: candidates[0]!, candidates, warnings: [] };
+    }
+    const doi = findDoi(value);
+    const arxiv = findArxiv(value);
+    const target = doi ? `https://doi.org/${doi}` : arxiv ? `https://arxiv.org/abs/${arxiv}`
+      : /^PMID\s*:\s*(\d+)$/i.test(value) ? `https://pubmed.ncbi.nlm.nih.gov/${value.match(/\d+/)![0]}/`
+      : /^(?:PMCID\s*:\s*)?PMC\d+$/i.test(value) ? `https://www.ncbi.nlm.nih.gov/pmc/articles/${value.match(/PMC\d+/i)![0].toUpperCase()}/`
+      : value.replace(/^ISBN(?:-1[03])?\s*:\s*/i, "");
+    const candidates: MetadataCandidate[] = [];
+    const warnings: string[] = [];
+    if (doi) {
+      try { const candidate = await this.crossrefByDoi(doi); if (candidate) candidates.push(candidate); }
+      catch (error) { this.options.signal?.throwIfAborted(); warnings.push(`Crossref：${message(error)}`); }
+    }
+    if (arxiv) {
+      try {
+        const response = await this.fetchWithRetry(`https://export.arxiv.org/api/query?id_list=${encodeURIComponent(arxiv)}`, {});
+        const candidate = arxivCandidate(await response.text());
+        if (candidate) candidates.push(candidate);
+      } catch (error) { this.options.signal?.throwIfAborted(); warnings.push(`arXiv：${message(error)}`); }
+    }
+    if (!candidates.length) {
+      try {
+        const candidate = await this.citoidByDoi(target);
+        if (candidate && candidate.canonical.title !== "未命名文献") candidates.push(candidate);
+      } catch (error) { this.options.signal?.throwIfAborted(); warnings.push(`Citoid：${message(error)}`); }
+    }
+    this.options.signal?.throwIfAborted();
+    if (!candidates.length) throw new Error(warnings.join("；") || "没有找到元数据，请检查标识符或网址");
+    return { selected: candidates[0]!, candidates, detectedDoi: doi, warnings };
   }
 
   private async crossrefByDoi(doi: string): Promise<MetadataCandidate | null> {
@@ -107,7 +186,7 @@ export class MetadataExtractor {
   }
 
   private async citoidByDoi(doi: string): Promise<MetadataCandidate | null> {
-    const target = encodeURIComponent(`https://doi.org/${doi}`);
+    const target = encodeURIComponent(/^10\./.test(doi) ? `https://doi.org/${doi}` : doi);
     const response = await this.fetchJson(`https://en.wikipedia.org/api/rest_v1/data/citation/zotero/${target}`);
     const raw = Array.isArray(response) ? response.find(isRecord) : isRecord(response) ? response : null;
     if (!raw) return null;
@@ -115,21 +194,50 @@ export class MetadataExtractor {
       canonical: canonicalFromCitoid(raw),
       provider: "citoid",
       confidence: 0.98,
-      reason: "Citoid DOI 匹配",
+      reason: "Citoid 标识符/网址检索（请核对）",
       raw,
     };
   }
 
   private async cnkiByTitle(local: PaperCanonical): Promise<MetadataCandidate[]> {
-    const url = `https://kns.cnki.net/kns8s/defaultresult/index?kw=${encodeURIComponent(local.title)}`;
-    const response = await this.fetchWithRetry(url, {
-      headers: { Accept: "text/html,application/xhtml+xml" },
-    });
-    const html = await response.text();
-    return parseCnkiHtml(html).map((candidate) => {
+    const client = this.options.cnkiClient ?? desktopCnkiClient(undefined, this.options.cnkiTimeoutSeconds);
+    const response = await client.search(local, this.options.cnkiRegion, this.options.signal);
+    const html = response.text;
+    const candidates = parseCnkiHtml(html, response.url).map((candidate) => {
       const confidence = metadataConfidence(local, candidate.canonical);
       return { ...candidate, confidence, reason: `CNKI 标题相似度 ${confidence.toFixed(2)}` };
-    }).filter((candidate) => candidate.confidence >= 0.55);
+    }).filter((candidate) => candidate.confidence >= (local.itemType === "thesis" ? 0.9 : 0.55))
+      .sort((a, b) => b.confidence - a.confidence);
+    if (!candidates.length && !/result-table-list|没有找到|未找到|暂无|无检索结果|no results/i.test(html)) {
+      throw new Error("知网未返回可识别的搜索结果，页面结构可能已变化");
+    }
+    for (const candidate of candidates.slice(0, 1)) {
+      this.options.signal?.throwIfAborted();
+      const region = this.options.cnkiRegion ?? "mainland";
+      const notes: string[] = [];
+      const failed = (error: unknown, stage: string) => {
+        if (this.options.signal?.aborted || (error instanceof Error && error.name === "AbortError")) throw error;
+        notes.push(`${stage}未完成：${message(error)}`);
+      };
+      try {
+        const detail = await client.requestVerified({ url: trustedCnkiUrl(candidate.canonical.url!), method: "GET", headers: { Accept: "text/html", Referer: response.url } }, region, this.options.signal);
+        candidate.canonical = parseCnkiDetail(detail.text, candidate.canonical);
+      } catch (error) { failed(error, "详情补充"); }
+      const raw = candidate.raw as { exportId?: string };
+      if (region === "mainland" && raw.exportId) {
+        try {
+          const exported = await client.requestVerified({
+            url: "https://kns.cnki.net/dm8/API/GetExport", method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded", Referer: candidate.canonical.url!, Origin: "https://kns.cnki.net" },
+            body: new URLSearchParams({ filename: raw.exportId, uniplatform: "NZKPT", displaymode: "EndNote" }).toString(),
+          }, region, this.options.signal);
+          candidate.canonical = parseCnkiEndnote(exported.text, candidate.canonical);
+        } catch (error) { failed(error, "EndNote补充"); }
+      }
+      candidate.confidence = metadataConfidence(local, candidate.canonical);
+      candidate.reason = [`CNKI 标题相似度 ${candidate.confidence.toFixed(2)}`, ...notes].join("；");
+    }
+    return candidates;
   }
 
   private async fetchJson(url: string): Promise<unknown> {
@@ -142,10 +250,13 @@ export class MetadataExtractor {
     return response.json();
   }
 
-  private async fetchWithRetry(url: string, init: RequestInit): Promise<Response> {
+  private async fetchWithRetry(url: string, init: RequestInit, attempts = 3): Promise<Response> {
     let lastError: unknown;
-    for (let attempt = 0; attempt < 3; attempt += 1) {
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      this.options.signal?.throwIfAborted();
       const controller = new AbortController();
+      const cancel = () => controller.abort();
+      this.options.signal?.addEventListener("abort", cancel, { once: true });
       const timer = setTimeout(() => controller.abort(), this.timeoutMs);
       try {
         const response = await this.fetchImpl(url, { ...init, signal: controller.signal });
@@ -153,13 +264,15 @@ export class MetadataExtractor {
         if (response.status !== 429 && response.status < 500) throw new PermanentHttpError(`HTTP ${response.status}`);
         lastError = new Error(`HTTP ${response.status}`);
         const retryAfter = Math.min(5_000, Number(response.headers.get("Retry-After") || 0) * 1000);
-        await sleep(retryAfter || 300 * 2 ** attempt);
+        if (attempt + 1 < attempts) await sleep(retryAfter || 300 * 2 ** attempt);
       } catch (error) {
-        if (error instanceof PermanentHttpError) throw error;
-        lastError = error;
-        if (attempt < 2) await sleep(300 * 2 ** attempt);
+        if (this.options.signal?.aborted || error instanceof PermanentHttpError) throw error;
+        lastError = controller.signal.aborted ? new Error(`请求超时（${this.timeoutMs / 1000}秒）`) : error;
+        if (controller.signal.aborted) throw lastError;
+        if (attempt + 1 < attempts) await sleep(300 * 2 ** attempt);
       } finally {
         clearTimeout(timer);
+        this.options.signal?.removeEventListener("abort", cancel);
       }
     }
     throw lastError instanceof Error ? lastError : new Error("网络请求失败");
@@ -185,13 +298,18 @@ export async function inspectPdf(bytes: Uint8Array, options: Partial<DocumentIni
       else if (Array.isArray(value)) xmp[key] = value.filter((item) => typeof item === "string").join("; ");
     }
     const pages: PdfLine[][] = [];
+    const recognizerPages: unknown[][] = [];
     for (let pageNumber = 1; pageNumber <= Math.min(8, document.numPages); pageNumber += 1) {
       const page = await document.getPage(pageNumber);
       const content = await page.getTextContent();
+      if (pageNumber <= 5) {
+        const viewport = page.getViewport({ scale: 1 });
+        recognizerPages.push(recognizerPage(viewport.width, viewport.height, content.items.filter((item): item is TextItem => "str" in item)));
+      }
       pages.push(pdfTextLines(content.items.filter((item): item is TextItem => "str" in item)));
       page.cleanup();
     }
-    return { info, xmp, text: pages.map((lines) => lines.map((line) => line.text).join("\n")).join("\n"), pages };
+    return { info, xmp, recognizer: { metadata: Object.fromEntries(Object.entries(info).filter(([, value]) => typeof value === "string")), totalPages: document.numPages, pages: recognizerPages }, text: pages.map((lines) => lines.map((line) => line.text).join("\n")).join("\n"), pages };
   } finally {
     await loading.destroy();
   }
@@ -202,11 +320,12 @@ export function localCandidate(snapshot: PdfMetadataSnapshot, filename: string, 
   const usableEmbedded = embedded && !/^(?:untitled|未命名|Microsoft (?:Word|PowerPoint)|WPS|document\d*|CNKI)/i.test(embedded) ? embedded : "";
   const layout = !usableEmbedded || !containsHan(usableEmbedded) ? chineseLayoutTitle(snapshot.pages?.slice(0, 3) ?? []) : undefined;
   const thesis = extractChineseThesis(snapshot.pages ?? []);
-  let title = layout?.title || usableEmbedded || filenameTitle(filename);
+  const english = !layout && !containsHan(usableEmbedded) ? englishPdfMetadata(snapshot.pages ?? []) : undefined;
+  let title = layout?.title || usableEmbedded || english?.title || filenameTitle(filename);
   const fileTitle = filename.replace(/_[^_]+\.pdf$/i, "");
   if (title.replace(/DC[.．]DC/gi, "DC-DC") === fileTitle) title = fileTitle;
   const author = firstString(snapshot.xmp["dc:creator"], snapshot.info.Author);
-  const creators = thesis.author ? splitAuthors(thesis.author) : author && !/^(?:CNKI|TTKN|万方数据|Administrator|admin)$/i.test(author) ? splitAuthors(author) : [];
+  const creators = thesis.author ? splitAuthors(thesis.author) : author && !/^(?:CNKI|TTKN|万方数据|Administrator|admin)$/i.test(author) ? splitAuthors(author) : english?.creators ?? [];
   const canonical = cleanCanonical({
     itemType: thesis.isThesis || layout?.thesis ? "thesis" : "journalArticle",
     title,
@@ -215,16 +334,16 @@ export function localCandidate(snapshot: PdfMetadataSnapshot, filename: string, 
     date: thesis.date,
     // PDF creation time is not the publication date.
     language: containsHan(title) ? "zh-CN" : undefined,
-    abstract: thesis.abstract || firstString(snapshot.xmp["dc:description"], snapshot.info.Subject),
+    abstract: thesis.abstract || english?.abstract || firstString(snapshot.xmp["dc:description"], snapshot.info.Subject),
     doi,
     tags: thesis.tags.length ? thesis.tags : splitTags(firstString(snapshot.xmp["dc:subject"], snapshot.info.Keywords)),
   });
   const hasEmbedded = title !== filenameTitle(filename) || creators.length > 0;
   return {
     canonical,
-    provider: layout || thesis.author ? "pdf-text" : hasEmbedded ? "xmp" : "filename",
-    confidence: thesis.author && thesis.date && thesis.publisher ? 0.94 : doi ? 0.72 : layout ? 0.68 : hasEmbedded ? 0.58 : 0.3,
-    reason: thesis.author ? "PDF 学位论文封面与摘要（请核对）" : layout ? "PDF 中文标题（字号与位置识别，请核对）" : hasEmbedded ? "PDF 内嵌元数据" : "文件名兜底",
+    provider: layout || english || thesis.author ? "pdf-text" : hasEmbedded ? "xmp" : "filename",
+    confidence: thesis.author && thesis.date && thesis.publisher ? 0.94 : doi ? 0.72 : english ? 0.82 : layout ? 0.68 : hasEmbedded ? 0.58 : 0.3,
+    reason: english ? "PDF 英文首页标题与作者（字号与位置识别，请核对）" : thesis.author ? "PDF 学位论文封面与摘要（请核对）" : layout ? "PDF 中文标题（字号与位置识别，请核对）" : hasEmbedded ? "PDF 内嵌元数据" : "文件名兜底",
     raw: { info: snapshot.info, xmp: snapshot.xmp },
   };
 }
@@ -296,7 +415,7 @@ function canonicalFromCitoid(raw: Record<string, unknown>): PaperCanonical {
   });
 }
 
-export function parseCnkiHtml(html: string): MetadataCandidate[] {
+export function parseCnkiHtml(html: string, baseUrl = "https://kns.cnki.net"): MetadataCandidate[] {
   if (typeof DOMParser === "function") {
     const document = new DOMParser().parseFromString(html, "text/html");
     const links = Array.from(document.querySelectorAll<HTMLAnchorElement>(
@@ -304,9 +423,19 @@ export function parseCnkiHtml(html: string): MetadataCandidate[] {
     ));
     return links.slice(0, 10).map((link) => {
       const row = link.closest("tr, .result-table-list") ?? link.parentElement;
-      const author = row?.querySelector<HTMLElement>(".author, td.author")?.textContent ?? "";
-      const year = row?.textContent?.match(/(?:19|20)\d{2}/)?.[0];
-      return cnkiCandidate(link.textContent ?? "", author, year, link.href);
+      const authorCell = row?.querySelector<HTMLElement>(".author, td.author");
+      const authorLinks = Array.from(authorCell?.querySelectorAll("a") ?? []);
+      const author = authorLinks.length ? authorLinks.map((node) => node.textContent?.trim()).filter(Boolean).join("；") : authorCell?.textContent ?? "";
+      const year = (row?.querySelector(".date")?.textContent ?? row?.textContent)?.match(/(?:19|20)\d{2}(?:[-/]\d{1,2}){0,2}/)?.[0];
+      const candidate = cnkiCandidate(link.textContent ?? "", author, year, new URL(link.getAttribute("href") ?? "", baseUrl).href);
+      const source = row?.querySelector(".source")?.textContent?.trim();
+      const kind = row?.querySelector(".data")?.textContent ?? "";
+      if (/硕士|博士|学位/.test(kind)) {
+        candidate.canonical.itemType = "thesis";
+        candidate.canonical.publisher = source;
+      } else candidate.canonical.journal = source;
+      candidate.raw = { ...(candidate.raw as object), exportId: row?.querySelector("td.seq input")?.getAttribute("value") ?? undefined };
+      return candidate;
     }).filter((candidate) => candidate.canonical.title.length > 1);
   }
   const matches = [...html.matchAll(/<a[^>]+href="([^"]*\/kcms\/detail\/detail\.aspx[^"]*)"[^>]*>(.*?)<\/a>/gis)];
@@ -342,8 +471,16 @@ function metadataConfidence(local: PaperCanonical, candidate: PaperCanonical): n
   return Math.min(0.99, titleScore * 0.82 + (yearMatch ? 0.09 : 0) + (authorMatch ? 0.09 : 0) - (!supporting && titleScore < 0.98 ? 0.08 : 0));
 }
 
-function mergeMetadata(local: MetadataCandidate, provider: MetadataCandidate): MetadataCandidate {
+export function mergeMetadata(local: MetadataCandidate, provider: MetadataCandidate): MetadataCandidate {
   const merged = { ...provider.canonical };
+  const authors = local.canonical.creators;
+  const sameName = (name: string) => name.toLowerCase().replace(/[^\p{L}]/gu, "");
+  if (provider.provider === "zotero" && titleSimilarity(local.canonical.title, provider.canonical.title) > 0.95
+      && authors.length > merged.creators.length && merged.creators.every((author, index) => {
+        const known = authors[index];
+        return known && sameName(author.family + author.given) === sameName(known.family + known.given);
+      })) merged.creators = authors;
+
   for (const [key, value] of Object.entries(local.canonical)) {
     const current = (merged as Record<string, unknown>)[key];
     if (current == null || current === "" || (Array.isArray(current) && current.length === 0)) {
@@ -437,3 +574,25 @@ function sleep(ms: number): Promise<void> {
 }
 
 class PermanentHttpError extends Error {}
+
+export function findArxiv(text: string): string | undefined {
+  return text.match(/(?:arxiv\s*:\s*|arxiv\.org\/(?:abs|pdf)\/)(\d{4}\.\d{4,5}(?:v\d+)?|[a-z-]+(?:\.[A-Z]{2})?\/\d{7}(?:v\d+)?)/i)?.[1]
+    ?? text.trim().match(/^(\d{4}\.\d{4,5}(?:v\d+)?)$/)?.[1];
+}
+
+export function arxivCandidate(xml: string): MetadataCandidate | undefined {
+  const entry = xml.match(/<entry(?:\s[^>]*)?>([\s\S]*?)<\/entry>/)?.[1];
+  if (!entry) return;
+  const field = (tag: string, source = entry) => stripTags(source.match(new RegExp(`<${tag}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${tag}>`))?.[1] ?? "").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/\s+/g, " ").trim();
+  const title = field("title");
+  const url = field("id").replace(/^http:/, "https:");
+  if (!title || !/arxiv\.org\/abs\//.test(url)) return;
+  // The Atom DOI field describes the published version and is optional.
+  // arXiv's own DataCite DOI identifies the record, without a version suffix.
+  const arxivId = findArxiv(url)?.replace(/v\d+$/i, "");
+  const creators = [...entry.matchAll(/<author>([\s\S]*?)<\/author>/g)].flatMap(match => splitAuthors(field("name", match[1])));
+  return { provider: "arxiv", confidence: 0.99, reason: "arXiv 编号精确检索", raw: { xml }, canonical: cleanCanonical({
+    itemType: "journalArticle", title, creators, date: field("published").slice(0, 10), abstract: field("summary"), url,
+    doi: field("arxiv:doi") || (arxivId ? `10.48550/arXiv.${arxivId}` : undefined), journal: field("arxiv:journal_ref"), tags: [],
+  }) };
+}

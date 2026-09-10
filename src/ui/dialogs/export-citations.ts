@@ -28,12 +28,11 @@ export async function openCitationExportDialog(libraries: LibraryService, prefer
     width: "960px",
     content: `<div class="b3-dialog__content paper-manager-form paper-manager-export">
       <div class="paper-manager-export-toolbar">
-        <select class="b3-select" data-library title="文献库">${all.map((library) => `<option value="${escapeHtml(library.docId)}">${escapeHtml(library.title)}</option>`).join("")}</select>
-        <input class="b3-text-field" data-search placeholder="搜索标题、作者、DOI 或引用键">
-        <select class="b3-select" data-project></select>
-        <select class="b3-select" data-format>${Object.entries(CITATION_FORMAT_LABELS).map(([value, label]) => `<option value="${value}">${escapeHtml(label)}</option>`).join("")}</select>
+        <label class="paper-manager-field paper-manager-field--column"><span>文献库</span><select class="b3-select" data-library title="文献库">${all.map((library) => `<option value="${escapeHtml(library.docId)}">${escapeHtml(library.title)}</option>`).join("")}</select></label>
+        <label class="paper-manager-field paper-manager-field--column"><span>搜索论文</span><input class="b3-text-field" data-search placeholder="搜索标题、作者、DOI 或引用键"></label>
+        <label class="paper-manager-field paper-manager-field--column"><span>所属项目</span><select class="b3-select" data-project></select></label>
+        <label class="paper-manager-field paper-manager-field--column"><span>引用格式</span><select class="b3-select" data-format>${Object.entries(CITATION_FORMAT_LABELS).map(([value, label]) => `<option value="${value}">${escapeHtml(label)}</option>`).join("")}</select></label>
       </div>
-      <div class="paper-manager-export-projects" data-projects></div>
       <div class="paper-manager-export-body">
         <div class="paper-manager-export-side">
           <div class="paper-manager-export-side-bar">
@@ -44,10 +43,10 @@ export async function openCitationExportDialog(libraries: LibraryService, prefer
           </div>
           <div class="paper-manager-export-list" data-list></div>
         </div>
-        <textarea class="b3-text-field paper-manager-export-output" readonly data-output></textarea>
+        <textarea class="b3-text-field paper-manager-export-output" aria-label="引用预览" readonly data-output></textarea>
       </div>
       <div class="paper-manager-export-footer">
-        <span class="paper-manager-preview" data-warnings></span>
+        <span class="paper-manager-hint" data-warnings></span>
         <span class="paper-manager-export-footer-actions" data-actions></span>
       </div>
     </div>`,
@@ -60,7 +59,6 @@ export async function openCitationExportDialog(libraries: LibraryService, prefer
   const librarySelect = dialog.element.querySelector<HTMLSelectElement>("[data-library]")!;
   const project = dialog.element.querySelector<HTMLSelectElement>("[data-project]")!;
   const format = dialog.element.querySelector<HTMLSelectElement>("[data-format]")!;
-  const projectLinks = dialog.element.querySelector<HTMLElement>("[data-projects]")!;
 
   let library: PaperLibraryInfo = all.find((candidate) => candidate.docId === initialId)!;
   let records: LibraryPaperRecord[] = [];
@@ -80,7 +78,7 @@ export async function openCitationExportDialog(libraries: LibraryService, prefer
     visible = records.filter((record) => {
       const c = record.paper.canonical;
       const text = [c.title, c.doi, record.paper.citekey, ...c.creators.map((creator) => `${creator.family} ${creator.given}`)].join(" ").toLocaleLowerCase();
-      return (!query || text.includes(query)) && (!project.value || record.projectIds.includes(project.value));
+      return (!query || text.includes(query)) && (!project.value || record.projectNames.includes(project.value));
     });
     list.innerHTML = visible.length ? visible.map((record) => `<label class="paper-manager-export-row"><input type="checkbox" data-doc-id="${escapeHtml(record.docId)}" ${selected.has(record.docId) ? "checked" : ""}><span><strong>${escapeHtml(record.paper.canonical.title || record.paper.citekey)}</strong><small>${escapeHtml(record.paper.citekey)} · ${escapeHtml(record.paper.canonical.date ?? "无年份")}</small></span></label>`).join("") : "<div class=\"paper-manager-preview paper-manager-export-empty\">没有匹配的论文。</div>";
     for (const checkbox of list.querySelectorAll<HTMLInputElement>("[data-doc-id]")) checkbox.onchange = () => {
@@ -97,8 +95,8 @@ export async function openCitationExportDialog(libraries: LibraryService, prefer
     records = await libraries.listPapers(docId);
     selected = new Set(records.map((record) => record.docId));
     search.value = "";
-    project.innerHTML = `<option value="">全部项目</option>${library.data.projects.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}</option>`).join("")}`;
-    projectLinks.innerHTML = library.data.projects.filter((item) => item.docId).map((item) => `<a href="siyuan://blocks/${escapeHtml(item.docId!)}">${escapeHtml(item.name)} ↗</a>`).join(" · ");
+    const projectNames = [...new Set(records.flatMap((record) => record.projectNames))];
+    project.innerHTML = `<option value="">全部项目</option>${projectNames.map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join("")}`;
     renderList();
   };
   librarySelect.value = initialId;

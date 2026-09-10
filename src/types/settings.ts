@@ -9,7 +9,11 @@ export interface PluginSettings {
   defaultLibraryDocId: string;
   onboardingCompleted: boolean;
   assetsDir: string;
+  autoExtractMetadata: boolean;
+  enableZoteroRecognizer: boolean;
   enableCnki: boolean;
+  cnkiTimeoutSeconds: number;
+  cnkiRegion?: "mainland" | "oversea";
   pdf2zhPath: string;
   translateFrom: string;
   translateTo: string;
@@ -28,7 +32,11 @@ export const DEFAULT_SETTINGS: PluginSettings = {
   defaultLibraryDocId: "",
   onboardingCompleted: false,
   assetsDir: DEFAULT_ASSETS_DIR,
+  autoExtractMetadata: true,
+  enableZoteroRecognizer: false,
   enableCnki: false,
+  cnkiTimeoutSeconds: 10,
+  cnkiRegion: "mainland",
   pdf2zhPath: "pdf2zh",
   translateFrom: "en",
   translateTo: "zh",
@@ -55,7 +63,11 @@ export function normalizeSettings(input: unknown): PluginSettings {
     defaultLibraryDocId: optionalString(raw.defaultLibraryDocId),
     onboardingCompleted: bool(raw.onboardingCompleted, DEFAULT_SETTINGS.onboardingCompleted),
     assetsDir: normalizeAssetsDir(string(raw.assetsDir, DEFAULT_SETTINGS.assetsDir)),
+    autoExtractMetadata: bool(raw.autoExtractMetadata, DEFAULT_SETTINGS.autoExtractMetadata),
+    enableZoteroRecognizer: bool(raw.enableZoteroRecognizer, DEFAULT_SETTINGS.enableZoteroRecognizer),
     enableCnki: bool(raw.enableCnki, DEFAULT_SETTINGS.enableCnki),
+    cnkiTimeoutSeconds: normalizeCnkiTimeout(raw.cnkiTimeoutSeconds),
+    cnkiRegion: raw.cnkiRegion === "oversea" ? "oversea" : "mainland",
     pdf2zhPath: string(raw.pdf2zhPath, DEFAULT_SETTINGS.pdf2zhPath),
     translateFrom: string(raw.translateFrom, DEFAULT_SETTINGS.translateFrom),
     translateTo: string(raw.translateTo, DEFAULT_SETTINGS.translateTo),
@@ -161,4 +173,9 @@ export function extractThreadArgs(input: string[]): { args: string[]; threads?: 
     } else args.push(arg);
   }
   return { args, threads };
+}
+
+export function normalizeCnkiTimeout(value: unknown): number {
+  const seconds = Number(value);
+  return Number.isFinite(seconds) && seconds >= 1 ? Math.min(120, Math.floor(seconds)) : 10;
 }
