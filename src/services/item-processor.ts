@@ -32,6 +32,12 @@ export type DuplicateResolver = (match: DuplicateMatch, incoming: PaperData) => 
 
 export class ItemProcessor {
   private importQueue: Promise<unknown> = Promise.resolve();
+  /** Serialize membership changes with imports and metadata edits. */
+  runMembershipChange<T>(work: () => Promise<T>): Promise<T> {
+    const task = this.importQueue.then(work);
+    this.importQueue = task.catch(() => undefined);
+    return task;
+  }
   constructor(
     private readonly kernel: KernelClient,
     private readonly templates: TemplateService,
@@ -99,10 +105,25 @@ export class ItemProcessor {
   }
 
   /** Save only edited fields against a fresh database snapshot. */
-  editMetadata(docId: string, baseline: PaperCanonical, draft: PaperCanonical): Promise<void> {
+  editMetadata(docId: string, baseline: PaperCanonical, draft: PaperCanonical,
+    citekeyEdit?: { baseline: string; value: string }): Promise<void> {
     const task = this.importQueue.then(async () => {
       if (!draft.title.trim()) throw new Error("标题不能为空");
       const latest = await this.libraries.readPaper(docId);
+      const changeKey = citekeyEdit && citekeyEdit.value !== citekeyEdit.baseline;
+      if (changeKey) {
+        const key = citekeyEdit.value;
+        if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,119}$/.test(key)) {
+          throw new Error("引用键须为 1–120 位英文字母、数字、下划线或连字符，并以字母或数字开头");
+        }
+        if (latest.citekey !== citekeyEdit.baseline && latest.citekey !== key) {
+          throw new Error("引用键已在数据库中更改，请重新打开编辑页后再保存");
+        }
+        const used = await this.libraries.citekeys(latest.libraryId, docId);
+        if (used.some(value => value.toLowerCase() === key.toLowerCase())) {
+          throw new Error("该引用键已被同库其他条目使用，请修改或重新生成");
+        }
+      }
       for (const key of new Set([...Object.keys(baseline), ...Object.keys(draft)]) as Set<keyof PaperCanonical>) {
         if (JSON.stringify(baseline[key]) === JSON.stringify(draft[key])) continue;
         if (JSON.stringify(latest.canonical[key]) !== JSON.stringify(baseline[key])
@@ -114,7 +135,11 @@ export class ItemProcessor {
         if (JSON.stringify(baseline[key]) !== JSON.stringify(draft[key])) Object.assign(latest.canonical, { [key]: draft[key] });
       }
       // Commit the database first: it remains authoritative if summary rendering fails.
+      if (changeKey) latest.citekey = citekeyEdit.value;
       await this.syncPaperWithRetry(docId, latest, true);
+      // Keep the same document and database row IDs. Repeating save also repairs
+      // a rename that failed after the authoritative citekey was committed.
+      if (changeKey) await this.kernel.renameDocument(docId, latest.citekey);
       const sections = await this.templates.ensureSections(docId, latest);
       await this.persistAndRefresh(docId, latest, sections.meta);
     });

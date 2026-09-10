@@ -22,9 +22,13 @@ export function currentDocumentId(): string | null {
     ".protyle:not(.fn__none) .protyle-title[data-node-id]",
   ];
   for (const selector of selectors) {
-    const element = document.querySelector<HTMLElement>(selector);
-    const id = element?.dataset.nodeId;
-    if (id) return id;
+    // Inactive tabs remain in the active layout window's DOM. Skip hidden
+    // editors (including hidden ancestors), rather than taking its first title.
+    for (const element of document.querySelectorAll<HTMLElement>(selector)) {
+      if (element.closest(".fn__none, [hidden]") || !element.getClientRects().length) continue;
+      const id = element.dataset.nodeId;
+      if (id) return id;
+    }
   }
   return null;
 }

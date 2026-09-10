@@ -13,10 +13,12 @@ import { paper } from "./fixtures";
 function setup(records: LibraryPaperRecord[], resolver: DuplicateResolver = vi.fn(async () => ({ action: "merge" as const, overwrite: [] }))) {
   const library = { docId: "library-doc", hPath: "/库", notebookId: "box" };
   const kernel = {
+    renameDocument: vi.fn(),
     createDocument: vi.fn(async () => ({ id: `new-${records.length}` })),
     setBlockAttrs: vi.fn(), uploadAsset: vi.fn(async () => "assets/new.pdf"),
   };
   const libraries = {
+    citekeys: vi.fn(async () => [] as string[]),
     getLibrary: vi.fn(async () => library),
     listPapersAndCitekeys: vi.fn(async () => ({ papers: [...records], citekeys: records.map((r) => r.paper.citekey) })),
     readPaper: vi.fn(async () => paper()),
@@ -134,4 +136,59 @@ it("rejects concurrent edits of the same metadata field before writing", async (
   await expect(processor.editMetadata("existing", baseline, { ...baseline, title: "My edit" })).rejects.toThrow("已在数据库中更改");
   expect(libraries.syncPaper).not.toHaveBeenCalled();
   expect(kernel.setBlockAttrs).not.toHaveBeenCalled();
+});
+
+it("changes citekey on the existing document without creating or uploading anything", async () => {
+  const { processor, libraries, kernel } = setup([]);
+  const original = paper({ translation: { mono: "assets/keep.pdf" } });
+  libraries.readPaper.mockResolvedValue(structuredClone(original));
+  await processor.editMetadata("existing", original.canonical, original.canonical,
+    { baseline: original.citekey, value: "zhang2026new" });
+  expect(libraries.citekeys).toHaveBeenCalledWith("library-doc", "existing");
+  expect(libraries.syncPaper).toHaveBeenNthCalledWith(1, "existing",
+    expect.objectContaining({ citekey: "zhang2026new", translation: original.translation }), true);
+  expect(kernel.renameDocument).toHaveBeenCalledWith("existing", "zhang2026new");
+  expect(kernel.createDocument).not.toHaveBeenCalled();
+  expect(kernel.uploadAsset).not.toHaveBeenCalled();
+});
+
+it.each(["", "bad/key", "bad key", "x".repeat(121)])("rejects invalid citekey %s before writes", async value => {
+  const { processor, libraries, kernel } = setup([]);
+  const original = paper();
+  await expect(processor.editMetadata("existing", original.canonical, original.canonical,
+    { baseline: original.citekey, value })).rejects.toThrow("引用键须");
+  expect(libraries.syncPaper).not.toHaveBeenCalled();
+  expect(kernel.renameDocument).not.toHaveBeenCalled();
+});
+
+it("rejects case-insensitive citekey collisions before writes", async () => {
+  const { processor, libraries, kernel } = setup([]);
+  libraries.citekeys.mockResolvedValue(["TakenKey"]);
+  const original = paper();
+  await expect(processor.editMetadata("existing", original.canonical, original.canonical,
+    { baseline: original.citekey, value: "takenkey" })).rejects.toThrow("同库其他条目");
+  expect(libraries.syncPaper).not.toHaveBeenCalled();
+  expect(kernel.renameDocument).not.toHaveBeenCalled();
+});
+
+it("rejects concurrent citekey edits", async () => {
+  const { processor, libraries } = setup([]);
+  const original = paper();
+  libraries.readPaper.mockResolvedValue(paper({ citekey: "changedElsewhere" }));
+  await expect(processor.editMetadata("existing", original.canonical, original.canonical,
+    { baseline: original.citekey, value: "myKey" })).rejects.toThrow("引用键已在数据库中更改");
+  expect(libraries.syncPaper).not.toHaveBeenCalled();
+});
+
+it("can retry a rename after the citekey was already committed", async () => {
+  const { processor, libraries, kernel } = setup([]);
+  const original = paper();
+  libraries.readPaper.mockResolvedValue(paper({ citekey: "newKey" }));
+  kernel.renameDocument.mockRejectedValueOnce(new Error("rename failed"));
+  const save = () => processor.editMetadata("existing", original.canonical, original.canonical,
+    { baseline: original.citekey, value: "newKey" });
+  await expect(save()).rejects.toThrow("rename failed");
+  await save();
+  expect(kernel.renameDocument).toHaveBeenCalledTimes(2);
+  expect(kernel.createDocument).not.toHaveBeenCalled();
 });

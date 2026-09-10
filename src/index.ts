@@ -21,6 +21,8 @@ import { SettingsPanel } from "./ui/settings";
 import { mountTranslationStatusBar } from "./ui/statusbar";
 import { openOnboardingDialog } from "./ui/dialogs/onboarding";
 import { openCitationExportDialog } from "./ui/dialogs/export-citations";
+import { LibraryMembershipService } from "./services/library-membership";
+import { monitorLibraryMembership } from "./ui/library-membership-monitor";
 
 export default class PaperManagerPlugin extends Plugin {
   private readonly kernelClient = new KernelClient();
@@ -71,7 +73,9 @@ export default class PaperManagerPlugin extends Plugin {
       repair: (docId) => this.repair(docId),
       editMetadata: async (docId) => {
         const paper = await this.libraries.readPaper(docId);
-        await openMetadataEditor(paper, () => this.settings, draft => this.processor.editMetadata(docId, paper.canonical, draft));
+        await openMetadataEditor(paper, () => this.settings,
+          (draft, citekey) => this.processor.editMetadata(docId, paper.canonical, draft, { baseline: paper.citekey, value: citekey }),
+          await this.libraries.citekeys(paper.libraryId, docId));
       },
       exportLibrary: (docId) => openCitationExportDialog(this.libraries, docId),
       openSettings: () => this.settingsPanel.open(),
@@ -81,6 +85,7 @@ export default class PaperManagerPlugin extends Plugin {
       detectDocKind: (docId) => this.detectDocKind(docId),
     }));
     this.cleanup.push(mountTranslationStatusBar(this, this.statusStore));
+    this.cleanup.push(monitorLibraryMembership(this, new LibraryMembershipService(this.kernelClient), this.processor));
     if (this.settings.autoListen) void this.startConnector();
   }
 

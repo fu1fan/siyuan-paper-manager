@@ -4,6 +4,7 @@ import type { ExtractionResult, MetadataCandidate } from "../../types/import";
 import type { PaperCanonical, PaperData } from "../../types/paper";
 import type { PluginSettings } from "../../types/settings";
 import { button, escapeHtml } from "../dom";
+import { generateCitekey, uniqueCitekey } from "../../core/naming";
 import { candidatePreviewHtml } from "./paper-preview";
 
 const fields: Array<[keyof PaperCanonical, string]> = [
@@ -17,7 +18,8 @@ const fields: Array<[keyof PaperCanonical, string]> = [
 const authorsText = (c: PaperCanonical) => c.creators.map(a => [a.family, a.given].filter(Boolean).join(", ")).join("\n");
 
 export async function openMetadataEditor(
-  paper: PaperData, getSettings: () => PluginSettings, save: (draft: PaperCanonical) => Promise<void>,
+  paper: PaperData, getSettings: () => PluginSettings, save: (draft: PaperCanonical, citekey: string) => Promise<void>,
+  existingCitekeys: string[] = [],
 ): Promise<void> {
   const draft = structuredClone(paper.canonical);
   let controller: AbortController | undefined;
@@ -41,6 +43,8 @@ export async function openMetadataEditor(
       </section>
       <div class="paper-manager-import-warnings" data-message role="status" hidden></div>
       <section class="paper-manager-import-section paper-manager-import-editor-fields" data-form>
+        <label class="paper-manager-field paper-manager-field--column"><span>引用键（citekey）</span><input class="b3-text-field" data-citekey aria-label="引用键（citekey）" maxlength="120"></label>
+        <div><div class="paper-manager-actions" data-citekey-actions></div><p class="paper-manager-hint">根据当前作者、年份和标题生成，重名时添加后缀。保存后同步引用键与文档名；已导出的引用需重新导出。</p></div>
         ${fields.map(([key, label]) => `<label class="paper-manager-field paper-manager-field--column" data-edit-field="${key}"><span>${label}</span>${key === "title" ? '<textarea class="b3-text-field" data-field="title" rows="2"></textarea>' : `<input class="b3-text-field" data-field="${key}" ${key === "itemType" ? 'list="paper-manager-item-types"' : ''}>`}</label>`).join("")}
         <datalist id="paper-manager-item-types">${["journalArticle", "conferencePaper", "thesis", "preprint", "book", "bookSection", "report", "webpage"].map(t => `<option value="${t}"></option>`).join("")}</datalist>
         <details class="paper-manager-editor-long" open><summary>作者</summary><p class="paper-manager-hint">每行一位，格式为「姓, 名」；中文姓名可直接填写。</p><textarea class="b3-text-field" data-field="creators" rows="3" aria-label="作者"></textarea></details>
@@ -66,6 +70,14 @@ export async function openMetadataEditor(
     else if (e.value !== String(draft[key] ?? "")) Object.assign(draft, { [key]: e.value.trim() || (key === "title" || key === "itemType" ? "" : undefined) });
   });
   fill();
+  const citekey = root.querySelector<HTMLInputElement>("[data-citekey]")!;
+  citekey.value = paper.citekey;
+  const regenerate = button("重新生成引用键");
+  root.querySelector("[data-citekey-actions]")!.append(regenerate);
+  regenerate.onclick = () => {
+    capture();
+    citekey.value = uniqueCitekey(generateCitekey(draft), existingCitekeys);
+  };
   const message = root.querySelector<HTMLElement>("[data-message]")!;
   const tell = (text: string) => { message.hidden = !text; message.textContent = text; };
   const local = root.querySelector<HTMLInputElement>("[data-local-pdf]")!;
@@ -137,9 +149,10 @@ export async function openMetadataEditor(
     saving = true; busy(true); cancel.disabled = true;
     controls().forEach(e => e.disabled = true);
     local.disabled = pdf.disabled = query.disabled = true;
-    try { await save(structuredClone(draft)); showMessage("论文元数据已保存，数据库和摘要已同步"); dialog.destroy(); }
+    citekey.disabled = regenerate.disabled = true;
+    try { await save(structuredClone(draft), citekey.value.trim()); showMessage("论文元数据已保存，数据库和摘要已同步"); dialog.destroy(); }
     catch (error) { tell(`保存未完成：${error instanceof Error ? error.message : String(error)}`); }
-    finally { saving = false; busy(false); cancel.disabled = false; controls().forEach(e => e.disabled = false); local.disabled = pdf.disabled = query.disabled = false; }
+    finally { saving = false; busy(false); cancel.disabled = false; controls().forEach(e => e.disabled = false); local.disabled = pdf.disabled = query.disabled = false; citekey.disabled = regenerate.disabled = false; }
   };
   busy(false);
 }

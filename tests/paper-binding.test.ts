@@ -93,3 +93,14 @@ describe("automatic database synchronization", () => {
     expect(sync).toHaveBeenCalledTimes(3);
   });
 });
+
+it("updates the citekey in place without reinserting the row or resetting reading/project fields", async () => {
+  const { fake, service } = fixture();
+  expect(await service.syncPaper("doc", paper({ citekey: "newKey" }), true)).toBe("item");
+  expect(fake.addAttributeViewBlocks).not.toHaveBeenCalled();
+  expect(fake.setAttributeViewCell).toHaveBeenCalledWith("av", "citekey-key", "item", { type: "text", text: { content: "newKey" } });
+  for (const call of fake.setAttributeViewCell.mock.calls as unknown as unknown[][]) {
+    expect(call[2]).toBe("item");
+    expect(["status", "rating", "project-key", "added"]).not.toContain(call[1]);
+  }
+});
