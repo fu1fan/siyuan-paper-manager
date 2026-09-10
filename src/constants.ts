@@ -17,6 +17,7 @@ export const ATTR = {
   librarySync: "custom-paper-library-sync",
   librarySyncError: "custom-paper-library-sync-error",
   membershipIgnored: "custom-paper-membership-ignored",
+  membershipPending: "custom-paper-membership-pending-v2",
 } as const;
 
 export const SECTION = {

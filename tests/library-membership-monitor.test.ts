@@ -10,7 +10,7 @@ import { monitorLibraryMembership } from "../src/ui/library-membership-monitor";
 function fixture() {
   const listeners = new Map<string, (event: unknown) => void>();
   const eventBus = { on: vi.fn((name, fn) => listeners.set(name, fn)), off: vi.fn() };
-  const scan = vi.fn(async (libraryId: string) => ({ libraryId, differences: [{ kind: "add", docId: "extra" }] }));
+  const scan = vi.fn(async (libraryId: string) => ({ libraryId, differences: [{ kind: "delete-note", docId: "extra" }] }));
   const processor = { runMembershipChange: (fn: () => unknown) => Promise.resolve().then(fn) };
   const dispose = monitorLibraryMembership({ eventBus } as unknown as Plugin,
     { scan } as unknown as LibraryMembershipService, processor as unknown as ItemProcessor);

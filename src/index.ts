@@ -85,7 +85,7 @@ export default class PaperManagerPlugin extends Plugin {
       detectDocKind: (docId) => this.detectDocKind(docId),
     }));
     this.cleanup.push(mountTranslationStatusBar(this, this.statusStore));
-    this.cleanup.push(monitorLibraryMembership(this, new LibraryMembershipService(this.kernelClient), this.processor));
+    this.cleanup.push(monitorLibraryMembership(this, new LibraryMembershipService(this.kernelClient, this.templates), this.processor));
     if (this.settings.autoListen) void this.startConnector();
   }
 

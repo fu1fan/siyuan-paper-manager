@@ -98,12 +98,14 @@ export class KernelClient {
     return (data.notebooks ?? []).filter((notebook) => !notebook.closed);
   }
 
-  async createDocument(notebook: string, path: string, markdown: string, title: string): Promise<CreatedDocument> {
+  async createDocument(notebook: string, path: string, markdown: string, title: string,
+    options?: { id: string; parentID: string }): Promise<CreatedDocument> {
     const data = await this.postImpl<string | Record<string, unknown>>("/api/filetree/createDocWithMd", {
       notebook,
       path,
       markdown,
       title,
+      ...options,
     });
     if (typeof data === "string") return { id: data, name: title };
     const id = string(data.id ?? data.rootID);
@@ -242,6 +244,23 @@ export class KernelClient {
 
   async renameDocument(id: string, title: string): Promise<void> {
     await this.postImpl("/api/filetree/renameDocByID", { id, title });
+  }
+
+  async moveDocument(id: string, parentId: string): Promise<void> {
+    await this.postImpl("/api/filetree/moveDocsByID", { fromIDs: [id], toID: parentId });
+  }
+
+  /** Uses SiYuan's normal document deletion and history, including descendants. */
+  async removeDocument(notebook: string, path: string): Promise<void> {
+    await this.postImpl("/api/filetree/removeDoc", { notebook, path });
+  }
+
+  async rebindAttributeViewRow(avID: string, blockID: string, itemID: string, docId: string): Promise<void> {
+    await this.postImpl("/api/transactions", {
+      reqId: Date.now(), session: "paper-manager", app: "siyuan",
+      transactions: [{ doOperations: [{ action: "replaceAttrViewBlock", avID,
+        blockID, previousID: itemID, nextID: docId, isDetached: false }], undoOperations: [] }],
+    });
   }
 
   async getDocumentInfo(id: string): Promise<DocumentSearchResult | undefined> {
