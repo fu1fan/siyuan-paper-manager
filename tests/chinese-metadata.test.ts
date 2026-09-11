@@ -12,11 +12,11 @@ import { paper } from "./fixtures";
 it("generates ASCII pinyin keys with surname readings, leaving source metadata intact", () => {
   const canonical = paper().canonical;
   const original = structuredClone(canonical);
-  expect(generateCitekey(canonical)).toBe("zhang2026shililunwen");
+  expect(generateCitekey(canonical)).toBe("shililunwen2026zhang");
   expect(canonical).toEqual(original);
-  expect(generateCitekey({ ...canonical, creators: [{ family: "单伟", given: "", creatorType: "author" }] })).toMatch(/^shan2026/);
-  expect(generateCitekey({ ...canonical, creators: [{ family: "欧阳明", given: "", creatorType: "author" }] })).toMatch(/^ouyang2026/);
-  expect(generateCitekey({ ...canonical, title: "Deep Learning", creators: [{ family: "García", given: "A", creatorType: "author" }] })).toBe("garcia2026deep");
+  expect(generateCitekey({ ...canonical, creators: [{ family: "单伟", given: "", creatorType: "author" }] })).toMatch(/2026shan$/);
+  expect(generateCitekey({ ...canonical, creators: [{ family: "欧阳明", given: "", creatorType: "author" }] })).toMatch(/2026ouyang$/);
+  expect(generateCitekey({ ...canonical, title: "Deep Learning", creators: [{ family: "García", given: "A", creatorType: "author" }] })).toBe("deep2026garcia");
   expect(uniqueCitekey("zhang2026shililunwen", ["zhang2026shililunwen"])).toBe("zhang2026shililunwena");
 });
 

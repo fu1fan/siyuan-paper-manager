@@ -80,6 +80,9 @@ export class SettingsPanel {
       ${switchField("启动时自动监听", "autoListen", this.draft.autoListen)}
       <div class="paper-manager-preview">Connector 与本地 PDF 始终导入默认文献库。</div>`;
     panels.get("storage")!.innerHTML = `
+      ${textField("引用键生成格式", "citekeyFormat", this.draft.citekeyFormat)}
+      <p class="paper-manager-hint">占位符：{title} 标题首段（最多 16 字符），{year} 年份，{author} 第一作者姓氏。中文转无声调拼音，结果全部小写。可添加字母、数字、下划线和连字符。</p>
+      <p class="paper-manager-hint">默认：{title}{year}{author}，例如 flashaccel2026wang。可改为 {author}_{year}_{title}。基础引用键最多 64 字符，重名自动加后缀。保存后用于新导入和手动重新生成，已有引用键保持不变；留空恢复默认。</p>
       ${textField("论文文档默认标签（留空不添加）", "defaultDocumentTag", this.draft.defaultDocumentTag)}
       <p class="paper-manager-hint">填写一个标签名，不含 # 或逗号。保存后同步全部文献库中的论文文档，新建论文也会自动添加。修改会替换原默认标签，清空会删除原默认标签；其他文档标签保留，不修改数据库关键词。</p>
       ${textField("附件目录", "assetsDir", this.draft.assetsDir)}

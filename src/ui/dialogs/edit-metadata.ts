@@ -44,9 +44,8 @@ export async function openMetadataEditor(
       <div class="paper-manager-import-warnings" data-message role="status" hidden></div>
       <section class="paper-manager-import-section paper-manager-import-editor-fields" data-form>
         <label class="paper-manager-field paper-manager-field--column"><span>引用键（citekey）</span><input class="b3-text-field" data-citekey aria-label="引用键（citekey）" maxlength="120"></label>
-        <div><div class="paper-manager-actions" data-citekey-actions></div><p class="paper-manager-hint">根据当前作者、年份和标题生成，重名时添加后缀。保存后同步引用键与文档名；已导出的引用需重新导出。</p></div>
-        ${fields.map(([key, label]) => `<label class="paper-manager-field paper-manager-field--column" data-edit-field="${key}"><span>${label}</span>${key === "title" ? '<textarea class="b3-text-field" data-field="title" rows="2"></textarea>' : `<input class="b3-text-field" data-field="${key}" ${key === "itemType" ? 'list="paper-manager-item-types"' : ''}>`}</label>`).join("")}
-        <datalist id="paper-manager-item-types">${["journalArticle", "conferencePaper", "thesis", "preprint", "book", "bookSection", "report", "webpage"].map(t => `<option value="${t}"></option>`).join("")}</datalist>
+        <div><div class="paper-manager-actions" data-citekey-actions></div><p class="paper-manager-hint">按设置中的格式，使用当前标题、年份和作者生成，重名时添加后缀。保存后同步引用键与文档名；已导出的引用需重新导出。</p></div>
+        ${fields.map(([key, label]) => `<label class="paper-manager-field paper-manager-field--column" data-edit-field="${key}"><span>${label}</span>${key === "title" ? '<textarea class="b3-text-field" data-field="title" rows="2"></textarea>' : key === "itemType" ? '<select class="b3-select" data-field="itemType" aria-label="文献类型"></select>' : `<input class="b3-text-field" data-field="${key}">`}</label>`).join("") }
         <details class="paper-manager-editor-long" open><summary>作者</summary><p class="paper-manager-hint">每行一位，格式为「姓, 名」；中文姓名可直接填写。</p><textarea class="b3-text-field" data-field="creators" rows="3" aria-label="作者"></textarea></details>
         <details class="paper-manager-editor-long"><summary>摘要</summary><textarea class="b3-text-field" data-field="abstract" rows="6" aria-label="摘要"></textarea></details>
         <details class="paper-manager-editor-long"><summary>标签</summary><textarea class="b3-text-field" data-field="tags" rows="3" aria-label="标签（每行一项）"></textarea></details>
@@ -54,9 +53,14 @@ export async function openMetadataEditor(
       </div><div class="paper-manager-import-footer"><span class="paper-manager-hint">保存到当前论文及所属数据库</span><div class="paper-manager-actions" data-actions></div></div></div>`,
   });
   const root = dialog.element;
-  const controls = () => root.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>("[data-field]");
+  const controls = () => root.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>("[data-field]");
   const fill = () => controls().forEach(e => {
     const key = e.dataset.field as keyof PaperCanonical;
+    if (key === "itemType") {
+      const types: Record<string, string> = { journalArticle: "期刊论文", conferencePaper: "会议论文", thesis: "学位论文", preprint: "预印本", book: "图书", bookSection: "图书章节", report: "报告", webpage: "网页" };
+      if (draft.itemType && !Object.hasOwn(types, draft.itemType)) types[draft.itemType] = draft.itemType;
+      e.innerHTML = Object.entries(types).map(([value, label]) => `<option value="${escapeHtml(value)}">${escapeHtml(label)}（${escapeHtml(value)}）</option>`).join("");
+    }
     e.value = key === "creators" ? authorsText(draft) : key === "tags" ? draft.tags.join("\n") : String(draft[key] ?? "");
   });
   const capture = () => controls().forEach(e => {
@@ -76,7 +80,7 @@ export async function openMetadataEditor(
   root.querySelector("[data-citekey-actions]")!.append(regenerate);
   regenerate.onclick = () => {
     capture();
-    citekey.value = uniqueCitekey(generateCitekey(draft), existingCitekeys);
+    citekey.value = uniqueCitekey(generateCitekey(draft, getSettings().citekeyFormat), existingCitekeys);
   };
   const message = root.querySelector<HTMLElement>("[data-message]")!;
   const tell = (text: string) => { message.hidden = !text; message.textContent = text; };

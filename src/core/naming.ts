@@ -34,14 +34,25 @@ export function normalizeTitle(value: string): string {
     .trim();
 }
 
-export function generateCitekey(canonical: PaperCanonical): string {
+export const DEFAULT_CITEKEY_FORMAT = "{title}{year}{author}";
+
+export function validateCitekeyFormat(format: string): void {
+  const literal = format.replace(/\{(?:title|year|author)\}/g, "a");
+  if (!/\{(?:title|year|author)\}/.test(format) || !/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(literal) || format.length > 120) {
+    throw new Error("引用键格式须包含 {title}、{year} 或 {author}，可搭配英文字母、数字、下划线和连字符，以占位符或字母数字开头，最多 120 字符");
+  }
+}
+
+export function generateCitekey(canonical: PaperCanonical, format = DEFAULT_CITEKEY_FORMAT): string {
+  validateCitekeyFormat(format);
   const creator = canonical.creators.find((item) => item.creatorType === "author") ?? canonical.creators[0];
   const rawFamily = creator?.family || "anon";
   const surname = !creator?.given ? splitChineseName(rawFamily)?.family ?? rawFamily : rawFamily;
   const family = transliterateKey(surname, true) || "anon";
   const year = canonical.date?.match(/(?:19|20)\d{2}/)?.[0] ?? "nd";
   const titleToken = firstTitleToken(canonical.title);
-  return `${family}${year}${titleToken}`.toLowerCase().slice(0, 64);
+  const values: Record<string, string> = { title: titleToken, year, author: family };
+  return format.replace(/\{(title|year|author)\}/g, (_, key: string) => values[key]!).toLowerCase().slice(0, 64);
 }
 
 export function uniqueCitekey(base: string, existing: Iterable<string>): string {

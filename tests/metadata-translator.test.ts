@@ -89,7 +89,7 @@ describe("translator integration", () => {
     });
     try {
       const result = await translator.translate("doc", {
-        zoteroPort: 23119, autoListen: true, defaultDocumentTag: "",
+        zoteroPort: 23119, autoListen: true, defaultDocumentTag: "", citekeyFormat: "{title}{year}{author}",
         defaultLibraryDocId: "library-doc", onboardingCompleted: true, assetsDir: "/assets/",
         autoExtractMetadata: true, enableZoteroRecognizer: false, enableCnki: false, cnkiTimeoutSeconds: 10, pdf2zhPath: executable, translateFrom: "en", translateTo: "zh",
         translateService: "google", translationConcurrency: 1, translationThreads: 7, translationDual: true, autoDeleteOldTranslations: true,

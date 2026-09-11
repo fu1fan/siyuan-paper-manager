@@ -1,3 +1,4 @@
+import { validateCitekeyFormat } from "./core/naming";
 import { openMetadataEditor } from "./ui/dialogs/edit-metadata";
 import { disposeCnkiClient } from "./services/cnki-desktop";
 import { Dialog, Plugin, confirm, getFrontend, showMessage } from "siyuan";
@@ -36,6 +37,7 @@ export default class PaperManagerPlugin extends Plugin {
   private libraries!: LibraryService;
   private translator: TranslatorService | null = null;
   private connector: ConnectorServer | null = null;
+  private readonly documentKinds = new Map<string, "paper" | "library">();
   private cleanup: Array<() => void> = [];
 
   async onload(): Promise<void> {
@@ -69,6 +71,17 @@ export default class PaperManagerPlugin extends Plugin {
       (settings) => this.updateSettings(settings),
     );
     this.setting = this.settingsPanel.setting;
+    await this.refreshDocumentKinds();
+    let refreshTimer: ReturnType<typeof setTimeout> | undefined;
+    const refreshKinds = () => {
+      if (refreshTimer) return;
+      refreshTimer = setTimeout(() => {
+        refreshTimer = undefined;
+        void this.refreshDocumentKinds().catch(error => console.warn("[paper-manager] 文献菜单索引刷新失败", error));
+      }, 100);
+    };
+    this.eventBus.on("ws-main", refreshKinds);
+    this.cleanup.push(() => { clearTimeout(refreshTimer); this.eventBus.off("ws-main", refreshKinds); });
     this.cleanup.push(registerPaperUi(this, {
       importPdf: () => openImportPdfDialog(this.processor, () => this.settings),
       translate: (docId) => this.translate(docId),
@@ -84,7 +97,7 @@ export default class PaperManagerPlugin extends Plugin {
       selfCheck: () => this.selfCheck(),
       toggleConnector: () => this.toggleConnector(),
       getStatus: () => this.statusStore.get(),
-      detectDocKind: (docId) => this.detectDocKind(docId),
+      detectDocKind: (docId) => this.documentKinds.get(docId) ?? null,
     }));
     this.cleanup.push(mountTranslationStatusBar(this, this.statusStore));
     this.cleanup.push(monitorLibraryMembership(this, new LibraryMembershipService(this.kernelClient, this.templates), this.processor));
@@ -105,6 +118,7 @@ export default class PaperManagerPlugin extends Plugin {
   }
 
   private async updateSettings(next: PluginSettings): Promise<void> {
+    validateCitekeyFormat(next.citekeyFormat);
     const restart = next.zoteroPort !== this.settings.zoteroPort || next.autoListen !== this.settings.autoListen;
     if (/[,，#\r\n]/u.test(next.defaultDocumentTag)) throw new Error("默认标签请填写一个标签名，不含 #、逗号或换行；留空表示不添加");
     await this.processor.runMembershipChange(async () => {
@@ -203,10 +217,14 @@ export default class PaperManagerPlugin extends Plugin {
     }
   }
 
-  private async detectDocKind(docId: string): Promise<"library" | "paper" | null> {
-    const attrs = await this.kernelClient.getBlockAttrs(docId);
-    if (attrs[ATTR.libraryData]) return "library";
-    return (await this.libraries.findPaperEntry(docId)) ? "paper" : null;
+  private async refreshDocumentKinds(): Promise<void> {
+    const rows = await this.kernelClient.query(`SELECT b.id, a.name FROM blocks b JOIN attributes a ON a.block_id = b.id WHERE b.type = 'd' AND a.name IN ('${ATTR.libraryId}', '${ATTR.libraryData}') AND a.value != '' LIMIT 2147483647`);
+    this.documentKinds.clear();
+    for (const row of rows) {
+      const id = String(row.id);
+      if (row.name === ATTR.libraryData) this.documentKinds.set(id, "library");
+      else if (!this.documentKinds.has(id)) this.documentKinds.set(id, "paper");
+    }
   }
 
   private async repair(docId: string): Promise<void> {

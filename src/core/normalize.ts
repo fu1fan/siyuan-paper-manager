@@ -65,11 +65,11 @@ export function cleanCanonical(input: PaperCanonical): PaperCanonical {
   };
 }
 
-export function paperDataFromCandidate(candidate: ImportCandidate): PaperData {
+export function paperDataFromCandidate(candidate: ImportCandidate, citekeyFormat?: string): PaperData {
   const canonical = cleanCanonical(candidate.canonical);
   return {
     canonical,
-    citekey: generateCitekey(canonical),
+    citekey: generateCitekey(canonical, citekeyFormat),
     libraryId: "",
     attachments: [],
     translation: {},

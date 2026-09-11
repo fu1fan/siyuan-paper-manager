@@ -1,3 +1,4 @@
+import { DEFAULT_CITEKEY_FORMAT } from "../core/naming";
 import {
   DEFAULT_ASSETS_DIR,
   DEFAULT_ZOTERO_PORT,
@@ -9,6 +10,7 @@ export interface PluginSettings {
   defaultLibraryDocId: string;
   onboardingCompleted: boolean;
   defaultDocumentTag: string;
+  citekeyFormat: string;
   assetsDir: string;
   autoExtractMetadata: boolean;
   enableZoteroRecognizer: boolean;
@@ -33,6 +35,7 @@ export const DEFAULT_SETTINGS: PluginSettings = {
   defaultLibraryDocId: "",
   onboardingCompleted: false,
   defaultDocumentTag: "",
+  citekeyFormat: DEFAULT_CITEKEY_FORMAT,
   assetsDir: DEFAULT_ASSETS_DIR,
   autoExtractMetadata: true,
   enableZoteroRecognizer: false,
@@ -65,6 +68,7 @@ export function normalizeSettings(input: unknown): PluginSettings {
     defaultLibraryDocId: optionalString(raw.defaultLibraryDocId),
     onboardingCompleted: bool(raw.onboardingCompleted, DEFAULT_SETTINGS.onboardingCompleted),
     defaultDocumentTag: optionalString(raw.defaultDocumentTag),
+    citekeyFormat: string(raw.citekeyFormat, DEFAULT_CITEKEY_FORMAT),
     assetsDir: normalizeAssetsDir(string(raw.assetsDir, DEFAULT_SETTINGS.assetsDir)),
     autoExtractMetadata: bool(raw.autoExtractMetadata, DEFAULT_SETTINGS.autoExtractMetadata),
     enableZoteroRecognizer: bool(raw.enableZoteroRecognizer, DEFAULT_SETTINGS.enableZoteroRecognizer),

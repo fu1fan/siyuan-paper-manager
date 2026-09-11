@@ -74,7 +74,7 @@ export class ItemProcessor {
     const settings = this.getSettings();
     if (!settings.defaultLibraryDocId) throw new Error("请先完成初始化并设置默认论文文献库");
     const library = await this.libraries.getLibrary(settings.defaultLibraryDocId);
-    const incoming = paperDataFromCandidate(candidate);
+    const incoming = paperDataFromCandidate(candidate, settings.citekeyFormat);
     incoming.libraryId = library.docId;
     // 一次读取同时取引用键与论文记录，先查重再为新论文分配唯一引用键。
     const { papers, citekeys } = await this.libraries.listPapersAndCitekeys(library.docId);
