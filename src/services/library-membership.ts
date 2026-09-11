@@ -199,8 +199,12 @@ function toDoc(row: Record<string, unknown>): Doc {
 }
 function databaseRows(definition: AttributeViewDefinition): AttributeViewRow[] {
   const primary = definition.av.keyValues.find(({ key }) => key.type === "block");
-  if (!primary || !Array.isArray(primary.values)) throw new Error("无法读取数据库主键成员，已停止成员核对");
-  return primary.values.map(value => {
+  // SiYuan omits values for an empty primary column (omitempty). Other
+  // columns may retain old cells; only the primary column defines membership.
+  if (!primary || (primary.values != null && !Array.isArray(primary.values))) {
+    throw new Error("无法读取数据库主键成员，已停止成员核对");
+  }
+  return (primary.values ?? []).map(value => {
     if (!value.blockID) throw new Error("数据库成员缺少条目 ID，已停止成员核对");
     return { id: value.blockID, cells: definition.av.keyValues.flatMap(({ key, values }) =>
       (values ?? []).filter(cell => cell.blockID === value.blockID).map(cell => ({ value: { ...cell, type: key.type, keyID: key.id } }))) };

@@ -169,3 +169,29 @@ it("fails closed when raw membership or pending recovery records cannot be read"
   await expect(service.scan("lib")).rejects.toThrow("恢复记录损坏");
   expect(kernel.removeDocument).not.toHaveBeenCalled();
 });
+
+
+it.each([undefined, null, []])("accepts empty primary membership %j without using leftover metadata cells", async empty => {
+  const { service, kernel, docs } = setup();
+  const definition = await kernel.getAttributeView();
+  Object.assign(definition.av.keyValues[0]!, { values: empty });
+  kernel.getAttributeView.mockResolvedValue(definition);
+  // All remaining direct children are extras, but scanning never deletes them.
+  const scan = (await service.scan("lib"))!;
+  expect(scan.differences.map(entry => [entry.kind, entry.docId])).toEqual([
+    ["delete-note", "child"], ["delete-note", "extra"],
+  ]);
+  expect(kernel.removeDocument).not.toHaveBeenCalled();
+  docs.delete("child"); docs.delete("extra"); docs.delete("nested");
+  expect((await service.scan("lib"))!.differences).toEqual([]);
+});
+
+it.each(["missing", "malformed"])("still refuses unreadable primary membership: %s", async mode => {
+  const { service, kernel } = setup();
+  const definition = await kernel.getAttributeView();
+  if (mode === "missing") definition.av.keyValues.shift();
+  else Object.assign(definition.av.keyValues[0]!, { values: {} });
+  kernel.getAttributeView.mockResolvedValue(definition);
+  await expect(service.scan("lib")).rejects.toThrow("无法读取数据库主键成员");
+  expect(kernel.removeDocument).not.toHaveBeenCalled();
+});
