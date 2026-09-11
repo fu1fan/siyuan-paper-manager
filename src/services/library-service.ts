@@ -114,7 +114,12 @@ export class LibraryService {
       previousKeyId = keyId;
     }
     // 仅新库默认提供；不纳入管理字段，避免给旧库补列或覆盖用户备注。
-    await this.kernel.addAttributeViewKey(avId, newNodeId(), "备注", "text", previousKeyId);
+    const notesKeyId = newNodeId();
+    await this.kernel.addAttributeViewKey(avId, notesKeyId, "备注", "text", previousKeyId);
+    await this.kernel.initializeAttributeViewLayout(avId, avBlockId, [
+      fieldKeyIds.title!, notesKeyId, databaseKeyIds.readingStatus!, databaseKeyIds.rating!,
+      projectKeyId, databaseKeyIds.addedAt!,
+    ], [fieldKeyIds.title!, notesKeyId]);
     const now = new Date().toISOString();
     const data: PaperLibraryData = {
       schemaVersion: LIBRARY_SCHEMA_VERSION,

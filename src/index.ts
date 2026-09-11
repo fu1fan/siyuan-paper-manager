@@ -9,6 +9,7 @@ import { TemplateService } from "./core/templates";
 import { ConnectorServer } from "./server/connector-server";
 import { buildEnvironmentReport } from "./services/environment-check";
 import { ItemProcessor } from "./services/item-processor";
+import { syncDocumentTags } from "./services/document-tags";
 import { SettingsStore } from "./services/settings-store";
 import { TranslatorService } from "./services/translator";
 import { LibraryService } from "./services/library-service";
@@ -42,6 +43,7 @@ export default class PaperManagerPlugin extends Plugin {
     this.settingsStore = new SettingsStore(this);
     this.settings = await this.settingsStore.load();
     this.templates = new TemplateService(this.kernelClient, {
+      getDefaultDocumentTag: () => this.settings.defaultDocumentTag,
       onModeChange: (templateMode) => this.statusStore.update({ templateMode }),
     });
     this.libraries = new LibraryService(this.kernelClient);
@@ -104,8 +106,12 @@ export default class PaperManagerPlugin extends Plugin {
 
   private async updateSettings(next: PluginSettings): Promise<void> {
     const restart = next.zoteroPort !== this.settings.zoteroPort || next.autoListen !== this.settings.autoListen;
-    await this.settingsStore.save(next);
-    this.settings = next;
+    if (/[,，#\r\n]/u.test(next.defaultDocumentTag)) throw new Error("默认标签请填写一个标签名，不含 #、逗号或换行；留空表示不添加");
+    await this.processor.runMembershipChange(async () => {
+      await this.settingsStore.save(next);
+      this.settings = next;
+      await syncDocumentTags(this.kernelClient, next.defaultDocumentTag);
+    });
     if (restart) {
       await this.stopConnector();
       if (next.autoListen) await this.startConnector();

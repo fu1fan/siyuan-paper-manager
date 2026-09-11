@@ -169,6 +169,30 @@ export class KernelClient {
     });
   }
 
+  /** Apply the initial table layout once, after all library columns exist. */
+  async initializeAttributeViewLayout(avID: string, blockID: string, visibleKeyIDs: string[], wrapKeyIDs: string[]): Promise<void> {
+    const rendered = await this.renderAttributeView(avID, blockID);
+    const columns = rendered.view.columns ?? [];
+    const primary = columns.find((column) => column.type === "block");
+    if (!rendered.viewID || !primary) throw new Error("数据库默认视图缺少主键或视图 ID");
+    const ordered = [primary.id, ...visibleKeyIDs];
+    const visible = new Set(ordered);
+    const context = { avID, blockID, viewID: rendered.viewID };
+    const doOperations = [
+      ...columns.filter((column) => column.type !== "block").map((column) => ({
+        ...context, action: "setAttrViewColHidden", id: column.id, data: !visible.has(column.id),
+      })),
+      ...wrapKeyIDs.map((id) => ({ ...context, action: "setAttrViewColWrap", id, data: true })),
+      ...ordered.slice(1).map((id, index) => ({
+        ...context, action: "sortAttrViewCol", id, previousID: ordered[index],
+      })),
+    ];
+    await this.postImpl("/api/transactions", {
+      reqId: Date.now(), session: "paper-manager", app: "siyuan",
+      transactions: [{ doOperations, undoOperations: [] }],
+    });
+  }
+
   async setAttributeViewSelectOptions(avID: string, keyID: string, names: string[], preserveExisting = false): Promise<void> {
     const options = preserveExisting
       ? [...((await this.getAttributeView(avID)).av.keyValues.find(({ key }) => key.id === keyID)?.key.options ?? [])]

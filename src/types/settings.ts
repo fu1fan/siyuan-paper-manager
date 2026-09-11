@@ -8,6 +8,7 @@ export interface PluginSettings {
   autoListen: boolean;
   defaultLibraryDocId: string;
   onboardingCompleted: boolean;
+  defaultDocumentTag: string;
   assetsDir: string;
   autoExtractMetadata: boolean;
   enableZoteroRecognizer: boolean;
@@ -31,6 +32,7 @@ export const DEFAULT_SETTINGS: PluginSettings = {
   autoListen: true,
   defaultLibraryDocId: "",
   onboardingCompleted: false,
+  defaultDocumentTag: "",
   assetsDir: DEFAULT_ASSETS_DIR,
   autoExtractMetadata: true,
   enableZoteroRecognizer: false,
@@ -62,6 +64,7 @@ export function normalizeSettings(input: unknown): PluginSettings {
     autoListen: bool(raw.autoListen, DEFAULT_SETTINGS.autoListen),
     defaultLibraryDocId: optionalString(raw.defaultLibraryDocId),
     onboardingCompleted: bool(raw.onboardingCompleted, DEFAULT_SETTINGS.onboardingCompleted),
+    defaultDocumentTag: optionalString(raw.defaultDocumentTag),
     assetsDir: normalizeAssetsDir(string(raw.assetsDir, DEFAULT_SETTINGS.assetsDir)),
     autoExtractMetadata: bool(raw.autoExtractMetadata, DEFAULT_SETTINGS.autoExtractMetadata),
     enableZoteroRecognizer: bool(raw.enableZoteroRecognizer, DEFAULT_SETTINGS.enableZoteroRecognizer),

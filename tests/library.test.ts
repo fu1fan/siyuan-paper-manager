@@ -169,6 +169,7 @@ describe("library database projection", () => {
         addedKeys.push({ name: keyName, type: keyType });
       },
       setAttributeViewSelectOptions: async () => {},
+      initializeAttributeViewLayout: vi.fn(),
       setBlockAttrs: async (_id: string, attrs: Record<string, string>) => { savedAttrs = attrs; },
     } as unknown as KernelClient;
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});

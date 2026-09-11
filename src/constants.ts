@@ -6,6 +6,7 @@ export const CONNECTOR_GRACE_MS = 2_000;
 export const MAX_JSON_BODY_BYTES = 5 * 1024 * 1024;
 
 export const ATTR = {
+  defaultDocumentTag: "custom-paper-default-document-tag",
   attachments: "custom-paper-attachments",
   translationMono: "custom-paper-translation-mono",
   translationDual: "custom-paper-translation-dual",

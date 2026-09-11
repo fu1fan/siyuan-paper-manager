@@ -80,6 +80,8 @@ export class SettingsPanel {
       ${switchField("启动时自动监听", "autoListen", this.draft.autoListen)}
       <div class="paper-manager-preview">Connector 与本地 PDF 始终导入默认文献库。</div>`;
     panels.get("storage")!.innerHTML = `
+      ${textField("论文文档默认标签（留空不添加）", "defaultDocumentTag", this.draft.defaultDocumentTag)}
+      <p class="paper-manager-hint">填写一个标签名，不含 # 或逗号。保存后同步全部文献库中的论文文档，新建论文也会自动添加。修改会替换原默认标签，清空会删除原默认标签；其他文档标签保留，不修改数据库关键词。</p>
       ${textField("附件目录", "assetsDir", this.draft.assetsDir)}
       <div class="paper-manager-preview">元数据模板与笔记模板随插件打包，不写入 data/templates。</div>`;
     panels.get("metadata")!.innerHTML = `

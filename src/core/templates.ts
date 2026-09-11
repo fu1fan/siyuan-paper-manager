@@ -5,6 +5,7 @@ import { KernelClient } from "./kernel";
 import { safeAssetUrl, safeExternalUrl } from "./normalize";
 import { renderTemplateText } from "./template-engine";
 import { newNodeId } from "./node-id";
+import { applyDocumentTag } from "../services/document-tags";
 import { retryUntil } from "./retry";
 
 export type TemplateName = "paper-meta" | "paper-note";
@@ -17,6 +18,7 @@ export interface PaperSectionIds {
 
 export interface TemplateServiceOptions {
   pluginName?: string;
+  getDefaultDocumentTag?: () => string;
   loadTemplate?: (name: TemplateName) => Promise<string>;
   onModeChange?: (mode: TemplateMode) => void;
 }
@@ -40,6 +42,7 @@ export class TemplateService {
   }
 
   async ensureSections(docId: string, data: PaperData): Promise<PaperSectionIds> {
+    if (this.options.getDefaultDocumentTag) await applyDocumentTag(this.kernel, docId, this.options.getDefaultDocumentTag());
     let meta = await retryUntil(() => this.kernel.findSectionBlock(docId, SECTION.meta), Boolean, 4, 120);
     let note = await retryUntil(() => this.kernel.findSectionBlock(docId, SECTION.note), Boolean, 4, 120);
 
