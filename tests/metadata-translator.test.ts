@@ -37,7 +37,7 @@ describe("metadata extraction helpers", () => {
 });
 
 describe("translator integration", () => {
-  it("runs a fake pdf2zh executable, validates PDFs, uploads, and persists", async () => {
+  it.each([false, true])("uses the designated PDF and handles a source change during translation (%s)", async (sourceChanged) => {
     const root = mkdtempSync(join(tmpdir(), "paper-manager-translator-test-"));
     const dataDir = join(root, "data", "assets");
     mkdirSync(dataDir, { recursive: true });
@@ -45,7 +45,8 @@ describe("translator integration", () => {
     const executable = process.execPath;
     const fixture = fileURLToPath(new URL("./fixtures/fake-pdf2zh.mjs", import.meta.url));
     const current = paper({
-      attachments: [{ title: "中文 input.pdf", mimeType: "application/pdf", assetAddress: "assets/中文 input.pdf", sha256: "x" }],
+      originalPdf: "assets/中文 input.pdf",
+      attachments: [{ title: "Supplement", mimeType: "application/pdf", assetAddress: "assets/supplement.pdf", sha256: "supplement" }, { title: "中文 input.pdf", mimeType: "application/pdf", assetAddress: "assets/中文 input.pdf", sha256: "x" }],
       translation: { mono: "assets/old-mono.pdf", dual: "assets/old-dual.pdf" },
     });
     const uploads: string[] = [];
@@ -72,6 +73,7 @@ describe("translator integration", () => {
     let persisted = false;
     let reads = 0;
     const latest = paper({ ...current, canonical: { ...current.canonical, title: "翻译期间更新的标题" },
+      originalPdf: sourceChanged ? "assets/supplement.pdf" : current.originalPdf,
       attachments: [...current.attachments, { title: "extra", mimeType: "text/html", assetAddress: "assets/extra.html", sha256: "extra" }],
     });
     const translator = new TranslatorService(new KernelClient(post as any, fakeFetch as typeof fetch), {
@@ -82,19 +84,26 @@ describe("translator integration", () => {
         events.push("persist");
         persisted = true;
         expect(updated.canonical.title).toBe("翻译期间更新的标题");
-        expect(updated.attachments).toHaveLength(2);
+        expect(updated.attachments).toHaveLength(3);
         expect(updated.translation.mono).toBe("assets/张2026示例论文-mono.pdf");
         expect(updated.translation.dual).toBe("assets/张2026示例论文-dual.pdf");
       },
     });
     try {
-      const result = await translator.translate("doc", {
+      const translation = translator.translate("doc", {
         zoteroPort: 23119, autoListen: true, defaultDocumentTag: "", citekeyFormat: "{title}{year}{author}",
         defaultLibraryDocId: "library-doc", onboardingCompleted: true, assetsDir: "/assets/",
         autoExtractMetadata: true, enableZoteroRecognizer: false, enableCnki: false, cnkiTimeoutSeconds: 10, pdf2zhPath: executable, translateFrom: "en", translateTo: "zh",
         translateService: "google", translationConcurrency: 1, translationThreads: 7, translationDual: true, autoDeleteOldTranslations: true,
         pdf2zhArgs: ["--config", String.raw`C:\Users\测试 User\config.json`, "", 'embedded"quote'], translationAssetsDir: "/assets/",
       });
+      if (sourceChanged) {
+        await expect(translation).rejects.toThrow("原稿已更改");
+        expect(persisted).toBe(false);
+        expect(removals).toEqual([]);
+        return;
+      }
+      const result = await translation;
       const received = JSON.parse(readFileSync(join(dataDir, "中文 input.pdf.args.json"), "utf8"));
       expect(received.slice(received.indexOf("--thread"), received.indexOf("--thread") + 2)).toEqual(["--thread", "7"]);
       expect(received.filter((arg: string) => arg === "--thread")).toHaveLength(1);

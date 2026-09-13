@@ -149,13 +149,19 @@ export function templateContext(data: PaperData): Record<string, unknown> {
     })),
     attachments: data.attachments.flatMap((attachment) => {
       const url = safeAssetUrl(attachment.assetAddress);
-      return url ? [{ title: markdownText(attachment.title), url }] : [];
+      return url ? [{ title: markdownLinkTitle(attachment.title), url }] : [];
     }),
+    translationMonoTitle: markdownLinkTitle(data.translation.monoTitle || "单语翻译版"),
+    translationDualTitle: markdownLinkTitle(data.translation.dualTitle || "双语对照版"),
     translationMono: safeAssetUrl(data.translation.mono),
     translationDual: safeAssetUrl(data.translation.dual),
     hasTranslation: Boolean(data.translation.mono || data.translation.dual),
     citekey: markdownText(data.citekey),
   };
+}
+
+function markdownLinkTitle(value: string): string {
+  return markdownText(value).replace(/[\r\n]+/g, " ").replace(/\[/g, "\\[").replace(/\]/g, "\\]");
 }
 
 function markdownText(value: string | undefined): string {

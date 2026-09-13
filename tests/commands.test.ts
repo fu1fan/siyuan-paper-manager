@@ -1,3 +1,7 @@
+vi.mock("../src/core/env", () => ({ canUseNode: vi.fn(() => true) }));
+import { canUseNode } from "../src/core/env";
+import { Menu } from "siyuan";
+
 import { topBarMenuPosition } from "../src/ui/commands";
 
 describe("top bar quick menu positioning", () => {
@@ -61,4 +65,28 @@ it("adds synchronous document-scoped submenus only for saved papers and unregist
     expect(menu.addItem).not.toHaveBeenCalled();
   }
   dispose(); expect(listeners.size).toBe(0);
+});
+
+
+it("omits desktop actions from mobile commands and menus while retaining paper operations", async () => {
+  vi.mocked(canUseNode).mockReturnValue(false);
+  const { registerPaperUi } = await import("../src/ui/commands");
+  const listeners = new Map<string, (event: any) => void>();
+  const plugin = { addCommand: vi.fn(), addTopBar: vi.fn(), eventBus: {
+    on: (name: string, listener: (event: any) => void) => listeners.set(name, listener),
+    off: (name: string) => listeners.delete(name),
+  } };
+  const actions = { detectDocKind: () => "paper", getStatus: () => ({ connector: { state: "stopped" } }) };
+  const dispose = registerPaperUi(plugin as never, actions as never);
+  expect(plugin.addCommand.mock.calls.map(([command]) => command.langKey)).not.toContain("translate-current-paper");
+  expect(plugin.addCommand.mock.calls.map(([command]) => command.langKey)).toContain("import-local-pdf");
+  const menu = { addItem: vi.fn(), addSeparator: vi.fn() };
+  listeners.get("click-editortitleicon")!({ detail: { menu, protyle: { block: { rootID: "paper" } } } });
+  expect(menu.addItem.mock.calls[0]![0].submenu.map((item: any) => item.label)).toEqual(["元数据编辑", "刷新元数据摘要"]);
+  const addItem = vi.spyOn(Menu.prototype, "addItem");
+  plugin.addTopBar.mock.calls[0]![0].callback({ clientX: 20, clientY: 20 });
+  expect(addItem.mock.calls.map((args) => (args[0] as any)?.label)).not.toContain("启动 Zotero 接收");
+  dispose();
+  vi.restoreAllMocks();
+  vi.mocked(canUseNode).mockReturnValue(true);
 });

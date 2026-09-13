@@ -33,7 +33,10 @@ describe("paper state attrs and naming", () => {
     expect(attrs[ATTR.translationMono]).toBe("assets/mono.pdf");
     expect(attrs[ATTR.state]).toBe("ready");
     expect(attrs[ATTR.libraryId]).toBe("library-doc");
-    expect(Object.keys(attrs)).toHaveLength(6);
+    expect(attrs[ATTR.originalPdf]).toBe("");
+    expect(attrs[ATTR.translationMonoTitle]).toBe("");
+    expect(attrs[ATTR.translationDualTitle]).toBe("");
+    expect(Object.keys(attrs)).toHaveLength(9);
   });
 });
 

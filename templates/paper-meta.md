@@ -21,8 +21,8 @@
 {{range .attachments}}- [{{.title}}]({{.url}})
 {{end}}{{end}}
 {{if .hasTranslation}}## 翻译版本
-{{if .translationMono}}- [单语翻译版]({{.translationMono}})
-{{end}}{{if .translationDual}}- [双语对照版]({{.translationDual}})
+{{if .translationMono}}- [{{.translationMonoTitle}}]({{.translationMono}})
+{{end}}{{if .translationDual}}- [{{.translationDualTitle}}]({{.translationDual}})
 {{end}}{{end}}
 }}}
 {: custom-section="meta"}

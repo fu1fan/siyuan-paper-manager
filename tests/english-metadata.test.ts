@@ -59,3 +59,35 @@ it("does not truncate a complete local author list with a recognizer prefix", ()
   const remote = { ...local, provider: "zotero" as const, canonical: { ...local.canonical, creators: local.canonical.creators.slice(0, 1) } };
   expect(mergeMetadata(local, remote).canonical.creators).toHaveLength(2);
 });
+
+const usenixCover = [line("AlpaServe: Statistical Multiplexing with Model Parallelism", 21, 750),
+  line("for Deep Learning Serving", 21, 726), line("Zhuohan Li and Lianmin Zheng, UC Berkeley; Yinmin Zhong, Peking University;", 14, 700),
+  line("https://www.usenix.org/conference/osdi23/presentation/li-zhuohan", 12, 670),
+  line("This paper is included in the Proceedings of the", 18, 600),
+  line("17th USENIX Symposium on Operating Systems", 18, 575), line("Design and Implementation.", 18, 550),
+  line("July 10–12, 2023 • Boston, MA, USA", 14, 520), line("978-1-939133-34-2", 12, 500)];
+it("reads matching article metadata behind a USENIX proceedings cover", () => {
+  const result = englishPdfMetadata([usenixCover, ...pages]);
+  expect(result?.creators).toHaveLength(1);
+  expect(result?.abstract).toContain("Model parallelism");
+  expect(result).toMatchObject({ itemType: "conferencePaper", date: "2023", publisher: "USENIX Association",
+    journal: "17th USENIX Symposium on Operating Systems Design and Implementation", isbn: "978-1-939133-34-2" });
+});
+it("does not borrow authors or abstracts from an unrelated subsequent paper", () => {
+  const unrelated = pages[0]!.map(item => ({ ...item }));
+  unrelated[0]!.text = "Unrelated research on database transaction scheduling";
+  const result = englishPdfMetadata([usenixCover, unrelated]);
+  expect(result?.title).toContain("AlpaServe:");
+  expect(result?.creators).toEqual([]);
+  expect(result?.abstract).toBeUndefined();
+});
+it("preserves a full local author list when the recognizer omits intermediate authors", () => {
+  const local = localCandidate({ info: {}, xmp: {}, text: "", pages: [usenixCover, ...pages] }, "test.pdf");
+  local.canonical.creators.push({ family: "Zhong", given: "Yinmin", creatorType: "author" }, { family: "Stoica", given: "Ion", creatorType: "author" });
+  const remote = { ...local, provider: "zotero" as const, canonical: { ...local.canonical, itemType: "journalArticle",
+    creators: [local.canonical.creators[0]!, local.canonical.creators[2]!] } };
+  expect(mergeMetadata(local, remote).canonical.creators).toHaveLength(3);
+  expect(mergeMetadata(local, remote).canonical.itemType).toBe("conferencePaper");
+  remote.canonical.creators = [{ family: "Other", given: "Someone", creatorType: "author" }];
+  expect(mergeMetadata(local, remote).canonical.creators).toEqual(remote.canonical.creators);
+});

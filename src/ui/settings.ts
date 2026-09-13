@@ -1,3 +1,4 @@
+import { canUseNode } from "../core/env";
 import { Setting, showMessage } from "siyuan";
 import type { KernelClient } from "../core/kernel";
 import type { LibraryService, PaperLibraryInfo } from "../services/library-service";
@@ -75,7 +76,7 @@ export class SettingsPanel {
     }
     root.prepend(tabs);
     panels.get("library")!.innerHTML = `<div data-library-content>正在读取文献库…</div>`;
-    panels.get("receiving")!.innerHTML = `
+    panels.get("receiving")!.innerHTML = !canUseNode() ? `<div class="paper-manager-preview">当前环境不支持 Zotero Connector 浏览器扩展接收，请使用本地 PDF 导入。接收设置保留供桌面端使用。</div>` : `
       ${numberField("Zotero 端口", "zoteroPort", this.draft.zoteroPort)}
       ${switchField("启动时自动监听", "autoListen", this.draft.autoListen)}
       <div class="paper-manager-preview">Connector 与本地 PDF 始终导入默认文献库。</div>`;
@@ -98,7 +99,7 @@ export class SettingsPanel {
       <label class="paper-manager-field"><span>知网站点</span><select class="b3-select" data-key="cnkiRegion"><option value="mainland" ${this.draft.cnkiRegion !== "oversea" ? "selected" : ""}>中国大陆</option><option value="oversea" ${this.draft.cnkiRegion === "oversea" ? "selected" : ""}>海外</option></select></label>
       <div class="paper-manager-preview">知网检索需要思源桌面端。首次检索或会话过期时会打开知网窗口；请完成验证后返回继续，同一会话会自动复用。</div>
       <div class="paper-manager-preview">提取结果会展示多个候选，导入前可核对并编辑标题、作者与摘要。</div>`;
-    panels.get("translation")!.innerHTML = `
+    panels.get("translation")!.innerHTML = !canUseNode() ? `<div class="paper-manager-preview">当前环境不支持 pdf2zh 翻译。可阅读桌面端翻译后同步的 PDF；翻译设置保留供桌面端使用。</div>` : `
       ${textField("pdf2zh 路径", "pdf2zhPath", this.draft.pdf2zhPath)}
       ${textField("源语言", "translateFrom", this.draft.translateFrom)}
       ${textField("目标语言", "translateTo", this.draft.translateTo)}

@@ -2,14 +2,16 @@
   "name": "siyuan-paper-manager",
   "author": "fu1fan",
   "url": "https://github.com/fu1fan/siyuan-paper-manager",
-  "version": "5.4.0",
+  "version": "5.5.0",
   "minAppVersion": "3.8.1",
   "backends": [
     "all"
   ],
   "frontends": [
     "desktop",
-    "desktop-window"
+    "desktop-window",
+    "mobile",
+    "browser-mobile"
   ],
   "displayName": {
     "default": "Paper Manager",

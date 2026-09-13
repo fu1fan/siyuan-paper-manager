@@ -1,9 +1,27 @@
-import type { PaperCreator } from "../types/paper";
+import { titleSimilarity } from "../core/naming";
+import type { PaperCanonical, PaperCreator } from "../types/paper";
 import type { PdfLine } from "./pdf-layout";
 
-/** Conservative first-page typography fallback for PDFs with empty XMP fields. */
-export function englishPdfMetadata(pages: PdfLine[][]): { title: string; creators: PaperCreator[]; abstract?: string } | undefined {
-  const lines = pages[0] ?? [];
+type EnglishMetadata = { title: string; creators: PaperCreator[]; abstract?: string } & Partial<Pick<PaperCanonical, "itemType" | "date" | "journal" | "publisher" | "isbn" | "url">>;
+
+/** Read publisher covers separately from the matching article title page. */
+export function englishPdfMetadata(pages: PdfLine[][]): EnglishMetadata | undefined {
+  const first = englishPageMetadata(pages[0] ?? []);
+  const cover = (pages[0] ?? []).map(line => line.text).join("\n");
+  if (!first || !/This paper is included in the Proceedings of the/i.test(cover) || !/USENIX/i.test(cover)) return first;
+  const article = pages.slice(1, 3).map(englishPageMetadata).find(candidate => candidate && titleSimilarity(first.title, candidate.title) >= 0.95);
+  const conference = cover.match(/This paper is included in the Proceedings of the\s+([\s\S]+?)\.\s*\n/i)?.[1]?.replace(/\s+/g, " ").trim();
+  return {
+    ...first, ...(article ?? {}), itemType: "conferencePaper",
+    date: cover.match(/(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d[^\n]*?\b((?:19|20)\d{2})\b/i)?.[1],
+    journal: conference, publisher: "USENIX Association",
+    isbn: cover.match(/\b97[89]-\d[\d-]+\d\b/)?.[0],
+    url: cover.match(/https:\/\/(?:www\.)?usenix\.org\/conference\/[a-z0-9-]+\/presentation\/[a-z0-9-]+/i)?.[0],
+  };
+}
+
+/** Conservative title-page typography fallback for PDFs with empty XMP fields. */
+function englishPageMetadata(lines: PdfLine[]): EnglishMetadata | undefined {
   const abstractIndex = lines.findIndex((line) => /^Abstract\b/i.test(line.text));
   const front = lines.slice(0, abstractIndex >= 0 ? abstractIndex : 30);
   const eligible = (line: PdfLine) => /[A-Za-z]{3}/.test(line.text) && !/[\u3400-\u9fff]/.test(line.text)

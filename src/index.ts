@@ -1,5 +1,5 @@
 import { validateCitekeyFormat } from "./core/naming";
-import { openMetadataEditor } from "./ui/dialogs/edit-metadata";
+import { openConnectorMetadataEditor, openMetadataEditor } from "./ui/dialogs/edit-metadata";
 import { disposeCnkiClient } from "./services/cnki-desktop";
 import { Dialog, Plugin, confirm, getFrontend, showMessage } from "siyuan";
 import { ATTR, PLUGIN_NAME } from "./constants";
@@ -60,6 +60,7 @@ export default class PaperManagerPlugin extends Plugin {
       this.translator = new TranslatorService(this.kernelClient, {
         onState: (translation) => this.statusStore.update({ translation }),
         readPaper: (docId) => this.libraries.readPaper(docId),
+        withPaperLock: work => this.processor.runMembershipChange(work),
         persist: (docId, paper) => this.processor.persistAndRefresh(docId, paper),
       });
     }
@@ -89,7 +90,7 @@ export default class PaperManagerPlugin extends Plugin {
       editMetadata: async (docId) => {
         const paper = await this.libraries.readPaper(docId);
         await openMetadataEditor(paper, () => this.settings,
-          (draft, citekey) => this.processor.editMetadata(docId, paper.canonical, draft, { baseline: paper.citekey, value: citekey }),
+          (draft, citekey, attachments) => this.processor.editMetadata(docId, paper.canonical, draft, { baseline: paper.citekey, value: citekey }, attachments),
           await this.libraries.citekeys(paper.libraryId, docId));
       },
       exportLibrary: (docId) => openCitationExportDialog(this.libraries, docId),
@@ -99,9 +100,9 @@ export default class PaperManagerPlugin extends Plugin {
       getStatus: () => this.statusStore.get(),
       detectDocKind: (docId) => this.documentKinds.get(docId) ?? null,
     }));
-    this.cleanup.push(mountTranslationStatusBar(this, this.statusStore));
+    if (canUseNode()) this.cleanup.push(mountTranslationStatusBar(this, this.statusStore));
     this.cleanup.push(monitorLibraryMembership(this, new LibraryMembershipService(this.kernelClient, this.templates), this.processor));
-    if (this.settings.autoListen) void this.startConnector();
+    if (canUseNode() && this.settings.autoListen) void this.startConnector();
   }
 
   onLayoutReady(): void {
@@ -126,7 +127,7 @@ export default class PaperManagerPlugin extends Plugin {
       this.settings = next;
       await syncDocumentTags(this.kernelClient, next.defaultDocumentTag);
     });
-    if (restart) {
+    if (restart && canUseNode()) {
       await this.stopConnector();
       if (next.autoListen) await this.startConnector();
     }
@@ -164,13 +165,13 @@ export default class PaperManagerPlugin extends Plugin {
     if (!canUseNode()) {
       const message = "Connector 仅支持带 Node 集成的思源桌面端";
       this.statusStore.update({ connector: { state: "error", message } });
-      throw new Error(message);
+      return;
     }
     try {
       const connector = new ConnectorServer({
         port: this.settings.zoteroPort,
         tempDirectory: getPluginTempDir(PLUGIN_NAME),
-        onImport: (candidate) => this.enqueueImport(candidate),
+        onImport: (candidate) => this.confirmConnectorImport(candidate),
         onAdditionalAttachments: (docId, attachments) => this.processor.addAttachments(docId, attachments),
         onStatus: (status) => this.statusStore.update({
           connector: status.error
@@ -217,6 +218,15 @@ export default class PaperManagerPlugin extends Plugin {
     }
   }
 
+  private async confirmConnectorImport(candidate: Parameters<ItemProcessor["process"]>[0]): Promise<string | undefined> {
+    let result: string | undefined;
+    await openConnectorMetadataEditor(candidate, () => this.settings, async (edited) => {
+      result = await this.enqueueImport(edited);
+    });
+    if (!result) throw new Error("用户已取消导入");
+    return result;
+  }
+
   private async refreshDocumentKinds(): Promise<void> {
     const rows = await this.kernelClient.query(`SELECT b.id, a.name FROM blocks b JOIN attributes a ON a.block_id = b.id WHERE b.type = 'd' AND a.name IN ('${ATTR.libraryId}', '${ATTR.libraryData}') AND a.value != '' LIMIT 2147483647`);
     this.documentKinds.clear();
@@ -255,7 +265,7 @@ export default class PaperManagerPlugin extends Plugin {
   private async selfCheck(): Promise<void> {
     const report = await buildEnvironmentReport(this.settings, this.statusStore.get());
     const rows = Object.entries(report).map(([name, result]) =>
-      `<section class="paper-manager-check-row"><div><strong>${escapeHtml(reportLabel(name))}</strong><span class="paper-manager-check-state" data-ok="${result.ok}">${result.ok ? "正常" : name === "template" && this.statusStore.get().templateMode === "unknown" ? "待验证" : "需处理"}</span></div><p>${escapeHtml(result.detail)}</p></section>`).join("");
+      `<section class="paper-manager-check-row"><div><strong>${escapeHtml(reportLabel(name))}</strong><span class="paper-manager-check-state" data-ok="${result.ok || result.skipped}">${result.skipped ? "不适用" : result.ok ? "正常" : name === "template" && this.statusStore.get().templateMode === "unknown" ? "待验证" : "需处理"}</span></div><p>${escapeHtml(result.detail)}</p></section>`).join("");
     const dialog = new Dialog({
       title: "论文管理环境自检",
       width: "680px",

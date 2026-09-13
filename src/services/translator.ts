@@ -1,3 +1,4 @@
+import { translationSource } from "./attachments";
 import type { ChildProcess } from "node:child_process";
 import type { PaperData } from "../types/paper";
 import { extractThreadArgs, normalizeTranslationThreads, type PluginSettings } from "../types/settings";
@@ -21,6 +22,7 @@ export interface TranslatorOptions {
   onState?: (state: TranslationState) => void;
   /** 从数据库行重建论文数据（数据库权威）。 */
   readPaper: (docId: string) => Promise<PaperData>;
+  withPaperLock?: <T>(work: () => Promise<T>) => Promise<T>;
   persist: (docId: string, paper: PaperData) => Promise<void>;
 }
 
@@ -97,8 +99,7 @@ export class TranslatorService {
   private async runTranslation(docId: string, settings: PluginSettings, signal: AbortSignal): Promise<TranslationResult> {
     const paper = await this.options.readPaper(docId);
     signal.throwIfAborted();
-    const pdf = paper.attachments.find((attachment) => attachment.mimeType === "application/pdf");
-    if (!pdf) throw new Error("当前论文没有可翻译的 PDF 附件");
+    const pdf = translationSource(paper);
     const fs = requireNode<typeof import("node:fs")>("fs", this.requireFn);
     const path = requireNode<typeof import("node:path")>("path", this.requireFn);
     const os = requireNode<typeof import("node:os")>("os", this.requireFn);
@@ -140,21 +141,25 @@ export class TranslatorService {
         dual = await this.kernel.uploadAsset(settings.translationAssetsDir, dualBytes, dualName, "application/pdf");
       }
       signal.throwIfAborted();
-      // 翻译可能持续很久，保存时重新读论文，保留期间新增的附件和数据库编辑。
-      const latest = await this.options.readPaper(docId);
-      signal.throwIfAborted();
-      const previousTranslation = { ...latest.translation };
-      latest.translation = {
-        mono,
-        dual,
-        executable,
-        args,
-        completedAt: new Date().toISOString(),
+      const commit = async () => {
+        // Share the import/editor queue so attachment edits cannot be overwritten
+        // between this fresh read and persistence.
+        const latest = await this.options.readPaper(docId);
+        signal.throwIfAborted();
+        if (translationSource(latest).assetAddress !== pdf.assetAddress) {
+          throw new Error("翻译期间论文原稿已更改，本次译稿未关联，请使用当前原稿重新翻译");
+        }
+        const previousTranslation = { ...latest.translation };
+        latest.translation = {
+          mono, dual, executable, args, completedAt: new Date().toISOString(),
+          monoTitle: latest.translation.monoTitle, dualTitle: dual ? latest.translation.dualTitle : undefined,
+        };
+        await this.options.persist(docId, latest);
+        return settings.autoDeleteOldTranslations
+          ? await this.cleanupOldTranslations(previousTranslation, latest.translation, latest.attachments.map(item => item.assetAddress))
+          : { deleted: [], warnings: [] };
       };
-      await this.options.persist(docId, latest);
-      const cleanup = settings.autoDeleteOldTranslations
-        ? await this.cleanupOldTranslations(previousTranslation, latest.translation)
-        : { deleted: [], warnings: [] };
+      const cleanup = this.options.withPaperLock ? await this.options.withPaperLock(commit) : await commit();
       const elapsedMs = Date.now() - startedAt;
       return {
         mono,
@@ -215,6 +220,7 @@ export class TranslatorService {
   private async cleanupOldTranslations(
     previous: PaperData["translation"],
     current: PaperData["translation"],
+    attachments: string[] = [],
   ): Promise<{ deleted: string[]; warnings: string[] }> {
     const currentPaths = new Set(
       [current.mono, current.dual]
@@ -227,7 +233,7 @@ export class TranslatorService {
     for (const address of oldAddresses) {
       try {
         const path = translationWorkspacePath(address);
-        if (currentPaths.has(path)) continue;
+        if (currentPaths.has(path) || attachments.some(item => item.replace(/^\/+/, "") === address.replace(/^\/+/, ""))) continue;
         await this.kernel.removeWorkspaceFile(path);
         deleted.push(address);
       } catch (error) {

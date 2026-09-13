@@ -640,7 +640,10 @@ export function paperFromRow(
     citekey: fieldText(library.data, row, "citekey"),
     libraryId: library.docId,
     attachments: parseAttachments(attrs[ATTR.attachments]),
+    originalPdf: attrs[ATTR.originalPdf] || undefined,
     translation: {
+      monoTitle: attrs[ATTR.translationMonoTitle] || undefined,
+      dualTitle: attrs[ATTR.translationDualTitle] || undefined,
       mono: attrs[ATTR.translationMono] || undefined,
       dual: attrs[ATTR.translationDual] || undefined,
     },

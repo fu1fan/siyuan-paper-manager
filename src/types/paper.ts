@@ -41,6 +41,8 @@ export interface PaperAttachment {
 export interface PaperTranslation {
   mono?: string;
   dual?: string;
+  monoTitle?: string;
+  dualTitle?: string;
   executable?: string;
   args?: string[];
   completedAt?: string;
@@ -56,6 +58,8 @@ export interface PaperData {
   citekey: string;
   libraryId: string;
   attachments: PaperAttachment[];
+  /** Explicit original PDF asset address; absent means automatic single-PDF selection. */
+  originalPdf?: string;
   translation: PaperTranslation;
 }
 

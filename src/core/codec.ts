@@ -38,6 +38,9 @@ export function decodeLibraryData(encoded: string): PaperLibraryData {
 export function paperStateAttrs(paper: PaperData): Record<string, string> {
   return {
     [ATTR.attachments]: JSON.stringify(paper.attachments),
+    [ATTR.originalPdf]: paper.originalPdf ?? "",
+    [ATTR.translationMonoTitle]: paper.translation.monoTitle ?? "",
+    [ATTR.translationDualTitle]: paper.translation.dualTitle ?? "",
     [ATTR.translationMono]: paper.translation.mono ?? "",
     [ATTR.translationDual]: paper.translation.dual ?? "",
     [ATTR.state]: "ready",

@@ -4,13 +4,20 @@ import type { PluginStatus } from "../types/status";
 import { resolveExecutable } from "./translator";
 
 export interface EnvironmentReport {
-  desktopNode: { ok: boolean; detail: string };
-  connector: { ok: boolean; detail: string };
-  pdf2zh: { ok: boolean; detail: string };
-  template: { ok: boolean; detail: string };
+  desktopNode: { ok: boolean; detail: string; skipped?: boolean };
+  connector: { ok: boolean; detail: string; skipped?: boolean };
+  pdf2zh: { ok: boolean; detail: string; skipped?: boolean };
+  template: { ok: boolean; detail: string; skipped?: boolean };
 }
 
 export async function buildEnvironmentReport(settings: PluginSettings, status: PluginStatus): Promise<EnvironmentReport> {
+  if (!canUseNode()) {
+    const unavailable = { ok: false, skipped: true, detail: "仅桌面 Node 环境支持，当前环境已禁用" };
+    return {
+      desktopNode: unavailable, connector: unavailable, pdf2zh: unavailable,
+      template: { ok: status.templateMode !== "unknown", detail: status.templateMode === "unknown" ? "尚未渲染模板" : "内置模板渲染器" },
+    };
+  }
   const requireFn = getNodeRequire();
   let nodeDetail = "window.require 不可用";
   let nodeOk = false;

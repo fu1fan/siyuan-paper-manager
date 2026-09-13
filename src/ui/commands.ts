@@ -1,3 +1,4 @@
+import { canUseNode } from "../core/env";
 import { Menu, Plugin, showMessage } from "siyuan";
 import type { PluginStatus } from "../types/status";
 import { currentDocumentId } from "./dom";
@@ -44,7 +45,7 @@ export function registerPaperUi(
     hotkey: "⌥E",
     callback: () => { void withCurrentDoc(actions.repair); },
   });
-  plugin.addCommand({
+  if (canUseNode()) plugin.addCommand({
     langKey: "translate-current-paper",
     langText: "论文管理：翻译当前论文",
     hotkey: "⌥T",
@@ -90,7 +91,7 @@ function openQuickMenu(event: MouseEvent, actions: PaperUiActions): void {
   menu.addItem({ icon: "iconUpload", label: "导出文献库引用", click: () => run(() => actions.exportLibrary(currentDocumentId() ?? undefined)) });
   menu.addSeparator();
   const status = actions.getStatus().connector;
-  menu.addItem({
+  if (canUseNode()) menu.addItem({
     icon: status.state === "listening" ? "iconPause" : "iconPlay",
     label: status.state === "listening" ? "停止 Zotero 接收" : "启动 Zotero 接收",
     click: () => run(actions.toggleConnector),
@@ -137,7 +138,7 @@ function addPaperItems(
     menu.addSeparator?.();
     menu.addItem({ icon: "iconFiles", label: "文献操作", type: "submenu", submenu: [
       { icon: "iconEdit", label: "元数据编辑", click: () => run(() => actions.editMetadata(docId)) },
-      { icon: "iconLanguage", label: "翻译本文档", click: () => run(() => actions.translate(docId)) },
+      ...(canUseNode() ? [{ icon: "iconLanguage", label: "翻译本文档", click: () => run(() => actions.translate(docId)) }] : []),
       { icon: "iconRefresh", label: "刷新元数据摘要", click: () => run(() => actions.repair(docId)) },
     ] });
   } catch (error) {

@@ -1,3 +1,5 @@
+import { uniqueMetadataCandidates } from "./metadata-candidates";
+import { arxivClient } from "./arxiv-client";
 import { recognizerPage } from "./zotero-recognizer";
 import { metadataFetch } from "./metadata-http";
 import { bibtexCandidates } from "./bibtex-input";
@@ -26,6 +28,7 @@ export interface PdfMetadataSnapshot {
 
 export interface MetadataExtractorOptions {
   fetchImpl?: typeof fetch;
+  onProgress?: (status: string) => void;
   enableCnki?: boolean;
   enableZoteroRecognizer?: boolean;
   cnkiClient?: CnkiClient;
@@ -36,9 +39,13 @@ export interface MetadataExtractorOptions {
   pdfOptions?: Partial<DocumentInitParameters>;
 }
 
+type LookupOutcome = Omit<ExtractionResult, "selected">;
+
 export class MetadataExtractor {
   private readonly fetchImpl: typeof fetch;
   private readonly timeoutMs: number;
+  private readonly unavailableApis = new Map<string, Error>();
+  private readonly lookups = new Map<string, Promise<LookupOutcome>>();
 
   constructor(private readonly options: MetadataExtractorOptions = {}) {
     const fetchImpl = options.fetchImpl ?? metadataFetch;
@@ -49,10 +56,17 @@ export class MetadataExtractor {
   }
 
   async extract(bytes: Uint8Array, filename: string): Promise<ExtractionResult> {
+    return new MetadataExtractor(this.options).extractInternal(bytes, filename);
+  }
+
+  private progress(status: string) { this.options.signal?.throwIfAborted(); this.options.onProgress?.(status); }
+
+  private async extractInternal(bytes: Uint8Array, filename: string): Promise<ExtractionResult> {
+    this.progress("正在本地读取 PDF 文件、内嵌元数据和页面文字（不联网）");
     const warnings: string[] = [];
     let snapshot: PdfMetadataSnapshot = { info: {}, xmp: {}, text: "" };
     try {
-      snapshot = await inspectPdf(bytes, this.options.pdfOptions);
+      snapshot = await inspectPdf(bytes, this.options.pdfOptions, status => this.progress(status), this.options.signal);
     } catch (error) {
       warnings.push(`PDF 本地解析失败：${message(error)}`);
     }
@@ -62,34 +76,18 @@ export class MetadataExtractor {
     const local = localCandidate(snapshot, filename, detectedDoi);
     const candidates: MetadataCandidate[] = [local];
 
-    const arxiv = findArxiv(snapshot.pages?.slice(0, 2).flatMap(page => page.map(line => line.text)).join("\n") ?? "");
+    const supplement = async (identifier: string) => {
+      const result = await this.lookupOnce(identifier);
+      candidates.push(...result.candidates);
+      warnings.push(...result.warnings);
+    };
+    const arxiv = findArxiv(snapshot.pages?.slice(0, 2).flatMap(page => page.map(line => line.text)).join("\n") ?? snapshot.text)
+      ?? findArxiv(detectedDoi ?? "");
     if (arxiv) {
       local.canonical.url ||= `https://arxiv.org/abs/${arxiv}`;
-      try { candidates.push(...(await this.lookup(`arXiv:${arxiv}`)).candidates); }
-      catch (error) { warnings.push(`arXiv 补充失败：${message(error)}`); }
+      await supplement(`arXiv:${arxiv}`);
     }
-    if (detectedDoi) {
-      try {
-        const crossref = await this.crossrefByDoi(detectedDoi);
-        if (crossref) candidates.push(crossref);
-      } catch (error) {
-        warnings.push(`Crossref 查询失败：${message(error)}`);
-      }
-      if (!candidates.some((candidate) => candidate.provider === "crossref")) {
-        try {
-          const citoid = await this.citoidByDoi(detectedDoi);
-          if (citoid) candidates.push(citoid);
-        } catch (error) {
-          warnings.push(`Citoid 查询失败：${message(error)}`);
-        }
-      }
-    } else if (!candidates.some(candidate => candidate.provider === "arxiv") && local.canonical.title && !containsCjk(local.canonical.title) && local.provider !== "filename") {
-      try {
-        candidates.push(...await this.crossrefByTitle(local.canonical));
-      } catch (error) {
-        warnings.push(`Crossref 标题检索失败：${message(error)}`);
-      }
-    }
+    if (detectedDoi && !findArxiv(detectedDoi)) await supplement(detectedDoi);
 
     if (this.options.enableCnki && containsCjk(local.canonical.title)) {
       try {
@@ -99,42 +97,67 @@ export class MetadataExtractor {
       }
     }
 
-    if (this.options.enableZoteroRecognizer && snapshot.recognizer && snapshot.text.trim()) {
+    if (this.options.enableZoteroRecognizer && !candidates.some(c => c.provider === "arxiv" || c.provider === "crossref" || c.provider === "citoid") && snapshot.recognizer && snapshot.text.trim()) {
       try {
-        const response = await this.fetchWithRetry("https://services.zotero.org/recognizer/recognize", {
+        const response = await this.fetchResponse("https://services.zotero.org/recognizer/recognize", {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ ...snapshot.recognizer, fileName: filename }),
-        }, 1);
+        });
         const raw: unknown = await response.json();
         if (isRecord(raw)) {
           if (string(raw.title)) candidates.push({ provider: "zotero", confidence: 0.93, reason: "Zotero 在线识别（请核对）", raw,
             canonical: canonicalFromCitoid({ ...raw, creators: raw.authors, date: raw.year, abstractNote: raw.abstract, DOI: raw.doi, publicationTitle: raw.container }) });
           const identifier = string(raw.arxiv) ? `arXiv:${raw.arxiv}` : string(raw.doi) || string(raw.isbn);
-          if (identifier && !candidates.some(candidate => candidate.provider === "arxiv" && findArxiv(candidate.canonical.url ?? "")?.replace(/v\d+$/, "") === findArxiv(identifier)?.replace(/v\d+$/, ""))) {
-            try { candidates.push(...(await this.lookup(identifier)).candidates); }
-            catch (error) { this.options.signal?.throwIfAborted(); warnings.push(`Zotero 标识符补充失败：${message(error)}`); }
-          }
+          if (identifier) await supplement(identifier);
         }
       } catch (error) { this.options.signal?.throwIfAborted(); warnings.push(`Zotero 在线识别失败：${message(error)}`); }
     }
+    if (!candidates.some(c => ["arxiv", "crossref", "citoid", "zotero"].includes(c.provider))
+      && local.canonical.title && !containsCjk(local.canonical.title) && local.provider !== "filename") {
+      try {
+        const matches = await this.crossrefByTitle(local.canonical);
+        candidates.push(...matches);
+        if (!matches.length) warnings.push("Crossref：标题检索无匹配结果");
+      } catch (error) { this.options.signal?.throwIfAborted(); warnings.push(`Crossref：${message(error)}`); }
+    }
+    this.progress("正在合并候选、保留本地信息并去重（不联网）");
     this.options.signal?.throwIfAborted();
     const deduplicated = dedupeCandidates(candidates).sort((left, right) => right.confidence - left.confidence);
     const best = deduplicated[0] ?? filenameCandidate(filename, detectedDoi);
     const selected = local.canonical.itemType === "thesis" && local.canonical.creators.length && local.canonical.date
       ? local
       : mergeMetadata(local, best);
-    return { selected, candidates: deduplicated, detectedDoi, warnings };
+    // The enriched recommendation replaces its original candidate instead of
+    // appearing beside it with the same provider and title.
+    const choices = uniqueMetadataCandidates([selected, ...deduplicated.filter(candidate =>
+      candidate !== selected && (selected === local || candidate !== best))]);
+    return { selected, candidates: choices, detectedDoi, warnings: [...new Set(warnings)] };
   }
 
   /** BibLib-style identifier lookup, using structured Zotero JSON from Citoid. */
   async lookup(input: string): Promise<ExtractionResult> {
+    const result = await new MetadataExtractor(this.options).lookupOnce(input);
+    if (!result.candidates.length) throw new Error(result.warnings.join("；") || "没有找到元数据，请检查标识符或网址");
+    return { ...result, selected: result.candidates[0]! };
+  }
+
+  private lookupOnce(input: string): Promise<LookupOutcome> {
+    const arxiv = findArxiv(input);
+    const key = arxiv ? `arxiv:${arxiv.toLowerCase().replace(/v\d+$/, "")}` : findDoi(input)?.toLowerCase() ?? input.trim();
+    let result = this.lookups.get(key);
+    if (!result) { result = this.lookupInternal(input); this.lookups.set(key, result); }
+    return result;
+  }
+
+  private async lookupInternal(input: string): Promise<LookupOutcome> {
     this.options.signal?.throwIfAborted();
     const value = input.trim();
     if (!value) throw new Error("请输入 DOI、URL、arXiv、ISBN、PMID 或 PMCID");
     if (value.startsWith("@")) {
+      this.progress("正在本地解析 BibTeX（不联网）");
       const candidates = bibtexCandidates(value);
       if (!candidates.length) throw new Error("BibTeX 中没有可识别的文献");
-      return { selected: candidates[0]!, candidates, warnings: [] };
+      return { candidates, warnings: [] };
     }
     const doi = findDoi(value);
     const arxiv = findArxiv(value);
@@ -144,16 +167,17 @@ export class MetadataExtractor {
       : value.replace(/^ISBN(?:-1[03])?\s*:\s*/i, "");
     const candidates: MetadataCandidate[] = [];
     const warnings: string[] = [];
-    if (doi) {
+    if (doi && !arxiv) {
       try { const candidate = await this.crossrefByDoi(doi); if (candidate) candidates.push(candidate); }
       catch (error) { this.options.signal?.throwIfAborted(); warnings.push(`Crossref：${message(error)}`); }
     }
     if (arxiv) {
       try {
-        const response = await this.fetchWithRetry(`https://export.arxiv.org/api/query?id_list=${encodeURIComponent(arxiv)}`, {});
-        const candidate = arxivCandidate(await response.text());
+        this.progress(`正在请求 arXiv API（export.arxiv.org/api/query）：${arxiv}，可能需要等待请求间隔`);
+        const xml = await arxivClient.query(arxiv, this.fetchImpl, this.options.signal, this.timeoutMs, status => this.progress(status));
+        const candidate = arxivCandidate(xml);
         if (candidate) candidates.push(candidate);
-      } catch (error) { this.options.signal?.throwIfAborted(); warnings.push(`arXiv：${message(error)}`); }
+      } catch (error) { this.options.signal?.throwIfAborted(); warnings.push(`arXiv：${message(error).replace(/^arXiv[：\s]*/i, "")}`); }
     }
     if (!candidates.length) {
       try {
@@ -162,8 +186,8 @@ export class MetadataExtractor {
       } catch (error) { this.options.signal?.throwIfAborted(); warnings.push(`Citoid：${message(error)}`); }
     }
     this.options.signal?.throwIfAborted();
-    if (!candidates.length) throw new Error(warnings.join("；") || "没有找到元数据，请检查标识符或网址");
-    return { selected: candidates[0]!, candidates, detectedDoi: doi, warnings };
+
+    return { candidates, detectedDoi: doi, warnings };
   }
 
   private async crossrefByDoi(doi: string): Promise<MetadataCandidate | null> {
@@ -187,7 +211,7 @@ export class MetadataExtractor {
 
   private async citoidByDoi(doi: string): Promise<MetadataCandidate | null> {
     const target = encodeURIComponent(/^10\./.test(doi) ? `https://doi.org/${doi}` : doi);
-    const response = await this.fetchJson(`https://en.wikipedia.org/api/rest_v1/data/citation/zotero/${target}`);
+    const response = await this.fetchJson(`https://www.mediawiki.org/api/rest_v1/data/citation/zotero/${target}`);
     const raw = Array.isArray(response) ? response.find(isRecord) : isRecord(response) ? response : null;
     if (!raw) return null;
     return {
@@ -200,6 +224,7 @@ export class MetadataExtractor {
   }
 
   private async cnkiByTitle(local: PaperCanonical): Promise<MetadataCandidate[]> {
+    this.progress(`正在请求 CNKI API：检索「${local.title}」`);
     const client = this.options.cnkiClient ?? desktopCnkiClient(undefined, this.options.cnkiTimeoutSeconds);
     const response = await client.search(local, this.options.cnkiRegion, this.options.signal);
     const html = response.text;
@@ -220,12 +245,14 @@ export class MetadataExtractor {
         notes.push(`${stage}未完成：${message(error)}`);
       };
       try {
+        this.progress("正在请求 CNKI 详情页：补充期刊、作者和摘要");
         const detail = await client.requestVerified({ url: trustedCnkiUrl(candidate.canonical.url!), method: "GET", headers: { Accept: "text/html", Referer: response.url } }, region, this.options.signal);
         candidate.canonical = parseCnkiDetail(detail.text, candidate.canonical);
       } catch (error) { failed(error, "详情补充"); }
       const raw = candidate.raw as { exportId?: string };
       if (region === "mainland" && raw.exportId) {
         try {
+          this.progress("正在请求 CNKI GetExport API：补充 EndNote 元数据");
           const exported = await client.requestVerified({
             url: "https://kns.cnki.net/dm8/API/GetExport", method: "POST",
             headers: { "Content-Type": "application/x-www-form-urlencoded", Referer: candidate.canonical.url!, Origin: "https://kns.cnki.net" },
@@ -241,7 +268,7 @@ export class MetadataExtractor {
   }
 
   private async fetchJson(url: string): Promise<unknown> {
-    const response = await this.fetchWithRetry(url, {
+    const response = await this.fetchResponse(url, {
       headers: {
         Accept: "application/json",
         "User-Agent": "siyuan-paper-manager/0.4.0 (+https://github.com/fu1fan/siyuan-paper-manager)",
@@ -250,36 +277,48 @@ export class MetadataExtractor {
     return response.json();
   }
 
-  private async fetchWithRetry(url: string, init: RequestInit, attempts = 3): Promise<Response> {
-    let lastError: unknown;
-    for (let attempt = 0; attempt < attempts; attempt += 1) {
-      this.options.signal?.throwIfAborted();
-      const controller = new AbortController();
-      const cancel = () => controller.abort();
-      this.options.signal?.addEventListener("abort", cancel, { once: true });
-      const timer = setTimeout(() => controller.abort(), this.timeoutMs);
-      try {
-        const response = await this.fetchImpl(url, { ...init, signal: controller.signal });
-        if (response.ok) return response;
-        if (response.status !== 429 && response.status < 500) throw new PermanentHttpError(`HTTP ${response.status}`);
-        lastError = new Error(`HTTP ${response.status}`);
-        const retryAfter = Math.min(5_000, Number(response.headers.get("Retry-After") || 0) * 1000);
-        if (attempt + 1 < attempts) await sleep(retryAfter || 300 * 2 ** attempt);
-      } catch (error) {
-        if (this.options.signal?.aborted || error instanceof PermanentHttpError) throw error;
-        lastError = controller.signal.aborted ? new Error(`请求超时（${this.timeoutMs / 1000}秒）`) : error;
-        if (controller.signal.aborted) throw lastError;
-        if (attempt + 1 < attempts) await sleep(300 * 2 ** attempt);
-      } finally {
-        clearTimeout(timer);
-        this.options.signal?.removeEventListener("abort", cancel);
+  private async fetchResponse(url: string, init: RequestInit): Promise<Response> {
+    this.options.signal?.throwIfAborted();
+    const parsed = new URL(url);
+    const unavailable = this.unavailableApis.get(parsed.hostname);
+    if (unavailable) throw unavailable;
+    const controller = new AbortController();
+    const cancel = () => controller.abort();
+    this.options.signal?.addEventListener("abort", cancel, { once: true });
+    const timer = setTimeout(cancel, this.timeoutMs);
+    try {
+      const api = parsed.hostname.includes("crossref") ? "Crossref" : parsed.hostname.includes("mediawiki") ? "Citoid" : "Zotero Recognizer";
+      const target = api === "Zotero Recognizer" ? "上传前五页文字与排版进行识别"
+        : parsed.searchParams.get("query.title") ?? decodeURIComponent(parsed.pathname.split("/").at(-1) ?? "");
+      this.progress(`正在请求 ${api} API（${parsed.hostname}）：${target}，超时上限 ${this.timeoutMs / 1000} 秒`);
+      const response = await this.fetchImpl(url, { ...init, signal: controller.signal });
+      if (!response.ok) {
+        if (response.status === 429 || response.status >= 500) {
+          const error = new Error(`HTTP ${response.status}，本轮不再请求该服务`);
+          this.unavailableApis.set(parsed.hostname, error);
+          throw error;
+        }
+        throw new PermanentHttpError(`HTTP ${response.status}`);
       }
+      // Keep the timeout and caller cancellation active until the full body arrives.
+      const body = await response.arrayBuffer();
+      controller.signal.throwIfAborted();
+      return new Response([204, 205].includes(response.status) ? null : body, { status: response.status, headers: response.headers });
+    } catch (error) {
+      this.options.signal?.throwIfAborted();
+      const failure = controller.signal.aborted ? new Error(`请求超时（${this.timeoutMs / 1000}秒），本轮不再请求该服务`)
+        : error instanceof Error ? error : new Error(String(error));
+      if (!(failure instanceof PermanentHttpError)) this.unavailableApis.set(parsed.hostname, failure);
+      throw failure;
+    } finally {
+      clearTimeout(timer);
+      this.options.signal?.removeEventListener("abort", cancel);
     }
-    throw lastError instanceof Error ? lastError : new Error("网络请求失败");
   }
+
 }
 
-export async function inspectPdf(bytes: Uint8Array, options: Partial<DocumentInitParameters> = pdfDocumentOptions()): Promise<PdfMetadataSnapshot> {
+export async function inspectPdf(bytes: Uint8Array, options: Partial<DocumentInitParameters> = pdfDocumentOptions(), onProgress?: (status: string) => void, signal?: AbortSignal): Promise<PdfMetadataSnapshot> {
   const loading = pdfjs.getDocument({
     ...options,
     data: bytes.slice(),
@@ -300,6 +339,8 @@ export async function inspectPdf(bytes: Uint8Array, options: Partial<DocumentIni
     const pages: PdfLine[][] = [];
     const recognizerPages: unknown[][] = [];
     for (let pageNumber = 1; pageNumber <= Math.min(8, document.numPages); pageNumber += 1) {
+      signal?.throwIfAborted();
+      onProgress?.(`正在本地解析 PDF 第 ${pageNumber}/${Math.min(8, document.numPages)} 页：文字、字号和排版`);
       const page = await document.getPage(pageNumber);
       const content = await page.getTextContent();
       if (pageNumber <= 5) {
@@ -327,11 +368,14 @@ export function localCandidate(snapshot: PdfMetadataSnapshot, filename: string, 
   const author = firstString(snapshot.xmp["dc:creator"], snapshot.info.Author);
   const creators = thesis.author ? splitAuthors(thesis.author) : author && !/^(?:CNKI|TTKN|万方数据|Administrator|admin)$/i.test(author) ? splitAuthors(author) : english?.creators ?? [];
   const canonical = cleanCanonical({
-    itemType: thesis.isThesis || layout?.thesis ? "thesis" : "journalArticle",
+    itemType: thesis.isThesis || layout?.thesis ? "thesis" : english?.itemType ?? "journalArticle",
     title,
     creators,
-    publisher: thesis.publisher,
-    date: thesis.date,
+    publisher: thesis.publisher || english?.publisher,
+    date: thesis.date || english?.date,
+    journal: english?.journal,
+    isbn: english?.isbn,
+    url: english?.url,
     // PDF creation time is not the publication date.
     language: containsHan(title) ? "zh-CN" : undefined,
     abstract: thesis.abstract || english?.abstract || firstString(snapshot.xmp["dc:description"], snapshot.info.Subject),
@@ -343,7 +387,7 @@ export function localCandidate(snapshot: PdfMetadataSnapshot, filename: string, 
     canonical,
     provider: layout || english || thesis.author ? "pdf-text" : hasEmbedded ? "xmp" : "filename",
     confidence: thesis.author && thesis.date && thesis.publisher ? 0.94 : doi ? 0.72 : english ? 0.82 : layout ? 0.68 : hasEmbedded ? 0.58 : 0.3,
-    reason: english ? "PDF 英文首页标题与作者（字号与位置识别，请核对）" : thesis.author ? "PDF 学位论文封面与摘要（请核对）" : layout ? "PDF 中文标题（字号与位置识别，请核对）" : hasEmbedded ? "PDF 内嵌元数据" : "文件名兜底",
+    reason: english ? "PDF 英文封面/正文首页元数据（字号与位置识别，请核对）" : thesis.author ? "PDF 学位论文封面与摘要（请核对）" : layout ? "PDF 中文标题（字号与位置识别，请核对）" : hasEmbedded ? "PDF 内嵌元数据" : "文件名兜底",
     raw: { info: snapshot.info, xmp: snapshot.xmp },
   };
 }
@@ -475,11 +519,22 @@ export function mergeMetadata(local: MetadataCandidate, provider: MetadataCandid
   const merged = { ...provider.canonical };
   const authors = local.canonical.creators;
   const sameName = (name: string) => name.toLowerCase().replace(/[^\p{L}]/gu, "");
-  if (provider.provider === "zotero" && titleSimilarity(local.canonical.title, provider.canonical.title) > 0.95
-      && authors.length > merged.creators.length && merged.creators.every((author, index) => {
-        const known = authors[index];
-        return known && sameName(author.family + author.given) === sameName(known.family + known.given);
-      })) merged.creators = authors;
+  if (provider.provider === "zotero" && titleSimilarity(local.canonical.title, provider.canonical.title) > 0.95) {
+    // Recognizers can omit authors in the middle of a publisher cover, not just
+    // truncate the tail. Only retain a longer local list when every remote name
+    // occurs in it in the same order, without reusing a match.
+    let next = 0;
+    if (authors.length > merged.creators.length && merged.creators.every(author => {
+      const index = authors.findIndex((known, index) => index >= next
+        && sameName(author.family + author.given) === sameName(known.family + known.given));
+      if (index < 0) return false;
+      next = index + 1;
+      return true;
+    })) merged.creators = authors;
+    if (local.provider === "pdf-text" && local.canonical.itemType === "conferencePaper" && local.canonical.journal) {
+      merged.itemType = local.canonical.itemType;
+    }
+  }
 
   for (const [key, value] of Object.entries(local.canonical)) {
     const current = (merged as Record<string, unknown>)[key];
@@ -569,14 +624,10 @@ function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 class PermanentHttpError extends Error {}
 
 export function findArxiv(text: string): string | undefined {
-  return text.match(/(?:arxiv\s*:\s*|arxiv\.org\/(?:abs|pdf)\/)(\d{4}\.\d{4,5}(?:v\d+)?|[a-z-]+(?:\.[A-Z]{2})?\/\d{7}(?:v\d+)?)/i)?.[1]
+  return text.match(/(?:10\.48550\/arxiv\.|arxiv\s*:\s*|arxiv\.org\/(?:abs|pdf)\/)(\d{4}\.\d{4,5}(?:v\d+)?|[a-z-]+(?:\.[A-Z]{2})?\/\d{7}(?:v\d+)?)/i)?.[1]
     ?? text.trim().match(/^(\d{4}\.\d{4,5}(?:v\d+)?)$/)?.[1];
 }
 

@@ -192,3 +192,70 @@ it("can retry a rename after the citekey was already committed", async () => {
   expect(kernel.renameDocument).toHaveBeenCalledTimes(2);
   expect(kernel.createDocument).not.toHaveBeenCalled();
 });
+
+it("saves staged files, a designated original, snapshot renames and translation renames together", async () => {
+  const { processor, libraries, kernel } = setup([]);
+  const before = paper({ attachments: [{ title: "Snapshot", mimeType: "text/html", assetAddress: "assets/snapshot.html", sha256: "html" }], translation: { mono: "assets/mono.pdf" } });
+  libraries.readPaper.mockResolvedValue(before);
+  const draft = structuredClone(before);
+  draft.attachments[0]!.title = "网页快照";
+  draft.attachments.push({ title: "原稿", mimeType: "application/pdf", assetAddress: "pending:1", sha256: "" });
+  draft.originalPdf = "pending:1";
+  draft.translation.monoTitle = "中文译稿";
+  await processor.editMetadata("existing", before.canonical, before.canonical, undefined, { baseline: before, draft,
+    additions: [{ id: "pending:1", bytes: new TextEncoder().encode("%PDF-1.4 original"), title: "original.pdf", mimeType: "application/pdf" }] });
+  const attrs = kernel.setBlockAttrs.mock.calls.at(-1)![1];
+  expect(attrs[ATTR.originalPdf]).toBe("assets/new.pdf");
+  expect(attrs[ATTR.translationMonoTitle]).toBe("中文译稿");
+  expect(JSON.parse(attrs[ATTR.attachments]!)).toEqual(expect.arrayContaining([expect.objectContaining({ title: "原稿", assetAddress: "assets/new.pdf" }), expect.objectContaining({ title: "网页快照" })]));
+});
+it("can add a translation file without adding it to original PDF candidates", async () => {
+  const { processor, libraries, kernel } = setup([]);
+  const before = paper(); libraries.readPaper.mockResolvedValue(before);
+  const draft = structuredClone(before); draft.translation.dual = "pending:1"; draft.translation.dualTitle = "Bilingual";
+  await processor.editMetadata("existing", before.canonical, before.canonical, undefined, { baseline: before, draft,
+    additions: [{ id: "pending:1", bytes: new TextEncoder().encode("%PDF-1.4 dual"), title: "dual.pdf", mimeType: "application/pdf" }] });
+  const attrs = kernel.setBlockAttrs.mock.calls.at(-1)![1];
+  expect(attrs[ATTR.translationDual]).toBe("assets/new.pdf");
+  expect(attrs[ATTR.translationDualTitle]).toBe("Bilingual");
+  expect(JSON.parse(attrs[ATTR.attachments]!)).toEqual([]);
+});
+
+it("imports only confirmed staged files and keeps their edited name and original PDF selection", async () => {
+  const { processor, kernel, libraries } = setup([]);
+  const incoming = candidate();
+  incoming.attachments = [{ title: "removed.pdf", mimeType: "application/pdf", bytes: new Uint8Array([0]) }];
+  incoming.attachmentEdit = {
+    baseline: { attachments: [], translation: {} },
+    draft: { attachments: [{ title: "论文原稿", mimeType: "application/pdf", assetAddress: "pending:browser", sha256: "" }], translation: {}, originalPdf: "pending:browser" },
+    additions: [{ id: "pending:browser", title: "browser.pdf", mimeType: "application/pdf", bytes: new Uint8Array([37, 80, 68, 70]) }],
+  };
+  await processor.process(incoming);
+  expect(kernel.uploadAsset).toHaveBeenCalledTimes(1);
+  expect(libraries.syncPaper).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
+    attachments: [expect.objectContaining({ title: "论文原稿", assetAddress: "assets/new.pdf" })],
+    originalPdf: "assets/new.pdf",
+  }), true);
+});
+
+it("does not upload browser attachments removed in the confirmation dialog", async () => {
+  const { processor, kernel } = setup([]);
+  const incoming = candidate();
+  incoming.attachments = [{ title: "removed.pdf", mimeType: "application/pdf", bytes: new Uint8Array([0]) }];
+  incoming.attachmentEdit = { baseline: { attachments: [], translation: {} }, draft: { attachments: [], translation: {} }, additions: [] };
+  await processor.process(incoming);
+  expect(kernel.uploadAsset).not.toHaveBeenCalled();
+});
+
+it("saves the confirmed citekey and uses it for the document name", async () => {
+  const { processor, kernel, libraries } = setup([]);
+  await processor.process({ ...candidate(), citekey: 'myPaper2026' });
+  expect(kernel.createDocument.mock.calls[0]).toContain('myPaper2026');
+  expect(libraries.syncPaper).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ citekey: 'myPaper2026' }), true);
+});
+it("rejects invalid confirmed citekeys before creating or uploading", async () => {
+  const { processor, kernel } = setup([]);
+  await expect(processor.process({ ...candidate(), citekey: '待确认' })).rejects.toThrow('引用键须为');
+  expect(kernel.createDocument).not.toHaveBeenCalled();
+  expect(kernel.uploadAsset).not.toHaveBeenCalled();
+});

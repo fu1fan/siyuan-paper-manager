@@ -4,7 +4,7 @@ export type NodeRequire = (id: string) => unknown;
 
 export function isDesktopFrontend(): boolean {
   try {
-    return getFrontend().includes("desktop");
+    return ["desktop", "desktop-window"].includes(getFrontend());
   } catch {
     return false;
   }

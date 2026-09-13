@@ -422,7 +422,13 @@ export class ConnectorServer {
       try {
         if (!item.imported) {
           const docId = await this.options.onImport({ id: `${session.id}:${item.id}`, source: SOURCE.connector,
-            canonical: canonicalFromRaw(item.raw), raw: item.raw, attachments: matched, sourceUrl: session.uri, sessionId: session.id });
+            canonical: canonicalFromRaw(item.raw), raw: item.raw, attachments: matched, sourceUrl: session.uri, sessionId: session.id,
+            getAttachments: () => {
+              for (const attachment of session.attachments) {
+                if (attachment.parentItemId === item.id && !matched.includes(attachment) && !item.delivered.has(attachment.id)) matched.push(attachment);
+              }
+              return matched;
+            } });
           item.docId = docId || undefined;
           item.imported = true;
         } else {

@@ -1,3 +1,5 @@
+import { uniqueMetadataCandidates } from "../../services/metadata-candidates";
+import { metadataProgress, metadataResultHtml } from "./metadata-status";
 import { Dialog, showMessage } from "siyuan";
 import { SOURCE } from "../../constants";
 import type { ItemProcessor } from "../../services/item-processor";
@@ -86,23 +88,23 @@ export async function openImportPdfDialog(
     candidateSelect.disabled = true;
     if (!file) { lookupButton.disabled = false; preview.textContent = "尚未选择 PDF。"; return; }
     preview.textContent = shouldExtract ? "正在提取元数据…" : "使用文件名创建元数据页。";
+    const progress = metadataProgress(controller.signal, text => { if (request === extractionRequest) preview.textContent = text; });
     try {
       const selectedBytes = new Uint8Array(await file.arrayBuffer());
       if (request !== extractionRequest || controller.signal.aborted) return;
       bytes = selectedBytes;
-      const extractor = new MetadataExtractor({ enableZoteroRecognizer: settings.enableZoteroRecognizer, enableCnki: settings.enableCnki, cnkiRegion: settings.cnkiRegion, cnkiTimeoutSeconds: settings.cnkiTimeoutSeconds, signal: controller.signal });
+      const extractor = new MetadataExtractor({ onProgress: progress.update, enableZoteroRecognizer: settings.enableZoteroRecognizer, enableCnki: settings.enableCnki, cnkiRegion: settings.cnkiRegion, cnkiTimeoutSeconds: settings.cnkiTimeoutSeconds, signal: controller.signal });
       const result = shouldExtract
         ? await extractor.extract(selectedBytes, file.name)
         : filenameOnlyResult(file.name);
       if (request !== extractionRequest || controller.signal.aborted) return;
-      candidates = result.candidates.includes(result.selected)
-        ? result.candidates : [result.selected, ...result.candidates];
+      candidates = uniqueMetadataCandidates([result.selected, ...result.candidates]);
       candidateSelect.innerHTML = candidates.map((candidate, index) =>
         `<option value="${index}">${escapeHtml(candidate.provider)} · ${escapeHtml(candidate.canonical.title)} · ${candidate.confidence.toFixed(2)}</option>`).join("");
       candidateSelect.disabled = candidates.length <= 1;
       candidateSelect.value = String(Math.max(0, candidates.indexOf(result.selected)));
       updatePreview();
-      setWarnings(result.warnings);
+      warningBox.hidden = false; warningBox.innerHTML = metadataResultHtml(result);
     } catch (error) {
       if (request !== extractionRequest || controller.signal.aborted) return;
       const title = file.name.replace(/\.pdf$/i, "") || "未命名文献";
@@ -115,6 +117,7 @@ export async function openImportPdfDialog(
       candidateSelect.innerHTML = `<option value="0">文件名兜底 · ${escapeHtml(title)}</option>`;
       updatePreview();
     } finally {
+      progress.stop();
       if (request === extractionRequest) { extractButton.disabled = !fileInput.files?.length; lookupButton.disabled = false; importButton.disabled = !bytes || !candidates.length; }
     }
   };
@@ -131,20 +134,22 @@ export async function openImportPdfDialog(
     importButton.disabled = true;
     lookupButton.disabled = extractButton.disabled = true;
     preview.textContent = "正在检索…";
+    const progress = metadataProgress(controller.signal, text => { if (request === extractionRequest) preview.textContent = text; });
     try {
-      const result = await new MetadataExtractor({ signal: controller.signal }).lookup(query.value);
+      const result = await new MetadataExtractor({ signal: controller.signal, onProgress: progress.update }).lookup(query.value);
       if (request !== extractionRequest || controller.signal.aborted) return;
-      candidates = [...result.candidates, ...candidates];
+      candidates = uniqueMetadataCandidates([result.selected, ...result.candidates, ...candidates]);
       candidateSelect.innerHTML = candidates.map((candidate, index) => `<option value="${index}">${escapeHtml(candidate.provider)} · ${escapeHtml(candidate.canonical.title)}</option>`).join("");
       candidateSelect.value = "0";
       candidateSelect.disabled = candidates.length <= 1;
       updatePreview();
-      setWarnings(result.warnings);
+      warningBox.hidden = false; warningBox.innerHTML = metadataResultHtml(result);
     } catch (error) {
       if (request !== extractionRequest || controller.signal.aborted) return;
       updatePreview();
       setWarnings([`检索未完成：${error instanceof Error ? error.message : String(error)}。${candidates.length ? "已有候选仍可使用。" : "请重试。"}`]);
     } finally {
+      progress.stop();
       if (request === extractionRequest) {
         importButton.disabled = !candidates.length;
         lookupButton.disabled = false;

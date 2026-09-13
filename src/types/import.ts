@@ -38,7 +38,10 @@ export interface ImportCandidate {
   attachments: ImportAttachment[];
   sourceUrl?: string;
   sessionId?: string;
+  citekey?: string;
   warnings?: string[];
+  attachmentEdit?: import("../services/attachments").AttachmentEdit;
+  getAttachments?: () => ImportAttachment[];
 }
 
 export interface MetadataCandidate {

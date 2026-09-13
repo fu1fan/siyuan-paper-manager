@@ -480,6 +480,7 @@
 
 /* Metadata editor uses explicit sections rather than adjacent collapsed margins. */
 .paper-manager-metadata-editor .paper-manager-editor-heading { margin-bottom: 20px; }
+.paper-manager-metadata-editor .paper-manager-editor-heading { padding: 2px 2px 14px; border-bottom: 1px solid var(--b3-border-color); }
 .paper-manager-editor-heading h3 { margin: 6px 0 0; font-size: 16px; line-height: 1.6; overflow-wrap: anywhere; }
 .paper-manager-metadata-editor .paper-manager-editor-source { display: grid; gap: 14px; padding-top: 16px; }
 .paper-manager-metadata-editor .paper-manager-editor-source + .paper-manager-editor-source { margin-top: 16px; border-top: 1px solid var(--b3-border-color); }
@@ -487,8 +488,165 @@
 .paper-manager-metadata-editor .paper-manager-import-lookup { margin: 0; }
 .paper-manager-metadata-editor .paper-manager-editor-result { display: grid; gap: 14px; margin-top: 20px; padding-top: 20px; border-top: 1px solid var(--b3-border-color); }
 .paper-manager-metadata-editor .paper-manager-editor-result[hidden] { display: none; }
-.paper-manager-metadata-editor [data-form] { margin-top: 20px; padding-top: 20px; border-top: 1px solid var(--b3-border-color); gap: 18px 20px; align-items: start; }
+.paper-manager-metadata-editor [data-form] { margin-top: 0; padding-top: 18px; border-top: 0; gap: 18px 20px; align-items: start; }
 .paper-manager-metadata-editor [data-form] .paper-manager-field { gap: 8px; }
 .paper-manager-metadata-editor [data-form] input { min-height: 32px; }
 .paper-manager-metadata-editor [data-form] datalist { display: none; }
 .paper-manager-metadata-editor summary { cursor: pointer; }
+
+.paper-manager-attachment-heading { display: flex; align-items: baseline; gap: 12px; }
+.paper-manager-attachment-heading h3 { margin: 0; font-size: 15px; }
+.paper-manager-attachment-list { display: grid; grid-template-columns: minmax(0, 1fr); min-width: 0; gap: 8px; margin: 14px 0; }
+.paper-manager-attachment-row { min-width: 0; max-width: 100%; box-sizing: border-box; display: flex; align-items: center; gap: 12px; padding: 12px; border: 1px solid var(--b3-border-color); border-radius: 6px; }
+.paper-manager-attachment-main { flex: 1; min-width: 0; }
+.paper-manager-attachment-main label { display: flex; align-items: center; gap: 10px; }
+.paper-manager-attachment-main input { flex: 1; min-width: 0; width: 100%; }
+.paper-manager-attachment-kind { font-size: 12px; color: var(--b3-theme-on-surface); white-space: nowrap; }
+.paper-manager-attachment-path { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 6px; font-size: 11px; }
+.paper-manager-attachment-add { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 14px 0 18px; }
+.paper-manager-attachment-add label { white-space: nowrap; max-width: 100%; display: flex; align-items: center; gap: 8px; }
+@media (max-width: 600px) {
+  .paper-manager-attachment-row { flex-wrap: wrap; }
+  .paper-manager-attachment-main { flex-basis: 100%; }
+}
+
+.paper-manager-attachment-add [hidden] { display: none; }
+
+/* Metadata editor: prioritize scanability and stable editing rhythm. */
+.paper-manager-metadata-editor .paper-manager-import-scroll {
+  padding: 18px 22px 28px;
+  background: var(--b3-theme-background);
+}
+.paper-manager-editor-heading {
+  display: grid;
+  gap: 5px;
+  margin: 0 0 18px;
+  padding: 0 2px 14px;
+  border-bottom: 1px solid var(--b3-border-color);
+}
+.paper-manager-editor-heading .paper-manager-hint { margin: 0; font-size: 11px; }
+.paper-manager-editor-heading h3 { margin: 0; font-size: 19px; line-height: 1.35; font-weight: 600; overflow-wrap: anywhere; }
+.paper-manager-metadata-editor .paper-manager-import-section { margin: 0; }
+.paper-manager-metadata-editor .paper-manager-import-section + .paper-manager-import-section { margin-top: 18px; padding-top: 18px; }
+.paper-manager-metadata-editor .paper-manager-import-section > details {
+  padding: 13px 14px 15px;
+  border: 1px solid var(--b3-border-color);
+  border-radius: var(--b3-border-radius);
+  background: var(--b3-theme-surface);
+}
+.paper-manager-metadata-editor .paper-manager-import-section > details > summary,
+.paper-manager-metadata-editor .paper-manager-editor-long > summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--b3-theme-on-background);
+}
+.paper-manager-metadata-editor .paper-manager-editor-source {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px 14px;
+  align-items: end;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--b3-border-color);
+}
+.paper-manager-metadata-editor .paper-manager-editor-source + .paper-manager-editor-source { margin-top: 12px; }
+.paper-manager-metadata-editor .paper-manager-editor-source .paper-manager-field { min-width: 0; }
+.paper-manager-metadata-editor .paper-manager-editor-source .paper-manager-actions { margin: 0; }
+.paper-manager-metadata-editor .paper-manager-import-lookup { margin: 0; }
+.paper-manager-metadata-editor .paper-manager-editor-result { display: grid; gap: 12px; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--b3-border-color); }
+.paper-manager-metadata-editor .paper-manager-import-editor-fields {
+  margin-top: 0;
+  padding: 16px;
+  border: 1px solid var(--b3-border-color);
+  border-radius: var(--b3-border-radius);
+  background: var(--b3-theme-surface);
+}
+.paper-manager-metadata-editor .paper-manager-import-editor-fields > label > span,
+.paper-manager-metadata-editor .paper-manager-editor-source label > span { font-size: 12px; font-weight: 600; color: var(--b3-theme-on-surface); }
+.paper-manager-metadata-editor .paper-manager-field { gap: 6px; }
+.paper-manager-metadata-editor .paper-manager-editor-long { grid-column: 1 / -1; margin-top: 2px; padding-top: 14px; border-top: 1px solid var(--b3-border-color); }
+.paper-manager-metadata-editor .paper-manager-editor-long > .paper-manager-hint { margin: 8px 0 6px; }
+.paper-manager-metadata-editor .paper-manager-import-warnings { margin: 14px 0 0; }
+.paper-manager-metadata-editor .paper-manager-import-status { margin: 14px 0 0; padding: 10px 12px; border-left: 3px solid var(--b3-theme-primary); border-radius: 4px; background: color-mix(in srgb, var(--b3-theme-primary) 8%, var(--b3-theme-surface)); color: var(--b3-theme-on-surface); font-size: 13px; line-height: 1.5; }
+.paper-manager-metadata-editor .paper-manager-import-status[hidden] { display: none; }
+.paper-manager-metadata-editor .paper-manager-import-section > details[open] > summary { border-bottom-color: var(--b3-theme-primary); color: var(--b3-theme-primary); }
+.paper-manager-metadata-editor .paper-manager-import-editor-fields { border-top: 1px solid var(--b3-border-color); background: color-mix(in srgb, var(--b3-theme-surface) 96%, var(--b3-theme-primary)); }
+.paper-manager-metadata-editor .paper-manager-import-footer { padding: 11px 22px; }
+@media (max-width: 620px) {
+  .paper-manager-metadata-editor .paper-manager-import-scroll { padding: 14px 12px 22px; }
+  .paper-manager-metadata-editor .paper-manager-editor-source { grid-template-columns: 1fr; }
+  .paper-manager-metadata-editor .paper-manager-editor-source .paper-manager-actions,
+  .paper-manager-metadata-editor .paper-manager-import-lookup > div { justify-self: end; }
+  .paper-manager-metadata-editor .paper-manager-import-editor-fields { padding: 12px; }
+  .paper-manager-metadata-editor .paper-manager-import-footer { padding: 10px 12px; }
+}
+
+/* The identifier field needs the full editor width; otherwise long URLs wrap into a narrow column. */
+.paper-manager-metadata-editor .paper-manager-editor-source:has([data-query]) {
+  grid-template-columns: minmax(0, 1fr);
+  align-items: stretch;
+}
+.paper-manager-metadata-editor .paper-manager-editor-source:has([data-query]) .paper-manager-import-lookup {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+}
+.paper-manager-metadata-editor .paper-manager-editor-source:has([data-query]) .paper-manager-import-lookup > p {
+  margin: 0;
+}
+.paper-manager-metadata-editor .paper-manager-editor-source:has([data-query]) textarea {
+  width: 100%;
+  min-height: 64px;
+  resize: vertical;
+}
+@media (max-width: 620px) {
+  .paper-manager-metadata-editor .paper-manager-editor-source:has([data-query]) .paper-manager-import-lookup {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+  .paper-manager-metadata-editor .paper-manager-editor-source:has([data-query]) .paper-manager-import-lookup > p {
+    flex-basis: 100%;
+  }
+}
+
+/* Keep both PDF sources aligned; the extraction action belongs to the whole row. */
+.paper-manager-metadata-editor .paper-manager-editor-source:has([data-local-pdf]) {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+}
+.paper-manager-metadata-editor .paper-manager-editor-source [data-pdf],
+.paper-manager-metadata-editor .paper-manager-editor-source [data-local-pdf] {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  height: 36px;
+  min-height: 36px;
+  margin: 0;
+  font: inherit;
+}
+.paper-manager-metadata-editor .paper-manager-editor-source [data-local-pdf] {
+  padding: 0 8px 0 0;
+  line-height: 34px;
+  overflow: hidden;
+}
+.paper-manager-metadata-editor [data-local-pdf]::file-selector-button {
+  height: 34px;
+  margin: 0 10px 0 0;
+  padding: 0 12px;
+  border: 0;
+  border-right: 1px solid var(--b3-border-color);
+  background: var(--b3-theme-background);
+  color: var(--b3-theme-on-background);
+  font: inherit;
+  cursor: pointer;
+}
+.paper-manager-metadata-editor .paper-manager-editor-source [data-pdf-actions] {
+  grid-column: 1 / -1;
+  justify-self: end;
+}
+@media (max-width: 620px) {
+  .paper-manager-metadata-editor .paper-manager-editor-source:has([data-local-pdf]) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

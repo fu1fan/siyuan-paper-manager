@@ -8,6 +8,9 @@ export const MAX_JSON_BODY_BYTES = 5 * 1024 * 1024;
 export const ATTR = {
   defaultDocumentTag: "custom-paper-default-document-tag",
   attachments: "custom-paper-attachments",
+  originalPdf: "custom-paper-original-pdf",
+  translationMonoTitle: "custom-paper-translation-mono-title",
+  translationDualTitle: "custom-paper-translation-dual-title",
   translationMono: "custom-paper-translation-mono",
   translationDual: "custom-paper-translation-dual",
   state: "custom-paper-state",
