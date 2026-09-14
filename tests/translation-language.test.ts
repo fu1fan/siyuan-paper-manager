@@ -11,9 +11,10 @@ import { DEFAULT_SETTINGS, pdf2zhLanguageCode, type PluginSettings } from "../sr
 import { paper } from "./fixtures";
 
 /**
- * pdf2zh 的配置文件里 PDF2ZH_LANG_FROM/TO 只有它自己的 GUI 会读，CLI 完全忽略，
- * 只有 -li/-lo 生效。设置面板把语言编辑迁到配置对象后，必须仍把它们翻译成 CLI 参数，
- * 否则用户改语言不会有任何效果。
+ * pdf2zh 的语言设置只在命令行下走 -li/-lo：配置里的 PDF2ZH_LANG_FROM/TO 仅被
+ * 它自己的 GUI（gui.py）读取，CLI 路径完全不读（实测 config 写 klingon→vulcan、
+ * 不传 -li/-lo 时 translator 收到 argparse 默认的 en→zh）。
+ * 所以插件必须始终显式传 -li/-lo，否则用户改语言不会有任何效果——这里锁定该契约。
  */
 function setup() {
   const root = mkdtempSync(join(tmpdir(), "paper-lang-"));
@@ -75,5 +76,20 @@ it("falls back to the plugin translation settings when the config omits language
     })).catch(() => {});
     expect(flag(args[0]!, "-li")).toBe("en");
     expect(flag(args[0]!, "-lo")).toBe("zh");
+  } finally { cleanup(); }
+});
+
+it("always passes -li/-lo so pdf2zh never falls back to its en→zh default", async () => {
+  const { root, translator, args, cleanup } = setup();
+  try {
+    // A language pair that differs from pdf2zh's built-in default: if the flags
+    // were dropped, pdf2zh would silently translate en→zh instead of ja→ko.
+    await translator.translate("doc", withLanguages(root, {
+      translateFrom: "ja", translateTo: "ko", pdf2zhConfig: {},
+    })).catch(() => {});
+    expect(flag(args[0]!, "-li")).toBe("ja");
+    expect(flag(args[0]!, "-lo")).toBe("ko");
+    expect(args[0]!).toContain("-li");
+    expect(args[0]!).toContain("-lo");
   } finally { cleanup(); }
 });

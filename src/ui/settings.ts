@@ -169,6 +169,7 @@ export class SettingsPanel {
       <section data-config-panel="json" hidden><textarea class="b3-text-field" rows="9" data-config-json placeholder="{}"></textarea></section>
       <div class="paper-manager-inline-field"><label class="paper-manager-field"><span>服务密钥名称</span><input class="b3-text-field" data-secret-name value="${escapeHtml(this.secretNameForService(service))}" placeholder="填写思源「密钥和变量」中的名称" ${serviceRequiresKey(service) ? "" : "disabled"}></label><button type="button" class="b3-button" data-test-secrets>测试密钥</button></div>
       <div class="paper-manager-preview">可视化和 JSON 编辑的是同一个 pdf2zh 配置对象；未知字段只在 JSON 标签页中保留。只填写一个思源「密钥和变量」中的密钥名称；环境变量名会根据上方翻译服务自动生成。密钥值不会写入 JSON。</div>
+      <div class="paper-manager-preview">源/目标语言由插件以 -li/-lo 传给 pdf2zh。pdf2zh 自身只在图形界面读取配置中的语言键，命令行（含直接用 pdf2zh 命令翻译）需要显式传 -li/-lo，否则它会回退到默认的 en→zh。字体路径（NOTO_FONT_PATH）则会被命令行读取。</div>
       <h3>插件翻译设置</h3>
       ${textField("pdf2zh 路径", "pdf2zhPath", this.draft.pdf2zhPath)}
       ${numberField("请求并发数（每篇 PDF，1–128）", "translationThreads", this.draft.translationThreads, 1, 128)}

@@ -305,8 +305,11 @@ export class TranslatorService {
 function selectedPdf2zhService(settings: PluginSettings): string { const config = settings.pdf2zhConfig; if (config && Array.isArray(config.translators)) { const first = config.translators[0]; if (first && typeof first === "object" && typeof (first as Record<string, unknown>).name === "string") return String((first as Record<string, unknown>).name); } if (config && typeof config.translator === "string") return config.translator; return settings.translateService; }
 
 /**
- * pdf2zh 的 -li/-lo 是唯一生效的语言来源：配置文件里的 PDF2ZH_LANG_FROM/TO 只被它的
- * GUI 读取，CLI 完全忽略。因此以托管配置（设置面板编辑）为先，回退到插件翻译设置。
+ * pdf2zh 的 -li/-lo 是唯一生效的语言来源：配置里的 PDF2ZH_LANG_FROM/TO 只被
+ * 它的 GUI（gui.py）读取，命令行路径完全不读（实测：配置写 klingon→vulcan 且
+ * 不传 -li/-lo 时，translator 收到的仍是 argparse 默认的 en→zh；传 -li ja -lo ko
+ * 后收到 ja→ko）。因此配置里的语言键只是插件自己的存储，必须显式转成 -li/-lo。
+ * 优先级：托管配置（设置面板编辑）→ 插件翻译设置 → 硬默认值。
  */
 function translationLanguages(settings: PluginSettings): { source: string; target: string } {
   const config = settings.pdf2zhConfig ?? {};
