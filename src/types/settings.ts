@@ -70,6 +70,13 @@ export function normalizeSettings(input: unknown): PluginSettings {
       ? raw.pdf2zhArgs.filter((value): value is string => typeof value === "string")
       : DEFAULT_SETTINGS.pdf2zhArgs;
   const threadArgs = extractThreadArgs(oldArgs);
+  // 语言由 CLI 的 -li/-lo 传入，不再属于托管配置。旧版本把它存在 pdf2zhConfig
+  // 里，这里在唯一的规范化入口迁移到 translateFrom/translateTo，避免升级后丢失。
+  const legacyLanguages = legacyConfigLanguages(raw.pdf2zhConfig);
+  const migrate = (value: unknown, legacy: string | undefined, fallback: string): string => {
+    if (typeof value === "string" && value.trim()) return value.trim();
+    return legacy ? legacy : fallback;
+  };
   return {
     zoteroPort: validPort(raw.zoteroPort) ? Number(raw.zoteroPort) : DEFAULT_SETTINGS.zoteroPort,
     autoListen: bool(raw.autoListen, DEFAULT_SETTINGS.autoListen),
@@ -84,8 +91,8 @@ export function normalizeSettings(input: unknown): PluginSettings {
     cnkiTimeoutSeconds: normalizeCnkiTimeout(raw.cnkiTimeoutSeconds),
     cnkiRegion: raw.cnkiRegion === "oversea" ? "oversea" : "mainland",
     pdf2zhPath: string(raw.pdf2zhPath, DEFAULT_SETTINGS.pdf2zhPath),
-    translateFrom: string(raw.translateFrom, DEFAULT_SETTINGS.translateFrom),
-    translateTo: string(raw.translateTo, DEFAULT_SETTINGS.translateTo),
+    translateFrom: migrate(raw.translateFrom, legacyLanguages.from, DEFAULT_SETTINGS.translateFrom),
+    translateTo: migrate(raw.translateTo, legacyLanguages.to, DEFAULT_SETTINGS.translateTo),
     translateService: string(raw.translateService, DEFAULT_SETTINGS.translateService),
     translationConcurrency: normalizeConcurrency(raw.translationConcurrency),
     translationThreads: normalizeTranslationThreads(raw.translationThreads ?? threadArgs.threads),
@@ -97,7 +104,7 @@ export function normalizeSettings(input: unknown): PluginSettings {
     ),
     pythonPath: optionalString(raw.pythonPath),
     pdf2zhConfigPath: optionalString(raw.pdf2zhConfigPath),
-    pdf2zhConfig: isRecord(raw.pdf2zhConfig) ? raw.pdf2zhConfig : {},
+    pdf2zhConfig: isRecord(raw.pdf2zhConfig) ? withoutConfigLanguages(raw.pdf2zhConfig) : {},
     pdf2zhSecretNames: isStringRecord(raw.pdf2zhSecretNames) ? raw.pdf2zhSecretNames : {},
   };
 }
@@ -177,6 +184,35 @@ function validPort(value: unknown): boolean {
 function normalizeConcurrency(value: unknown): number {
   const number = Number(value);
   return Number.isFinite(number) && number >= 1 ? Math.min(8, Math.floor(number)) : 1;
+}
+
+/**
+ * pdf2zh 的命令行只认 -li/-lo：配置里的这两个语言键仅被它的 GUI（gui.py）读取
+ * （实测见 translator.ts）。因此它们不属于托管配置，插件改为保存在
+ * translateFrom/translateTo 中，并在规范化时把它们从配置里迁移掉。
+ */
+export const PDF2ZH_CONFIG_LANGUAGE_KEYS = {
+  from: "PDF2ZH_LANG_FROM",
+  to: "PDF2ZH_LANG_TO",
+} as const;
+
+/** 读取旧配置里的语言值，用于迁移到插件翻译设置；非字符串或空串视为未设置。 */
+export function legacyConfigLanguages(config: unknown): { from?: string; to?: string } {
+  if (!config || typeof config !== "object" || Array.isArray(config)) return {};
+  const source = config as Record<string, unknown>;
+  const value = (key: string): string | undefined => {
+    const raw = source[key];
+    return typeof raw === "string" && raw.trim() ? raw.trim() : undefined;
+  };
+  return { from: value(PDF2ZH_CONFIG_LANGUAGE_KEYS.from), to: value(PDF2ZH_CONFIG_LANGUAGE_KEYS.to) };
+}
+
+/** 去掉托管配置里的语言键——语言由 CLI 参数传入，不属于配置。 */
+export function withoutConfigLanguages(config: Record<string, unknown>): Record<string, unknown> {
+  const next = { ...config };
+  delete next[PDF2ZH_CONFIG_LANGUAGE_KEYS.from];
+  delete next[PDF2ZH_CONFIG_LANGUAGE_KEYS.to];
+  return next;
 }
 
 /**

@@ -1,7 +1,7 @@
 import { translationSource } from "./attachments";
 import type { ChildProcess } from "node:child_process";
 import type { PaperData } from "../types/paper";
-import { extractThreadArgs, normalizeTranslationThreads, pdf2zhLanguageCode, type PluginSettings } from "../types/settings";
+import { extractThreadArgs, normalizeTranslationThreads, pdf2zhLanguageCode, withoutConfigLanguages, type PluginSettings } from "../types/settings";
 import type { TranslationState } from "../types/status";
 import { getNodeRequire, type NodeRequire, requireNode } from "../core/env";
 import { KernelClient } from "../core/kernel";
@@ -305,22 +305,16 @@ export class TranslatorService {
 function selectedPdf2zhService(settings: PluginSettings): string { const config = settings.pdf2zhConfig; if (config && Array.isArray(config.translators)) { const first = config.translators[0]; if (first && typeof first === "object" && typeof (first as Record<string, unknown>).name === "string") return String((first as Record<string, unknown>).name); } if (config && typeof config.translator === "string") return config.translator; return settings.translateService; }
 
 /**
- * pdf2zh 的 -li/-lo 是唯一生效的语言来源：配置里的 PDF2ZH_LANG_FROM/TO 只被
- * 它的 GUI（gui.py）读取，命令行路径完全不读（实测：配置写 klingon→vulcan 且
- * 不传 -li/-lo 时，translator 收到的仍是 argparse 默认的 en→zh；传 -li ja -lo ko
- * 后收到 ja→ko）。因此配置里的语言键只是插件自己的存储，必须显式转成 -li/-lo。
- * 优先级：托管配置（设置面板编辑）→ 插件翻译设置 → 硬默认值。
+ * pdf2zh 的语言只走 -li/-lo：配置里的 PDF2ZH_LANG_FROM/TO 仅被它的 GUI（gui.py）
+ * 读取，命令行路径完全不读（实测：配置写 klingon→vulcan 且不传 -li/-lo 时，
+ * translator 收到的仍是 argparse 默认的 en→zh；传 -li ja -lo ko 后收到 ja→ko）。
+ * 因此语言是 CLI 参数而非配置项，直接取自插件翻译设置。旧版本存在配置里的语言值
+ * 已由 normalizeSettings 迁移到 translateFrom/translateTo。
  */
 function translationLanguages(settings: PluginSettings): { source: string; target: string } {
-  const config = settings.pdf2zhConfig ?? {};
-  const pick = (key: "PDF2ZH_LANG_FROM" | "PDF2ZH_LANG_TO", fallback: string, hardDefault: string): string => {
-    const configured = config[key];
-    const raw = typeof configured === "string" && configured.trim() ? configured : fallback;
-    return pdf2zhLanguageCode(raw) || hardDefault;
-  };
   return {
-    source: pick("PDF2ZH_LANG_FROM", settings.translateFrom, "en"),
-    target: pick("PDF2ZH_LANG_TO", settings.translateTo, "zh"),
+    source: pdf2zhLanguageCode(settings.translateFrom) || "en",
+    target: pdf2zhLanguageCode(settings.translateTo) || "zh",
   };
 }
 
@@ -373,7 +367,10 @@ function preparePdf2zhConfig(
 }
 
 function asConfigRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value) ? structuredClone(value as Record<string, unknown>) : {};
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  // 语言只走 -li/-lo，不属于配置；读取用户已有的配置文件时也兜底剔除，
+  // 以免上次遗留的语言键又被原样写回。
+  return withoutConfigLanguages(structuredClone(value as Record<string, unknown>));
 }
 
 function withoutConfig(args: string[], managed: boolean): string[] {

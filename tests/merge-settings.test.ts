@@ -1,5 +1,5 @@
 import { findCanonicalConflicts, mergePaperData } from "../src/core/merge";
-import { normalizeSettings, serializeArgs, splitArgString } from "../src/types/settings";
+import { DEFAULT_SETTINGS, normalizeSettings, serializeArgs, splitArgString } from "../src/types/settings";
 import { paper } from "./fixtures";
 
 describe("merge policy", () => {
@@ -47,6 +47,43 @@ describe("settings", () => {
 
   it("loads the optional old translation cleanup setting", () => {
     expect(normalizeSettings({ autoDeleteOldTranslations: true }).autoDeleteOldTranslations).toBe(true);
+  });
+
+  describe("pdf2zh languages moved out of the managed config", () => {
+    it("migrates legacy config languages into the plugin translation settings", () => {
+      // v6.0.0 之前语言存在 pdf2zhConfig 里；升级后必须迁移，否则用户的语言设置会丢。
+      const settings = normalizeSettings({
+        pdf2zhConfig: {
+          PDF2ZH_LANG_FROM: "English", PDF2ZH_LANG_TO: "Simplified Chinese",
+          translators: [{ name: "deepseek", envs: { DEEPSEEK_API_KEY: null } }],
+        },
+      });
+      expect(settings.translateFrom).toBe("English");
+      expect(settings.translateTo).toBe("Simplified Chinese");
+      expect(settings.pdf2zhConfig).toEqual({ translators: [{ name: "deepseek", envs: { DEEPSEEK_API_KEY: null } }] });
+    });
+
+    it("prefers an explicit plugin language over the legacy config value", () => {
+      const settings = normalizeSettings({
+        translateFrom: "ja", translateTo: "ko",
+        pdf2zhConfig: { PDF2ZH_LANG_FROM: "English", PDF2ZH_LANG_TO: "zh" },
+      });
+      expect(settings.translateFrom).toBe("ja");
+      expect(settings.translateTo).toBe("ko");
+      expect(settings.pdf2zhConfig).toEqual({});
+    });
+
+    it("falls back to defaults when neither source has a language", () => {
+      const settings = normalizeSettings({ pdf2zhConfig: { translators: [] } });
+      expect(settings.translateFrom).toBe(DEFAULT_SETTINGS.translateFrom);
+      expect(settings.translateTo).toBe(DEFAULT_SETTINGS.translateTo);
+    });
+
+    it("ignores non-string legacy language values", () => {
+      const settings = normalizeSettings({ pdf2zhConfig: { PDF2ZH_LANG_FROM: 42, PDF2ZH_LANG_TO: ["zh"] } });
+      expect(settings.translateFrom).toBe(DEFAULT_SETTINGS.translateFrom);
+      expect(settings.translateTo).toBe(DEFAULT_SETTINGS.translateTo);
+    });
   });
 
   it("parses escaped argument strings without shell execution", () => {

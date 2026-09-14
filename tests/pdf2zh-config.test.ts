@@ -1,18 +1,17 @@
 import { HIDDEN_SECRET, canonicalPdf2zhConfig, cloneConfig, configModelValue, configTranslatorValue, maskSecrets, modelEnvKey, restoreMaskedSecrets, secretSafeConfig } from "../src/services/pdf2zh-config";
 
 describe("secret masking in the JSON editor", () => {
-  interface Config { PDF2ZH_LANG_FROM: string; translators: Array<{ name: string; envs: Record<string, unknown> }> }
+  interface Config { NOTO_FONT_PATH: string; translators: Array<{ name: string; envs: Record<string, unknown> }> }
   const config = (): Config => ({
-    PDF2ZH_LANG_FROM: "en",
-    translators: [{ name: "deepseek", envs: { DEEPSEEK_API_KEY: "sk-real-value", DEEPSEEK_MODEL: "deepseek-chat", NOTO_FONT_PATH: "/fonts" } }],
+    NOTO_FONT_PATH: "/fonts",
+    translators: [{ name: "deepseek", envs: { DEEPSEEK_API_KEY: "sk-real-value", DEEPSEEK_MODEL: "deepseek-chat" } }],
   });
 
   it("hides credential values but keeps key names and non-secrets", () => {
     const masked = maskSecrets(config()) as Config;
     expect(masked.translators[0]!.envs.DEEPSEEK_API_KEY).toBe(HIDDEN_SECRET);
     expect(masked.translators[0]!.envs.DEEPSEEK_MODEL).toBe("deepseek-chat");
-    expect(masked.translators[0]!.envs.NOTO_FONT_PATH).toBe("/fonts");
-    expect(masked.PDF2ZH_LANG_FROM).toBe("en");
+    expect(masked.NOTO_FONT_PATH).toBe("/fonts");
   });
 
   it("restores a hidden value from the original and keeps a newly typed one", () => {
@@ -87,5 +86,26 @@ describe("config written to disk", () => {
     secretSafeConfig(input);
     cloneConfig(input);
     expect(input.translators[0]!.envs.DEEPSEEK_API_KEY).toBe("sk-plaintext");
+  });
+});
+
+describe("language keys are not part of the managed config", () => {
+  it("strips language keys when canonicalizing, including from an imported system config", () => {
+    // 语言由 -li/-lo 传入；系统配置里带有的语言键不应被写进托管配置。
+    const result = canonicalPdf2zhConfig({
+      PDF2ZH_LANG_FROM: "English", PDF2ZH_LANG_TO: "Simplified Chinese",
+      NOTO_FONT_PATH: "/font.ttf",
+      translators: [{ name: "deepseek", envs: { DEEPSEEK_API_KEY: null } }],
+    });
+    expect(result.PDF2ZH_LANG_FROM).toBeUndefined();
+    expect(result.PDF2ZH_LANG_TO).toBeUndefined();
+    expect(result.NOTO_FONT_PATH).toBe("/font.ttf");
+    expect(result.translators).toEqual([{ name: "deepseek", envs: { DEEPSEEK_API_KEY: null } }]);
+  });
+
+  it("leaves other config keys untouched", () => {
+    const result = canonicalPdf2zhConfig({ PDF2ZH_VFONT: "a.ttf", CUSTOM: 1, translators: [] });
+    expect(result.PDF2ZH_VFONT).toBe("a.ttf");
+    expect(result.CUSTOM).toBe(1);
   });
 });

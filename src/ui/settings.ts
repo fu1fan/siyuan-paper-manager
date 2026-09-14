@@ -165,12 +165,14 @@ export class SettingsPanel {
       <h3>pdf2zh 配置文件</h3>
       <div class="paper-manager-actions"><button type="button" class="b3-button" data-load-config>读取托管配置</button><button type="button" class="b3-button" data-import-system-config>读取系统配置并覆盖</button></div>
       <div class="paper-manager-tabs paper-manager-config-tabs"><button type="button" data-config-tab="visual" data-active="true">可视化</button><button type="button" data-config-tab="json">JSON</button></div>
-      <section data-config-panel="visual">${languageSelect("源语言", "PDF2ZH_LANG_FROM", pdf2zhLanguageCode(String(config.PDF2ZH_LANG_FROM ?? this.draft.translateFrom)), true)}${languageSelect("目标语言", "PDF2ZH_LANG_TO", pdf2zhLanguageCode(String(config.PDF2ZH_LANG_TO ?? this.draft.translateTo)), false)}<label class="paper-manager-field"><span>字体路径</span><input class="b3-text-field" data-config-key="NOTO_FONT_PATH"></label>${translatorSelect(config)}<label class="paper-manager-field"><span>模型名称（大模型服务）</span><input class="b3-text-field" data-config-key="model" value="${escapeHtml(configModelValue(config))}" placeholder="如 deepseek-chat" ${serviceSupportsModel(service) ? "" : "disabled"}></label></section>
+      <section data-config-panel="visual"><label class="paper-manager-field"><span>字体路径</span><input class="b3-text-field" data-config-key="NOTO_FONT_PATH"></label>${translatorSelect(config)}<label class="paper-manager-field"><span>模型名称（大模型服务）</span><input class="b3-text-field" data-config-key="model" value="${escapeHtml(configModelValue(config))}" placeholder="如 deepseek-chat" ${serviceSupportsModel(service) ? "" : "disabled"}></label></section>
       <section data-config-panel="json" hidden><textarea class="b3-text-field" rows="9" data-config-json placeholder="{}"></textarea></section>
       <div class="paper-manager-inline-field"><label class="paper-manager-field"><span>服务密钥名称</span><input class="b3-text-field" data-secret-name value="${escapeHtml(this.secretNameForService(service))}" placeholder="填写思源「密钥和变量」中的名称" ${serviceRequiresKey(service) ? "" : "disabled"}></label><button type="button" class="b3-button" data-test-secrets>测试密钥</button></div>
       <div class="paper-manager-preview">可视化和 JSON 编辑的是同一个 pdf2zh 配置对象；未知字段只在 JSON 标签页中保留。只填写一个思源「密钥和变量」中的密钥名称；环境变量名会根据上方翻译服务自动生成。密钥值不会写入 JSON。</div>
-      <div class="paper-manager-preview">源/目标语言由插件以 -li/-lo 传给 pdf2zh。pdf2zh 自身只在图形界面读取配置中的语言键，命令行（含直接用 pdf2zh 命令翻译）需要显式传 -li/-lo，否则它会回退到默认的 en→zh。字体路径（NOTO_FONT_PATH）则会被命令行读取。</div>
       <h3>插件翻译设置</h3>
+      ${languageSelect("源语言", "translateFrom", pdf2zhLanguageCode(this.draft.translateFrom), true, "data-key")}
+      ${languageSelect("目标语言", "translateTo", pdf2zhLanguageCode(this.draft.translateTo), false, "data-key")}
+      <div class="paper-manager-preview">语言以 <code>-li</code>/<code>-lo</code> 命令行参数传给 pdf2zh。pdf2zh 只在图形界面读取配置里的语言键，命令行会忽略它们，所以语言属于插件设置而不是配置文件。字体路径（NOTO_FONT_PATH）则会被命令行读取，仍在上方配置中编辑。</div>
       ${textField("pdf2zh 路径", "pdf2zhPath", this.draft.pdf2zhPath)}
       ${numberField("请求并发数（每篇 PDF，1–128）", "translationThreads", this.draft.translationThreads, 1, 128)}
       ${numberField("同时翻译篇数（1–8）", "translationConcurrency", this.draft.translationConcurrency, 1, 8)}
@@ -208,10 +210,8 @@ export class SettingsPanel {
     const config = cloneConfig(this.draft.pdf2zhConfig);
     const values = new Map<string, string>();
     for (const input of root.querySelectorAll<HTMLInputElement | HTMLSelectElement>("[data-config-key]")) values.set(input.dataset.configKey!, input.value);
-    for (const key of ["PDF2ZH_LANG_FROM", "PDF2ZH_LANG_TO", "NOTO_FONT_PATH"] as const) {
-      const value = values.get(key);
-      if (value != null && value !== "") config[key] = value;
-    }
+    const fontPath = values.get("NOTO_FONT_PATH");
+    if (fontPath != null && fontPath !== "") config["NOTO_FONT_PATH"] = fontPath;
     const service = values.get("translator")?.trim() || configTranslatorValue(config);
     const model = values.get("model")?.trim() || "";
     const previous = firstTranslator(config);
@@ -240,11 +240,8 @@ export class SettingsPanel {
       const service = configTranslatorValue(config);
       for (const input of root.querySelectorAll<HTMLInputElement | HTMLSelectElement>("[data-config-key]")) {
         const key = input.dataset.configKey!;
-        // 语言键缺失时回退到插件翻译设置，避免面板把有效语言悄悄改掉。
-        const raw = key === "translator" ? service : key === "model" ? configModelValue(config)
-          : key === "PDF2ZH_LANG_FROM" ? config[key] ?? this.draft.translateFrom
-            : key === "PDF2ZH_LANG_TO" ? config[key] ?? this.draft.translateTo : config[key];
-        input.value = raw == null ? "" : (key === "PDF2ZH_LANG_FROM" || key === "PDF2ZH_LANG_TO") ? pdf2zhLanguageCode(String(raw)) : String(raw);
+        const raw = key === "translator" ? service : key === "model" ? configModelValue(config) : config[key];
+        input.value = raw == null ? "" : String(raw);
       }
       const secret = root.querySelector<HTMLInputElement>("[data-secret-name]");
       if (secret) secret.value = this.secretNameForService(service);
@@ -416,12 +413,13 @@ const PDF2ZH_LANGUAGES: Array<[string, string]> = [
   ["he", "希伯来语"], ["cs", "捷克语"], ["da", "丹麦语"], ["fi", "芬兰语"], ["el", "希腊语"],
   ["hu", "匈牙利语"], ["no", "挪威语"], ["ro", "罗马尼亚语"], ["sk", "斯洛伐克语"], ["sv", "瑞典语"],
 ];
-function languageSelect(label: string, key: string, value = "", allowAuto = false): string {
+/** 语言下拉。`attribute` 决定它写回托管配置还是插件设置。 */
+function languageSelect(label: string, key: string, value = "", allowAuto = false, attribute: "data-config-key" | "data-key" = "data-config-key"): string {
   const languages = allowAuto ? PDF2ZH_LANGUAGES : PDF2ZH_LANGUAGES.filter(([code]) => code !== "auto");
   const options = languages.some(([code]) => code === value) || !value
     ? languages
     : [[value, `${value}（自定义）`] as [string, string], ...languages];
-  return `<label class="paper-manager-field"><span>${escapeHtml(label)}</span><select class="b3-select" data-config-key="${key}">${options.map(([code, name]) => `<option value="${escapeHtml(code)}" ${code === value ? "selected" : ""}>${escapeHtml(name)} (${escapeHtml(code)})</option>`).join("")}</select></label>`;
+  return `<label class="paper-manager-field"><span>${escapeHtml(label)}</span><select class="b3-select" ${attribute}="${key}">${options.map(([code, name]) => `<option value="${escapeHtml(code)}" ${code === value ? "selected" : ""}>${escapeHtml(name)} (${escapeHtml(code)})</option>`).join("")}</select></label>`;
 }
 const PDF2ZH_SERVICES: Array<[string, string]> = [
   ["google", "Google"], ["bing", "Bing"], ["deepl", "DeepL"], ["deeplx", "DeepLX"], ["openai", "OpenAI"],

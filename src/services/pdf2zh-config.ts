@@ -1,3 +1,4 @@
+import { withoutConfigLanguages } from "../types/settings";
 import { ensureCredentialPlaceholders, isSecretKey, pdf2zhModelEnvKey, redactSecretValues } from "./pdf2zh-secrets";
 
 export const HIDDEN_SECRET = "••••••••（已隐藏）";
@@ -44,7 +45,9 @@ export function secretSafeConfig(config: Record<string, unknown>): Record<string
 
 /** 归一化为单条 translators 条目；兼容旧版的顶层 translator 字符串。 */
 export function canonicalPdf2zhConfig(config: Record<string, unknown>): Record<string, unknown> {
-  const result = cloneConfig(config);
+  // 语言属于 CLI 参数（-li/-lo）而非配置：无论是读取系统配置还是用户手填 JSON，
+  // 都统一剔除，避免这些无效键被写回托管配置。
+  const result = withoutConfigLanguages(cloneConfig(config));
   const legacy = typeof result.translator === "string" ? result.translator : "";
   const first = firstTranslator(result);
   const service = (first && typeof first.name === "string" ? first.name : legacy) || "google";

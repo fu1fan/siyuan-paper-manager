@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { createRequire } from "node:module";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ChildProcess, SpawnOptions } from "node:child_process";
@@ -57,25 +57,54 @@ it("normalizes pdf2zh's full language names to CLI codes", () => {
   expect(pdf2zhLanguageCode("")).toBe("");
 });
 
-it("passes the managed config languages through -li/-lo", async () => {
+it("passes the plugin's configured languages through -li/-lo", async () => {
   const { root, translator, args, cleanup } = setup();
   try {
     await translator.translate("doc", withLanguages(root, {
-      pdf2zhConfig: { PDF2ZH_LANG_FROM: "English", PDF2ZH_LANG_TO: "Simplified Chinese", translators: [{ name: "google", envs: {} }] },
+      translateFrom: "ja", translateTo: "ko", pdf2zhConfig: { translators: [{ name: "google", envs: {} }] },
+    })).catch(() => {});
+    expect(flag(args[0]!, "-li")).toBe("ja");
+    expect(flag(args[0]!, "-lo")).toBe("ko");
+  } finally { cleanup(); }
+});
+
+it("normalizes full language names from the plugin settings", async () => {
+  const { root, translator, args, cleanup } = setup();
+  try {
+    // pdf2zh 的 GUI 把语言存为全名；插件设置里也可能是它导入的全名。
+    await translator.translate("doc", withLanguages(root, {
+      translateFrom: "English", translateTo: "Simplified Chinese", pdf2zhConfig: {},
     })).catch(() => {});
     expect(flag(args[0]!, "-li")).toBe("en");
     expect(flag(args[0]!, "-lo")).toBe("zh");
   } finally { cleanup(); }
 });
 
-it("falls back to the plugin translation settings when the config omits languages", async () => {
+it("ignores language keys left over in the managed config", async () => {
   const { root, translator, args, cleanup } = setup();
   try {
+    // 语言不是配置项：配置里残留的 PDF2ZH_LANG_* 不得覆盖插件设置，
+    // 否则用户改了设置却没有效果。
     await translator.translate("doc", withLanguages(root, {
-      translateFrom: "en", translateTo: "zh", pdf2zhConfig: { translators: [{ name: "google", envs: {} }] },
+      translateFrom: "fr", translateTo: "de",
+      pdf2zhConfig: { PDF2ZH_LANG_FROM: "English", PDF2ZH_LANG_TO: "Simplified Chinese", translators: [{ name: "google", envs: {} }] },
     })).catch(() => {});
-    expect(flag(args[0]!, "-li")).toBe("en");
-    expect(flag(args[0]!, "-lo")).toBe("zh");
+    expect(flag(args[0]!, "-li")).toBe("fr");
+    expect(flag(args[0]!, "-lo")).toBe("de");
+  } finally { cleanup(); }
+});
+
+it("does not write language keys into the managed config", async () => {
+  const { root, translator, cleanup } = setup();
+  try {
+    await translator.translate("doc", withLanguages(root, {
+      translateFrom: "ja", translateTo: "ko",
+      // 已有配置文件里残留的语言键应被剔除，不能原样写回。
+      pdf2zhConfigPath: join(root, "pdf2zh", "config.json"),
+    })).catch(() => {});
+    const written = JSON.parse(readFileSync(join(root, "pdf2zh", "config.json"), "utf8")) as Record<string, unknown>;
+    expect(written.PDF2ZH_LANG_FROM).toBeUndefined();
+    expect(written.PDF2ZH_LANG_TO).toBeUndefined();
   } finally { cleanup(); }
 });
 
