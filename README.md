@@ -220,6 +220,8 @@ pnpm run package      # 产出 package.zip
 
 所有思源文档和数据库写入都通过内核 API；插件不会直接修改 `.sy` 文件或数据库 JSON。架构与实现细节见 [docs/development.md](docs/development.md)，设计推导见 [docs/implementation-design.md](docs/implementation-design.md)。
 
+> ⚠️ 开发时插件目录通常软链到本仓库的 `dist/`，而构建会清空 `dist/`。插件在运行时把 pdf2zh 托管配置写到 `dist/pdf2zh/config.json`，因此构建脚本会在构建前后自动备份与恢复该文件，打包时也会排除它。请使用 `pnpm run build` / `build:prod` / `dev`（它们已包含该保护），不要直接调用 `vite build`。
+
 ## 致谢
 
 - [SiYuan](https://github.com/siyuan-note/siyuan) — 本地优先的个人知识管理系统
