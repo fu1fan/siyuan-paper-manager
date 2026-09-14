@@ -2,7 +2,7 @@ import { ATTR, PLUGIN_NAME, SECTION } from "../constants";
 import type { PaperData } from "../types/paper";
 import type { PluginStatus } from "../types/status";
 import { KernelClient } from "./kernel";
-import { safeAssetUrl, safeExternalUrl } from "./normalize";
+import { assetLinkTarget, safeExternalUrl } from "./normalize";
 import { renderTemplateText } from "./template-engine";
 import { newNodeId } from "./node-id";
 import { applyDocumentTag } from "../services/document-tags";
@@ -123,7 +123,7 @@ export class TemplateService {
   }
 }
 
-export function templateContext(data: PaperData): Record<string, unknown> {
+function templateContext(data: PaperData): Record<string, unknown> {
   const canonical = data.canonical;
   return {
     itemType: markdownText(canonical.itemType),
@@ -148,13 +148,13 @@ export function templateContext(data: PaperData): Record<string, unknown> {
       separator: index < canonical.tags.length - 1 ? "、" : "",
     })),
     attachments: data.attachments.flatMap((attachment) => {
-      const url = safeAssetUrl(attachment.assetAddress);
+      const url = assetLinkTarget(attachment.assetAddress);
       return url ? [{ title: markdownLinkTitle(attachment.title), url }] : [];
     }),
     translationMonoTitle: markdownLinkTitle(data.translation.monoTitle || "单语翻译版"),
     translationDualTitle: markdownLinkTitle(data.translation.dualTitle || "双语对照版"),
-    translationMono: safeAssetUrl(data.translation.mono),
-    translationDual: safeAssetUrl(data.translation.dual),
+    translationMono: assetLinkTarget(data.translation.mono),
+    translationDual: assetLinkTarget(data.translation.dual),
     hasTranslation: Boolean(data.translation.mono || data.translation.dual),
     citekey: markdownText(data.citekey),
   };

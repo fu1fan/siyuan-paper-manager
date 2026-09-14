@@ -3,6 +3,7 @@ import type { EventEmitter } from "node:events";
 import { Dialog } from "siyuan";
 import { getNodeRequire, type NodeRequire } from "../core/env";
 import { CnkiClient, trustedCnkiUrl, type CnkiRequest, type CnkiResponse, type CnkiTransport } from "./cnki-client";
+import { errorMessage } from "../core/errors";
 
 interface WebContents extends EventEmitter {
   getURL(): string;
@@ -174,7 +175,7 @@ export class DesktopCnkiTransport implements CnkiTransport {
           status.textContent = "页面已加载。请完成验证后点击继续检索。";
         } catch (error) {
           if (settled) return;
-          const detail = error instanceof Error ? error.message : String(error);
+          const detail = errorMessage(error);
           if (/ERR_SSL_BAD_RECORD_MAC_ALERT|ERR_CONNECTION_(?:RESET|CLOSED|ABORTED)|ERR_TIMED_OUT|ERR_NETWORK_CHANGED/.test(detail) && attempt < 2) {
             status.textContent = `连接暂时失败，将自动重试（${attempt + 1}/2）：${detail}`;
             retryTimer = setTimeout(() => { void load(attempt + 1); }, 1000 * (attempt + 1));

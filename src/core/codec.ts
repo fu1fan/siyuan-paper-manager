@@ -1,6 +1,7 @@
 import { ATTR, LIBRARY_SCHEMA_VERSION } from "../constants";
 import type { PaperLibraryData } from "../types/library";
 import type { PaperData } from "../types/paper";
+import { errorMessage } from "./errors";
 
 /** 文献库数据以明文 JSON 存入文档属性。 */
 export function encodeLibraryData(data: PaperLibraryData): string {
@@ -27,7 +28,7 @@ export function decodeLibraryData(encoded: string): PaperLibraryData {
       updatedAt: parsed.updatedAt ?? new Date().toISOString(),
     };
   } catch (error) {
-    throw new Error(`文献库数据损坏: ${error instanceof Error ? error.message : String(error)}`);
+    throw new Error(`文献库数据损坏: ${errorMessage(error)}`);
   }
 }
 

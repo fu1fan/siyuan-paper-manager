@@ -2,6 +2,7 @@ import { canUseNode, getNodeRequire, requireNode, type NodeRequire } from "../co
 import type { PluginSettings } from "../types/settings";
 import type { PluginStatus } from "../types/status";
 import { resolveExecutable } from "./translator";
+import { errorMessage } from "../core/errors";
 
 export interface EnvironmentReport {
   desktopNode: { ok: boolean; detail: string; skipped?: boolean };
@@ -28,7 +29,7 @@ export async function buildEnvironmentReport(settings: PluginSettings, status: P
       nodeOk = true;
       nodeDetail = "桌面端 Node 模块可用";
     } catch (error) {
-      nodeDetail = error instanceof Error ? error.message : String(error);
+      nodeDetail = errorMessage(error);
     }
   }
   let pdf2zh = "未检测";
@@ -40,7 +41,7 @@ export async function buildEnvironmentReport(settings: PluginSettings, status: P
       pdf2zh = `${executable}：${probe.detail}`;
       pdf2zhOk = probe.ok;
     } catch (error) {
-      pdf2zh = error instanceof Error ? error.message : String(error);
+      pdf2zh = errorMessage(error);
     }
   }
   const connectorOk = status.connector.state === "listening";
@@ -86,7 +87,7 @@ export function probePdf2zh(
         resolve({ ok: false, detail: `${reason}${stderr ? `：${stderr.trim().slice(-1000)}` : ""}` });
       });
     } catch (error) {
-      resolve({ ok: false, detail: `启动失败：${error instanceof Error ? error.message : String(error)}` });
+      resolve({ ok: false, detail: `启动失败：${errorMessage(error)}` });
     }
   });
 }

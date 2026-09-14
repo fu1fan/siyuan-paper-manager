@@ -1,5 +1,5 @@
 import { validateCitekeyFormat } from "./core/naming";
-import { openConnectorMetadataEditor, openMetadataEditor } from "./ui/dialogs/edit-metadata";
+import { openConnectorMetadataDialog, openMetadataDialog } from "./ui/dialogs/edit-metadata";
 import { disposeCnkiClient } from "./services/cnki-desktop";
 import { Dialog, Plugin, confirm, getFrontend, showMessage } from "siyuan";
 import { ATTR, PLUGIN_NAME } from "./constants";
@@ -15,16 +15,18 @@ import { SettingsStore } from "./services/settings-store";
 import { TranslatorService } from "./services/translator";
 import { LibraryService } from "./services/library-service";
 import type { PluginSettings } from "./types/settings";
-import { resolveDuplicateDialog } from "./ui/dialogs/duplicate";
+import { openDuplicateResolutionDialog } from "./ui/dialogs/duplicate";
 import { openImportPdfDialog } from "./ui/dialogs/import-pdf";
 import { registerPaperUi } from "./ui/commands";
 import { escapeHtml } from "./ui/dom";
 import { SettingsPanel } from "./ui/settings";
 import { mountTranslationStatusBar } from "./ui/statusbar";
 import { openOnboardingDialog } from "./ui/dialogs/onboarding";
+import { openBatchTranslationDialog } from "./ui/dialogs/batch-translation";
 import { openCitationExportDialog } from "./ui/dialogs/export-citations";
 import { LibraryMembershipService } from "./services/library-membership";
 import { monitorLibraryMembership } from "./ui/library-membership-monitor";
+import { errorMessage } from "./core/errors";
 
 export default class PaperManagerPlugin extends Plugin {
   private readonly kernelClient = new KernelClient();
@@ -37,6 +39,7 @@ export default class PaperManagerPlugin extends Plugin {
   private libraries!: LibraryService;
   private translator: TranslatorService | null = null;
   private connector: ConnectorServer | null = null;
+  private connectorQueue: Promise<void> = Promise.resolve();
   private readonly documentKinds = new Map<string, "paper" | "library">();
   private cleanup: Array<() => void> = [];
 
@@ -53,7 +56,7 @@ export default class PaperManagerPlugin extends Plugin {
       this.kernelClient,
       this.templates,
       () => this.settings,
-      resolveDuplicateDialog,
+      openDuplicateResolutionDialog,
       this.libraries,
     );
     if (canUseNode()) {
@@ -62,6 +65,7 @@ export default class PaperManagerPlugin extends Plugin {
         readPaper: (docId) => this.libraries.readPaper(docId),
         withPaperLock: work => this.processor.runMembershipChange(work),
         persist: (docId, paper) => this.processor.persistAndRefresh(docId, paper),
+        getSecret: (name) => this.getSecret(name),
       });
     }
     this.settingsPanel = new SettingsPanel(
@@ -70,6 +74,7 @@ export default class PaperManagerPlugin extends Plugin {
       this.kernelClient,
       this.libraries,
       (settings) => this.updateSettings(settings),
+      (name) => this.getSecret(name),
     );
     this.setting = this.settingsPanel.setting;
     await this.refreshDocumentKinds();
@@ -89,10 +94,11 @@ export default class PaperManagerPlugin extends Plugin {
       repair: (docId) => this.repair(docId),
       editMetadata: async (docId) => {
         const paper = await this.libraries.readPaper(docId);
-        await openMetadataEditor(paper, () => this.settings,
+        await openMetadataDialog(paper, () => this.settings,
           (draft, citekey, attachments) => this.processor.editMetadata(docId, paper.canonical, draft, { baseline: paper.citekey, value: citekey }, attachments),
           await this.libraries.citekeys(paper.libraryId, docId));
       },
+      translateLibrary: (docId) => this.translateLibrary(docId),
       exportLibrary: (docId) => openCitationExportDialog(this.libraries, docId),
       openSettings: () => this.settingsPanel.open(),
       selfCheck: () => this.selfCheck(),
@@ -106,7 +112,8 @@ export default class PaperManagerPlugin extends Plugin {
   }
 
   onLayoutReady(): void {
-    setTimeout(() => { void this.ensureOnboarding(); }, 500);
+    const timer = setTimeout(() => { void this.ensureOnboarding(); }, 500);
+    this.cleanup.push(() => clearTimeout(timer));
   }
 
   onunload(): void {
@@ -127,10 +134,7 @@ export default class PaperManagerPlugin extends Plugin {
       this.settings = next;
       await syncDocumentTags(this.kernelClient, next.defaultDocumentTag);
     });
-    if (restart && canUseNode()) {
-      await this.stopConnector();
-      if (next.autoListen) await this.startConnector();
-    }
+    if (restart && canUseNode()) await this.restartConnector(next.autoListen);
   }
 
   private async ensureOnboarding(): Promise<void> {
@@ -156,7 +160,7 @@ export default class PaperManagerPlugin extends Plugin {
         await this.updateSettings({ ...this.settings, defaultLibraryDocId: library.docId, onboardingCompleted: true });
       });
     } catch (error) {
-      showMessage(`初始化文献库失败：${error instanceof Error ? error.message : String(error)}`, 7000, "error");
+      showMessage(`初始化文献库失败：${errorMessage(error)}`, 7000, "error");
     }
   }
 
@@ -185,7 +189,7 @@ export default class PaperManagerPlugin extends Plugin {
       await connector.start();
       this.connector = connector;
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = errorMessage(error);
       this.statusStore.update({ connector: { state: "error", message } });
       showMessage(`Connector 启动失败：${message}`, 7000, "error");
     }
@@ -201,9 +205,28 @@ export default class PaperManagerPlugin extends Plugin {
     await connector.stop();
   }
 
-  private async toggleConnector(): Promise<void> {
-    if (this.connector) await this.stopConnector();
-    else await this.startConnector();
+  /**
+   * 启停操作必须串行：start/stop 都有 await，若并发执行会出现「旧实例仍在关闭、
+   * 新实例已在同一端口监听」的竞态。队列化后，每次切换都在上一次结束后才开始。
+   */
+  private enqueueConnector(work: () => Promise<void>): Promise<void> {
+    const next = this.connectorQueue.then(work, work);
+    this.connectorQueue = next.catch(() => {});
+    return next;
+  }
+
+  private toggleConnector(): Promise<void> {
+    return this.enqueueConnector(async () => {
+      if (this.connector) await this.stopConnector();
+      else await this.startConnector();
+    });
+  }
+
+  private restartConnector(enable: boolean): Promise<void> {
+    return this.enqueueConnector(async () => {
+      await this.stopConnector();
+      if (enable) await this.startConnector();
+    });
   }
 
   private async enqueueImport(candidate: Parameters<ItemProcessor["process"]>[0]): Promise<string | undefined> {
@@ -213,14 +236,14 @@ export default class PaperManagerPlugin extends Plugin {
       showMessage(`论文${actionLabel(result.action)}：${result.title}`, 5000, "info");
       return result.docId;
     } catch (error) {
-      showMessage(`论文导入失败：${error instanceof Error ? error.message : String(error)}`, 7000, "error");
+      showMessage(`论文导入失败：${errorMessage(error)}`, 7000, "error");
       throw error;
     }
   }
 
   private async confirmConnectorImport(candidate: Parameters<ItemProcessor["process"]>[0]): Promise<string | undefined> {
     let result: string | undefined;
-    await openConnectorMetadataEditor(candidate, () => this.settings, async (edited) => {
+    await openConnectorMetadataDialog(candidate, () => this.settings, async (edited) => {
       result = await this.enqueueImport(edited);
     });
     if (!result) throw new Error("用户已取消导入");
@@ -240,6 +263,11 @@ export default class PaperManagerPlugin extends Plugin {
   private async repair(docId: string): Promise<void> {
     await this.processor.repair(docId);
     showMessage("论文元数据摘要已刷新", 4000, "info");
+  }
+
+  private async translateLibrary(docId: string): Promise<void> {
+    if (!this.translator) throw new Error("批量翻译仅支持思源桌面端");
+    await openBatchTranslationDialog(this.libraries, this.translator, () => this.settings, docId);
   }
 
   private async translate(docId: string): Promise<void> {

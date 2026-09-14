@@ -2,6 +2,7 @@ import { canUseNode } from "../core/env";
 import { Menu, Plugin, showMessage } from "siyuan";
 import type { PluginStatus } from "../types/status";
 import { currentDocumentId } from "./dom";
+import { errorMessage } from "../core/errors";
 
 export type DocKind = "library" | "paper" | null;
 
@@ -10,6 +11,7 @@ export interface PaperUiActions {
   translate: (docId: string) => Promise<void>;
   editMetadata: (docId: string) => Promise<void>;
   repair: (docId: string) => Promise<void>;
+  translateLibrary: (docId: string) => Promise<void>;
   exportLibrary: (docId?: string) => Promise<void>;
   openSettings: () => void;
   selfCheck: () => Promise<void>;
@@ -25,35 +27,35 @@ export function registerPaperUi(
 ): () => void {
   plugin.addCommand({
     langKey: "import-local-pdf",
-    langText: "论文管理：导入本地 PDF",
+    langText: "文献·导入本地 PDF",
     hotkey: "⌥I",
     callback: () => { void run(actions.importPdf); },
   });
   plugin.addCommand({
     langKey: "export-library-citations",
-    langText: "论文管理：导出文献库引用",
+    langText: "文献·导出文献库引用",
     callback: () => { void run(() => actions.exportLibrary(currentDocumentId() ?? undefined)); },
   });
   plugin.addCommand({
     langKey: "edit-paper-metadata",
-    langText: "论文管理：元数据编辑",
+    langText: "文献·元数据编辑",
     callback: () => { void withCurrentDoc(actions.editMetadata); },
   });
   plugin.addCommand({
     langKey: "refresh-paper-meta",
-    langText: "论文管理：刷新当前论文元数据摘要",
+    langText: "文献·刷新元数据摘要",
     hotkey: "⌥E",
     callback: () => { void withCurrentDoc(actions.repair); },
   });
   if (canUseNode()) plugin.addCommand({
     langKey: "translate-current-paper",
-    langText: "论文管理：翻译当前论文",
+    langText: "文献·翻译本文档",
     hotkey: "⌥T",
     callback: () => { void withCurrentDoc(actions.translate); },
   });
   plugin.addCommand({
     langKey: "paper-manager-status",
-    langText: "论文管理：环境自检",
+    langText: "文献·环境自检",
     callback: () => { void run(actions.selfCheck); },
   });
 
@@ -87,17 +89,17 @@ export function registerPaperUi(
 
 function openQuickMenu(event: MouseEvent, actions: PaperUiActions): void {
   const menu = new Menu("paper-manager-quick-menu");
-  menu.addItem({ icon: "iconDownload", label: "导入本地 PDF", click: () => run(actions.importPdf) });
-  menu.addItem({ icon: "iconUpload", label: "导出文献库引用", click: () => run(() => actions.exportLibrary(currentDocumentId() ?? undefined)) });
+  menu.addItem({ icon: "iconDownload", label: "文献·导入本地 PDF", click: () => run(actions.importPdf) });
+  menu.addItem({ icon: "iconUpload", label: "文献·导出文献库引用", click: () => run(() => actions.exportLibrary(currentDocumentId() ?? undefined)) });
   menu.addSeparator();
   const status = actions.getStatus().connector;
   if (canUseNode()) menu.addItem({
     icon: status.state === "listening" ? "iconPause" : "iconPlay",
-    label: status.state === "listening" ? "停止 Zotero 接收" : "启动 Zotero 接收",
+    label: status.state === "listening" ? "文献·停止 Zotero 接收" : "文献·启动 Zotero 接收",
     click: () => run(actions.toggleConnector),
   });
-  menu.addItem({ icon: "iconInfo", label: "环境自检", click: () => run(actions.selfCheck) });
-  menu.addItem({ icon: "iconSettings", label: "插件设置", click: actions.openSettings });
+  menu.addItem({ icon: "iconInfo", label: "文献·环境自检", click: () => run(actions.selfCheck) });
+  menu.addItem({ icon: "iconSettings", label: "文献·插件设置", click: actions.openSettings });
   menu.open(topBarMenuPosition(event));
 }
 
@@ -131,16 +133,15 @@ function addPaperItems(
     const kind = actions.detectDocKind(docId);
     if (kind === "library") {
       menu.addSeparator?.();
-      menu.addItem({ icon: "iconUpload", label: "导出文献库引用", click: () => run(() => actions.exportLibrary(docId)) });
+      menu.addItem({ icon: "iconUpload", label: "文献·导出文献库引用", click: () => run(() => actions.exportLibrary(docId)) });
+      if (canUseNode()) menu.addItem({ icon: "iconLanguage", label: "文献·批量翻译未翻译论文", click: () => run(() => actions.translateLibrary(docId)) });
       return;
     }
     if (kind !== "paper") return;
     menu.addSeparator?.();
-    menu.addItem({ icon: "iconFiles", label: "文献操作", type: "submenu", submenu: [
-      { icon: "iconEdit", label: "元数据编辑", click: () => run(() => actions.editMetadata(docId)) },
-      ...(canUseNode() ? [{ icon: "iconLanguage", label: "翻译本文档", click: () => run(() => actions.translate(docId)) }] : []),
-      { icon: "iconRefresh", label: "刷新元数据摘要", click: () => run(() => actions.repair(docId)) },
-    ] });
+    menu.addItem({ icon: "iconEdit", label: "文献·元数据编辑", click: () => run(() => actions.editMetadata(docId)) });
+    if (canUseNode()) menu.addItem({ icon: "iconLanguage", label: "文献·翻译本文档", click: () => run(() => actions.translate(docId)) });
+    menu.addItem({ icon: "iconRefresh", label: "文献·刷新元数据摘要", click: () => run(() => actions.repair(docId)) });
   } catch (error) {
     console.debug("[paper-manager] 右键菜单论文识别失败", error);
   }
@@ -159,6 +160,6 @@ async function run(action: (() => Promise<void>) | Promise<void>): Promise<void>
   try {
     await (typeof action === "function" ? action() : action);
   } catch (error) {
-    showMessage(`论文管理操作失败：${error instanceof Error ? error.message : String(error)}`, 6000, "error");
+    showMessage(`论文管理操作失败：${errorMessage(error)}`, 6000, "error");
   }
 }

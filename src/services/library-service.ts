@@ -1,6 +1,6 @@
 import { ATTR, LIBRARY_SCHEMA_VERSION } from "../constants";
 import { decodeLibraryData, encodeLibraryData, parseStoredJson } from "../core/codec";
-import type { AttributeViewRow, AttributeViewValue, KernelClient } from "../core/kernel";
+import type { AttributeViewDefinition, AttributeViewRow, AttributeViewValue, KernelClient } from "../core/kernel";
 import { newNodeId } from "../core/node-id";
 import { retryUntil } from "../core/retry";
 import type {
@@ -8,6 +8,7 @@ import type {
   LibraryMetadataField,
   PaperLibraryData,
 } from "../types/library";
+import { errorMessage } from "../core/errors";
 import {
   LIBRARY_DATABASE_FIELD_LABELS,
   LIBRARY_FIELD_LABELS,
@@ -31,7 +32,7 @@ export interface LibrarySyncResult {
   failed: Array<{ docId: string; message: string }>;
 }
 
-export interface LibraryPaperRecord { docId: string; paper: PaperData; projectNames: string[] }
+export interface LibraryPaperRecord { docId: string; paper: PaperData; projectNames: string[]; notes?: string; loadError?: string }
 
 export interface PaperEntry {
   library: PaperLibraryInfo;
@@ -198,7 +199,7 @@ export class LibraryService {
           parentChecked = true;
         }
       } catch (error) {
-        failures.push(message(error));
+        failures.push(errorMessage(error));
         console.warn("[paper-manager] 父页数据库查询失败，转为全库扫描", parentId, error);
       }
     }
@@ -209,7 +210,7 @@ export class LibraryService {
         try {
           const entry = await this.entryInLibrary(library, docId);
           if (entry) return { entry, reason: "" };
-        } catch (error) { failures.push(message(error)); }
+        } catch (error) { failures.push(errorMessage(error)); }
       }
       if (failures.length) return { entry: null, reason: `数据库读取失败：${[...new Set(failures)].join("；")}` };
       return {
@@ -219,7 +220,7 @@ export class LibraryService {
           : "工作空间中还没有论文文献库",
       };
     } catch (error) {
-      return { entry: null, reason: `文献库扫描失败：${message(error)}` };
+      return { entry: null, reason: `文献库扫描失败：${errorMessage(error)}` };
     }
   }
 
@@ -315,7 +316,7 @@ export class LibraryService {
     } catch (error) {
       await this.kernel.setBlockAttrs(docId, {
         [ATTR.librarySync]: "failed",
-        [ATTR.librarySyncError]: message(error).slice(0, 1000),
+        [ATTR.librarySyncError]: errorMessage(error).slice(0, 1000),
       });
       throw error;
     }
@@ -352,7 +353,7 @@ export class LibraryService {
           try {
             await this.kernel.addAttributeViewBlocks(library.data.avId, library.data.avBlockId, [{ id: docId, content }]);
             restoredRows += 1;
-          } catch (error) { failed.push({ docId, message: message(error) }); }
+          } catch (error) { failed.push({ docId, message: errorMessage(error) }); }
         }
       }
     }
@@ -441,6 +442,30 @@ export class LibraryService {
 
   async listPapers(libraryDocId: string): Promise<LibraryPaperRecord[]> {
     return (await this.listPapersAndCitekeys(libraryDocId)).papers;
+  }
+
+  /** 批量翻译需要文档附件属性；引用导出只读取数据库元数据。 */
+  async listTranslationPapers(libraryDocId: string): Promise<LibraryPaperRecord[]> {
+    const library = await this.getLibrary(libraryDocId);
+    const definition = await this.kernel.getAttributeView(library.data.avId);
+    const noteKeys = definition.av.keyValues.filter(({ key }) => key.name === "备注");
+    const rows = await this.allRows(library.data, definition);
+    const byDoc = new Map(rows.filter(row => boundBlockId(row)).map(row => [boundBlockId(row), row]));
+    const unique: LibraryPaperRecord[] = [...byDoc].map(([docId, row]) => ({
+      docId, paper: paperFromRow(library, row, docId), projectNames: selectContents(row, library.data.projectKeyId),
+    }));
+    for (let offset = 0; offset < unique.length; offset += 8) {
+      await Promise.all(unique.slice(offset, offset + 8).map(async record => {
+        const row = byDoc.get(record.docId)!;
+        record.notes = noteKeys.map(({ key }) => row.cells.find(cell => cell.value.keyID === key.id)?.value.text?.content ?? "").filter(Boolean).join("\n");
+        try {
+          record.paper = paperFromRow(library, row, record.docId, await this.kernel.getBlockAttrs(record.docId));
+        } catch (error) {
+          record.loadError = `附件状态读取失败：${errorMessage(error)}`;
+        }
+      }));
+    }
+    return unique;
   }
 
   /** 一次整表渲染同时产出论文记录与引用键，避免导入查重时重复渲染数据库。 */
@@ -563,11 +588,11 @@ export class LibraryService {
     }
   }
 
-  private async allRows(data: PaperLibraryData): Promise<AttributeViewRow[]> {
+  private async allRows(data: PaperLibraryData, knownDefinition?: AttributeViewDefinition): Promise<AttributeViewRow[]> {
     // 渲染视图受筛选、分组、布局和刷新时机影响，不能作为数据库成员全集。
     // 原始值的 blockID 是条目 ID，主键值的 block.id 才是绑定的文档 ID。
     try {
-      const definition = await this.kernel.getAttributeView(data.avId);
+      const definition = knownDefinition ?? await this.kernel.getAttributeView(data.avId);
       const primary = definition.av.keyValues.find(({ key }) => key.type === "block");
       if (primary) {
         const rows = new Map<string, AttributeViewRow>();
@@ -762,6 +787,3 @@ function sql(value: string): string {
   return value.replace(/'/g, "''");
 }
 
-function message(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}

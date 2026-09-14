@@ -447,8 +447,15 @@ function normalizeAssetAddress(address: string, directory: string): string {
 }
 
 function sanitizeFilename(filename: string): string {
-  // eslint-disable-next-line no-control-regex
-  return filename.replace(/[\\/:*?"<>|\u0000-\u001f]/g, "_").slice(0, 180) || "attachment.bin";
+  // 空格会截断 Markdown 链接目标，不成对的括号同样会截断。思源按原始路径解析资源、
+  // 不接受百分号编码（其「资源」面板不认 %20，会误判为丢失并可能清理掉真实文件），
+  // 因此落盘前就消除这些字符，保证文档链接与磁盘文件名逐字一致。
+  return filename
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\\/:*?"<>|\u0000-\u001f]/g, "_")
+    .replace(/[\s()]+/g, "_")
+    .replace(/_+/g, "_")
+    .slice(0, 180) || "attachment.bin";
 }
 
 function sqlString(value: string): string {

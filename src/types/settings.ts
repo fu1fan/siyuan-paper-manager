@@ -27,6 +27,10 @@ export interface PluginSettings {
   autoDeleteOldTranslations: boolean;
   pdf2zhArgs: string[];
   translationAssetsDir: string;
+  pythonPath?: string;
+  pdf2zhConfigPath?: string;
+  pdf2zhConfig?: Record<string, unknown>;
+  pdf2zhSecretNames?: Record<string, string>;
 }
 
 export const DEFAULT_SETTINGS: PluginSettings = {
@@ -52,6 +56,10 @@ export const DEFAULT_SETTINGS: PluginSettings = {
   autoDeleteOldTranslations: false,
   pdf2zhArgs: [],
   translationAssetsDir: DEFAULT_ASSETS_DIR,
+  pythonPath: "",
+  pdf2zhConfigPath: "",
+  pdf2zhConfig: {},
+  pdf2zhSecretNames: {},
 };
 
 export function normalizeSettings(input: unknown): PluginSettings {
@@ -87,7 +95,19 @@ export function normalizeSettings(input: unknown): PluginSettings {
     translationAssetsDir: normalizeAssetsDir(
       string(raw.translationAssetsDir ?? raw.translationOutDir, DEFAULT_SETTINGS.translationAssetsDir),
     ),
+    pythonPath: optionalString(raw.pythonPath),
+    pdf2zhConfigPath: optionalString(raw.pdf2zhConfigPath),
+    pdf2zhConfig: isRecord(raw.pdf2zhConfig) ? raw.pdf2zhConfig : {},
+    pdf2zhSecretNames: isStringRecord(raw.pdf2zhSecretNames) ? raw.pdf2zhSecretNames : {},
   };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function isStringRecord(value: unknown): value is Record<string, string> {
+  return isRecord(value) && Object.values(value).every(item => typeof item === "string");
 }
 
 /** Shell-free argument syntax: Windows double-quote escaping plus literal single quotes. */
@@ -154,9 +174,23 @@ function validPort(value: unknown): boolean {
   return Number.isInteger(port) && port >= 1024 && port <= 65535;
 }
 
-export function normalizeConcurrency(value: unknown): number {
+function normalizeConcurrency(value: unknown): number {
   const number = Number(value);
   return Number.isFinite(number) && number >= 1 ? Math.min(8, Math.floor(number)) : 1;
+}
+
+/**
+ * pdf2zh 的 GUI 配置（PDF2ZH_LANG_FROM/TO）存语言全名，CLI 的 -li/-lo 只认语言代码。
+ * 统一转成代码，供设置面板显示与启动参数使用。
+ */
+const PDF2ZH_LANGUAGE_ALIASES: Record<string, string> = {
+  english: "en", "simplified chinese": "zh", "traditional chinese": "zh-TW", japanese: "ja", korean: "ko",
+  german: "de", french: "fr", spanish: "es", italian: "it", portuguese: "pt", russian: "ru",
+};
+
+export function pdf2zhLanguageCode(value: string): string {
+  const clean = value.trim();
+  return PDF2ZH_LANGUAGE_ALIASES[clean.toLocaleLowerCase()] ?? clean;
 }
 
 /** pdf2zh's --thread/-t controls translation workers within one PDF (default 4). */

@@ -2,6 +2,7 @@ import { Dialog, showMessage } from "siyuan";
 import { CITATION_FORMAT_LABELS, exportCitations, type CitationExportFormat } from "../../services/citation-export";
 import type { LibraryService, LibraryPaperRecord, PaperLibraryInfo } from "../../services/library-service";
 import { button, escapeHtml } from "../dom";
+import { errorMessage } from "../../core/errors";
 
 /**
  * 导出引用对话框：任何文档都能打开，文献库在对话框内选择。
@@ -13,6 +14,7 @@ export async function openCitationExportDialog(libraries: LibraryService, prefer
     showMessage("还没有论文文献库，请先在设置中完成初始化", 5000, "error");
     return;
   }
+  let revokeTimer: ReturnType<typeof setTimeout> | undefined;
   let initialId = all[0]!.docId;
   if (preferredDocId) {
     if (all.some((library) => library.docId === preferredDocId)) {
@@ -26,6 +28,7 @@ export async function openCitationExportDialog(libraries: LibraryService, prefer
   const dialog = new Dialog({
     title: "导出引用",
     width: "960px",
+    destroyCallback: () => { if (revokeTimer) clearTimeout(revokeTimer); },
     content: `<div class="b3-dialog__content paper-manager-form paper-manager-export">
       <div class="paper-manager-export-toolbar">
         <label class="paper-manager-field paper-manager-field--column"><span>文献库</span><select class="b3-select" data-library title="文献库">${all.map((library) => `<option value="${escapeHtml(library.docId)}">${escapeHtml(library.title)}</option>`).join("")}</select></label>
@@ -64,6 +67,7 @@ export async function openCitationExportDialog(libraries: LibraryService, prefer
   let records: LibraryPaperRecord[] = [];
   let selected = new Set<string>();
   let visible: LibraryPaperRecord[] = [];
+  let loadVersion = 0;
 
   const refreshOutput = () => {
     const chosen = records.filter((record) => selected.has(record.docId)).map((record) => record.paper);
@@ -89,10 +93,15 @@ export async function openCitationExportDialog(libraries: LibraryService, prefer
     refreshOutput();
   };
   const loadLibrary = async (docId: string) => {
+    const version = ++loadVersion;
     list.innerHTML = "<div class=\"paper-manager-preview\">正在加载…</div>";
     output.value = "";
-    library = await libraries.getLibrary(docId);
-    records = await libraries.listPapers(docId);
+    const loadedLibrary = await libraries.getLibrary(docId);
+    const loadedRecords = await libraries.listPapers(docId);
+    // 快速切换文献库时，较早的请求可能后返回；过期结果不得覆盖当前选择。
+    if (version !== loadVersion) return;
+    library = loadedLibrary;
+    records = loadedRecords;
     selected = new Set(records.map((record) => record.docId));
     search.value = "";
     const projectNames = [...new Set(records.flatMap((record) => record.projectNames))];
@@ -101,7 +110,7 @@ export async function openCitationExportDialog(libraries: LibraryService, prefer
   };
   librarySelect.value = initialId;
   librarySelect.onchange = () => void loadLibrary(librarySelect.value).catch((error) => {
-    showMessage(`文献库加载失败：${error instanceof Error ? error.message : String(error)}`, 6000, "error");
+    showMessage(`文献库加载失败：${errorMessage(error)}`, 6000, "error");
   });
   search.oninput = renderList;
   project.onchange = renderList;
@@ -114,8 +123,12 @@ export async function openCitationExportDialog(libraries: LibraryService, prefer
   const download = button("下载文件", true);
   cancel.onclick = () => dialog.destroy();
   copy.onclick = async () => {
-    await navigator.clipboard.writeText(output.value);
-    showMessage("引用已复制", 3000, "info");
+    try {
+      await navigator.clipboard.writeText(output.value);
+      showMessage("引用已复制", 3000, "info");
+    } catch (error) {
+      showMessage(`复制失败，请手动选择预览内容：${errorMessage(error)}`, 6000, "error");
+    }
   };
   download.onclick = () => {
     const blob = new Blob([output.value], { type: output.dataset.mime ?? "text/plain;charset=utf-8" });
@@ -124,7 +137,7 @@ export async function openCitationExportDialog(libraries: LibraryService, prefer
     anchor.href = url;
     anchor.download = `${safeFilename(library.title)}-references.${output.dataset.extension ?? "txt"}`;
     anchor.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    revokeTimer = setTimeout(() => { revokeTimer = undefined; URL.revokeObjectURL(url); }, 1000);
   };
   dialog.element.querySelector<HTMLElement>("[data-actions]")!.append(cancel, copy, download);
   await loadLibrary(initialId);

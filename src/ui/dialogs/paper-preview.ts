@@ -1,9 +1,15 @@
 import type { MetadataCandidate } from "../../types/import";
 import { escapeHtml } from "../dom";
 
+/** Single source for user-facing item-type labels; unknown values fall through as-is. */
+export const ITEM_TYPE_LABELS: Record<string, string> = {
+  journalArticle: "期刊论文", conferencePaper: "会议论文", thesis: "学位论文", preprint: "预印本",
+  book: "图书", bookSection: "图书章节", report: "报告", webpage: "网页",
+};
+
 export function candidatePreviewHtml(candidate: MetadataCandidate): string {
   const c = candidate.canonical;
-  const types: Record<string, string> = { thesis: "学位论文", journalArticle: "期刊论文", conferencePaper: "会议论文", book: "图书", preprint: "预印本" };
+  const types = ITEM_TYPE_LABELS;
   const field = (label: string, value?: string) => `<div><dt>${label}</dt><dd>${escapeHtml(value || "未识别")}</dd></div>`;
   const authors = c.creators.map(a => [a.family, a.given].filter(Boolean).join(", "));
   const url = c.url ? `<div><dt>网址</dt><dd><details class="paper-manager-paper-url"><summary title="${escapeHtml(c.url)}"><span>${escapeHtml(c.url)}</span></summary><div class="paper-manager-paper-long">${escapeHtml(c.url)}</div></details></dd></div>` : "";

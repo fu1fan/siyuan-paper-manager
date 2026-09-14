@@ -3,6 +3,7 @@ import type { ItemProcessor } from "../services/item-processor";
 import type { LibraryMembershipService } from "../services/library-membership";
 import { currentDocumentId } from "./dom";
 import { openMembershipDialog } from "./dialogs/library-membership";
+import { errorMessage } from "../core/errors";
 
 /** One check per document activation, with a delay to let imports finish binding. */
 export function monitorLibraryMembership(plugin: Plugin, service: LibraryMembershipService, processor: ItemProcessor): () => void {
@@ -26,7 +27,7 @@ export function monitorLibraryMembership(plugin: Plugin, service: LibraryMembers
             + (result.failures.length ? ` 失败：${result.failures.join("；")}` : "");
         }, () => service.scan(docId), () => { dialog = undefined; });
       }).catch(error => {
-        if (!disposed && request === generation) showMessage(`文献库成员核对失败：${error instanceof Error ? error.message : String(error)}`, 6000, "error");
+        if (!disposed && request === generation) showMessage(`文献库成员核对失败：${errorMessage(error)}`, 6000, "error");
       });
     }, 1200);
   };

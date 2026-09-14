@@ -6,12 +6,13 @@ import { originalPdfCandidates, type AttachmentEdit } from "../../services/attac
 import { Dialog, showMessage } from "siyuan";
 import { MetadataExtractor } from "../../services/metadata-extractor";
 import type { ExtractionResult, MetadataCandidate } from "../../types/import";
-import type { PaperCanonical, PaperData } from "../../types/paper";
+import type { PaperAttachment, PaperCanonical, PaperData } from "../../types/paper";
 import type { PluginSettings } from "../../types/settings";
 import type { ImportCandidate } from "../../types/import";
-import { button, escapeHtml } from "../dom";
+import { button, creatorLines, escapeHtml, parseCreatorLines } from "../dom";
 import { generateCitekey, uniqueCitekey } from "../../core/naming";
-import { candidatePreviewHtml } from "./paper-preview";
+import { candidatePreviewHtml, ITEM_TYPE_LABELS } from "./paper-preview";
+import { errorMessage } from "../../core/errors";
 
 const fields: Array<[keyof PaperCanonical, string]> = [
   ["title", "标题"], ["url", "论文网址"],
@@ -21,9 +22,18 @@ const fields: Array<[keyof PaperCanonical, string]> = [
   ["publisherPlace", "出版地"], ["pages", "页码"],
   ["volume", "卷"], ["issue", "期"], ["isbn", "ISBN"], ["issn", "ISSN"],
 ];
-const authorsText = (c: PaperCanonical) => c.creators.map(a => [a.family, a.given].filter(Boolean).join(", ")).join("\n");
+const authorsText = (c: PaperCanonical) => creatorLines(c.creators);
 
-export async function openMetadataEditor(
+/** Fetch a workspace PDF asset for extraction, rejecting paths outside `assets/`. */
+async function readAssetPdf(attachment: PaperAttachment, signal: AbortSignal): Promise<{ bytes: Uint8Array; name: string }> {
+  const path = attachment.assetAddress.replace(/^\//, "");
+  if (!path.startsWith("assets/") || path.split("/").includes("..")) throw new Error("PDF 附件路径无效");
+  const response = await fetch(new URL(path, `${location.origin}/`), { signal });
+  if (!response.ok) throw new Error(`读取 PDF 失败：HTTP ${response.status}`);
+  return { bytes: new Uint8Array(await response.arrayBuffer()), name: attachment.title || path.split("/").pop()! };
+}
+
+export async function openMetadataDialog(
   paper: PaperData, getSettings: () => PluginSettings, save: (draft: PaperCanonical, citekey: string, attachments: AttachmentEdit) => Promise<void>,
   existingCitekeys: string[] = [],
   options: { autoCitekey?: boolean; title?: string; header?: string; files?: Map<string, File>; incoming?: () => Map<string, File> } = {},
@@ -68,7 +78,7 @@ export async function openMetadataEditor(
   const fill = () => controls().forEach(e => {
     const key = e.dataset.field as keyof PaperCanonical;
     if (key === "itemType") {
-      const types: Record<string, string> = { journalArticle: "期刊论文", conferencePaper: "会议论文", thesis: "学位论文", preprint: "预印本", book: "图书", bookSection: "图书章节", report: "报告", webpage: "网页" };
+      const types = { ...ITEM_TYPE_LABELS };
       if (draft.itemType && !Object.hasOwn(types, draft.itemType)) types[draft.itemType] = draft.itemType;
       e.innerHTML = Object.entries(types).map(([value, label]) => `<option value="${escapeHtml(value)}">${escapeHtml(label)}（${escapeHtml(value)}）</option>`).join("");
     }
@@ -77,10 +87,7 @@ export async function openMetadataEditor(
   const capture = () => controls().forEach(e => {
     const key = e.dataset.field as keyof PaperCanonical;
     if (key === "creators") {
-      if (e.value !== authorsText(draft)) draft.creators = e.value.split("\n").map(n => n.trim()).filter(Boolean).map(n => {
-        const [family, ...given] = n.split(",");
-        return { family: family!.trim(), given: given.join(",").trim(), creatorType: "author" };
-      });
+      if (e.value !== authorsText(draft)) draft.creators = parseCreatorLines(e.value);
     } else if (key === "tags") draft.tags = e.value.split("\n").map(t => t.trim()).filter(Boolean);
     else if (e.value !== String(draft[key] ?? "")) Object.assign(draft, { [key]: e.value.trim() || (key === "title" || key === "itemType" ? "" : undefined) });
   });
@@ -164,7 +171,7 @@ export async function openMetadataEditor(
       select.value = String(Math.max(0, candidates.indexOf(result.selected)));
       root.querySelector<HTMLElement>("[data-result]")!.hidden = false;
       preview(); message.hidden = false; message.innerHTML = metadataResultHtml(result);
-    } catch (error) { if (request === generation && !signal.aborted) tell(`获取失败：${error instanceof Error ? error.message : String(error)}。原编辑内容仍保留。`); }
+    } catch (error) { if (request === generation && !signal.aborted) tell(`获取失败：${errorMessage(error)}。原编辑内容仍保留。`); }
     finally { progress.stop(); if (request === generation) busy(false); }
   };
   extract.onclick = () => void run(async (extractor, signal) => {
@@ -174,11 +181,8 @@ export async function openMetadataEditor(
     if (!attachment) throw new Error("请选择 PDF");
     const staged = attachmentEditor.getFile(attachment.assetAddress);
     if (staged) return extractor.extract(new Uint8Array(await staged.arrayBuffer()), staged.name);
-    const path = attachment.assetAddress.replace(/^\//, "");
-    if (!path.startsWith("assets/") || path.split("/").includes("..")) throw new Error("PDF 附件路径无效");
-    const response = await fetch(new URL(path, `${location.origin}/`), { signal });
-    if (!response.ok) throw new Error(`读取 PDF 失败：HTTP ${response.status}`);
-    return extractor.extract(new Uint8Array(await response.arrayBuffer()), attachment.title || path.split("/").pop()!);
+    const { bytes, name } = await readAssetPdf(attachment, signal);
+    return extractor.extract(bytes, name);
   }, "正在读取 PDF 并识别标题、作者和标识符，请稍候…");
   lookup.onclick = () => { if (!query.value.trim()) { tell("请输入标识符、论文网址或 BibTeX"); return; } void run(extractor => extractor.lookup(query.value), "正在查询标识符并整理候选结果，请稍候…"); };
   local.onchange = () => { controller?.abort(); generation++; busy(false); if (local.files?.length && getSettings().autoExtractMetadata) extract.click(); };
@@ -192,7 +196,7 @@ export async function openMetadataEditor(
     local.disabled = pdf.disabled = query.disabled = true;
     citekey.disabled = regenerate.disabled = true;
     try { await save(structuredClone(draft), citekey.value.trim(), await attachmentEditor.getEdit()); showMessage("论文元数据与附件已保存，数据库和摘要已同步"); dialog.destroy(); }
-    catch (error) { tell(`保存未完成：${error instanceof Error ? error.message : String(error)}`); }
+    catch (error) { tell(`保存未完成：${errorMessage(error)}`); }
     finally { saving = false; busy(false); cancel.disabled = false; controls().forEach(e => e.disabled = false); local.disabled = pdf.disabled = query.disabled = false; citekey.disabled = regenerate.disabled = false; }
   };
   busy(false);
@@ -204,7 +208,7 @@ export async function openMetadataEditor(
 }
 
 /** Show the same editable metadata form before a Connector item is persisted. */
-export async function openConnectorMetadataEditor(
+export async function openConnectorMetadataDialog(
   candidate: ImportCandidate,
   getSettings: () => PluginSettings,
   onSave: (candidate: ImportCandidate) => Promise<void>,
@@ -229,7 +233,7 @@ export async function openConnectorMetadataEditor(
     attachments: [...files].map(([assetAddress, file]) => ({ assetAddress, title: file.name, mimeType: file.type, sha256: "" })),
     translation: {},
   };
-  await openMetadataEditor(
+  await openMetadataDialog(
     paper,
     getSettings,
     async (draft, citekey, attachmentEdit) => onSave({ ...candidate, canonical: draft, citekey, attachmentEdit }),

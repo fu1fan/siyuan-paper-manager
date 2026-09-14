@@ -83,6 +83,16 @@ export function safeAssetUrl(value: string | undefined): string | undefined {
   return clean;
 }
 
+/**
+ * Markdown 链接目标不能含裸空格或未转义括号，否则会被截断。新上传的资源已在
+ * kernel.sanitizeFilename 落盘前消除这些字符，此函数只用于兜底旧资源路径：
+ * 思源能识别 %20（会自行还原），故对问题字符做百分号编码，其余（含中文）保持原样。
+ */
+export function assetLinkTarget(value: string | undefined): string | undefined {
+  const clean = safeAssetUrl(value);
+  return clean?.replace(/[\s()]/g, (character) => encodeURIComponent(character));
+}
+
 export function safeExternalUrl(value: string | undefined): string | undefined {
   if (!value) return undefined;
   try {
@@ -113,6 +123,6 @@ function optionalText(value: unknown, max: number): string | undefined {
 
 function sanitizeText(value: string, max: number): string {
   // eslint-disable-next-line no-control-regex
-  return value.replace(/[\u0000\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "").trim().slice(0, max);
+  return value.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "").trim().slice(0, max);
 }
 

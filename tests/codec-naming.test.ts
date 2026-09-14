@@ -11,11 +11,19 @@ describe("paper state attrs and naming", () => {
 
   it("creates safe document names and deterministic citekeys", () => {
     expect(sanitizeDocumentName("a/b:c*? d")).toBe("a b c d");
+    expect(sanitizeDocumentName("a[b]c")).toBe("a b c");
+    expect(sanitizeDocumentName("report.")).toBe("report");
+    expect(sanitizeDocumentName("   ")).toBe("未命名文献");
+    expect(sanitizeDocumentName("x".repeat(200))).toHaveLength(120);
     expect(generateCitekey(paper().canonical)).toContain("2026");
   });
 
   it("compares normalized multilingual titles", () => {
     expect(titleSimilarity("A Study: of Tests", "A study of tests")).toBeGreaterThan(0.95);
+    // Unrelated titles must score low; the duplicate threshold is 0.92.
+    expect(titleSimilarity("Deep Learning for Vision", "Quantum Chemistry of Solids")).toBeLessThan(0.3);
+    expect(titleSimilarity("基于深度学习的状态估计", "基于深度学习的状态估计")).toBe(1);
+    expect(titleSimilarity("", "anything")).toBe(0);
   });
 
   it("adds stable suffixes to duplicate citekeys", () => {

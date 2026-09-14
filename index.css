@@ -104,86 +104,10 @@
   white-space: pre-wrap;
 }
 
-.paper-manager-library-section {
-  margin-top: 16px;
-  padding: 14px;
-  border: 1px solid var(--b3-border-color);
-  border-radius: var(--b3-border-radius);
-}
-
-.paper-manager-library-section h4 {
-  margin: 0 0 6px;
-}
-
-.paper-manager-project-list {
-  display: grid;
-  gap: 6px;
-  margin: 10px 0;
-}
-
-.paper-manager-project-row {
-  display: grid;
-  grid-template-columns: minmax(120px, .7fr) minmax(220px, 1.3fr) auto auto auto;
-  align-items: start;
-  gap: 6px;
-}
-
-.paper-manager-project-document {
-  position: relative;
-  min-width: 0;
-}
-
-.paper-manager-document-results {
-  position: absolute;
-  z-index: 10;
-  top: calc(100% + 4px);
-  left: 0;
-  right: 0;
-  max-height: 220px;
-  overflow: auto;
-  padding: 4px;
-  border: 1px solid var(--b3-border-color);
-  border-radius: 6px;
-  background: var(--b3-theme-background);
-  box-shadow: var(--b3-dialog-shadow);
-}
-
-.paper-manager-document-results button {
-  display: grid;
-  width: 100%;
-  gap: 2px;
-  padding: 7px 8px;
-  border: 0;
-  border-radius: 4px;
-  color: var(--b3-theme-on-background);
-  text-align: left;
-  background: transparent;
-}
-
-.paper-manager-document-results button:hover {
-  background: var(--b3-list-hover);
-}
-
-.paper-manager-document-results small {
-  overflow: hidden;
-  color: var(--b3-theme-on-surface-light);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 @media (max-width: 760px) {
   .paper-manager-field {
     grid-template-columns: minmax(0, 1fr);
     gap: 6px;
-  }
-
-  .paper-manager-project-row {
-    grid-template-columns: minmax(0, 1fr) auto auto auto;
-  }
-
-  .paper-manager-project-document {
-    grid-column: 1 / -1;
-    grid-row: 2;
   }
 }
 
@@ -199,9 +123,6 @@
   grid-template-columns: 180px minmax(0, 1fr) 150px 220px;
   gap: 8px;
 }
-
-.paper-manager-export-projects { font-size: 12px; }
-.paper-manager-export-projects:empty { display: none; }
 
 .paper-manager-export-body {
   display: grid;
@@ -322,6 +243,13 @@
   overflow: hidden;
   background: var(--b3-border-color);
 }
+.paper-manager-statusbar { position: relative; }
+.paper-manager-statusbar-popover { display:none; position:absolute; bottom:calc(100% + 8px); left:0; min-width:280px; max-width:420px; padding:10px 12px; border:1px solid var(--b3-border-color); border-radius:8px; background:var(--b3-theme-surface); box-shadow:var(--b3-point-shadow); z-index:1000; }
+.paper-manager-statusbar:hover .paper-manager-statusbar-popover:has(.paper-manager-statusbar-task) { display:block; }
+.paper-manager-statusbar-task { display:grid; grid-template-columns:minmax(100px,1fr) 100px 48px; gap:8px; align-items:center; margin:5px 0; font-size:12px; }
+.paper-manager-statusbar-task-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.paper-manager-statusbar-task-track { height:4px; border-radius:2px; background:var(--b3-border-color); overflow:hidden; }
+.paper-manager-statusbar-task-track i { display:block; height:100%; background:var(--b3-theme-primary); transition:width .25s ease; }
 
 .paper-manager-statusbar-fill {
   display: block;
@@ -367,7 +295,6 @@
 .paper-manager-import-file { padding: 8px; border: 1px solid var(--b3-border-color); border-radius: var(--b3-border-radius); color: inherit; font: inherit; overflow: hidden; text-overflow: ellipsis; }
 .paper-manager-import-file::file-selector-button { margin-right: 12px; padding: 6px 12px; border: 0; border-radius: 4px; background: var(--b3-theme-surface); color: var(--b3-theme-on-background); font: inherit; cursor: pointer; }
 .paper-manager-import-file::file-selector-button:hover { background: var(--b3-list-hover); }
-.paper-manager-import-options { display: grid; gap: 10px; margin-top: 12px; }
 /* Checkboxes stay with their labels instead of inheriting full-width fields. */
 .paper-manager-import-toggle { display: flex; align-items: flex-start; gap: 8px; line-height: 1.5; cursor: pointer; }
 .paper-manager-import-toggle input { flex: 0 0 auto; width: 14px; height: 14px; margin: 4px 0 0; accent-color: var(--b3-theme-primary); }
@@ -439,9 +366,43 @@
 .paper-manager-hint { color: var(--b3-theme-on-surface); font-size: 12px; line-height: 1.7; margin: 8px 0; overflow-wrap: anywhere; }
 .paper-manager-settings .paper-manager-tabs button { box-shadow: none; }
 .paper-manager-settings .paper-manager-panel { padding: 0 4px 16px; }
+.paper-manager-config-tabs { margin: 8px 0 12px; }
+.paper-manager-config-tabs button { font-size: 13px; }
+.paper-manager-settings [hidden] { display: none !important; }
 .paper-manager-settings .paper-manager-field { padding: 12px 0; margin: 0; border-bottom: 1px solid var(--b3-border-color); }
 .paper-manager-settings .paper-manager-field > span:first-child { font-weight: 500; }
-.paper-manager-settings .paper-manager-preview { border: 0; background: transparent; padding: 10px 0; color: var(--b3-theme-on-surface); font-size: 12px; line-height: 1.7; white-space: normal; overflow-wrap: anywhere; }
+
+/* Settings modules read as one group: heading, its action row, then explanatory text.
+   The default 18px action margin made button rows float away from their heading. */
+.paper-manager-settings .paper-manager-panel > h3 {
+  margin: 28px 0 8px;
+  font-size: 15px;
+  line-height: 1.4;
+  font-weight: 600;
+}
+.paper-manager-settings .paper-manager-panel > h3:first-child { margin-top: 0; }
+/* Inline status tag next to a module heading (e.g. an experimental feature). */
+.paper-manager-badge {
+  display: inline-block;
+  vertical-align: middle;
+  padding: 2px 7px;
+  border: 1px solid var(--b3-border-color);
+  border-radius: 4px;
+  background: var(--b3-theme-surface);
+  color: var(--b3-theme-on-surface);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.5;
+}
+.paper-manager-badge--testing {
+  border-color: color-mix(in srgb, var(--b3-theme-primary) 32%, var(--b3-border-color));
+  background: color-mix(in srgb, var(--b3-theme-primary) 12%, var(--b3-theme-surface));
+  color: var(--b3-theme-primary);
+}
+.paper-manager-settings .paper-manager-actions { margin: 0 0 6px; }
+.paper-manager-settings .paper-manager-preview { border: 0; background: transparent; padding: 0; margin: 6px 0; color: var(--b3-theme-on-surface); font-size: 12px; line-height: 1.7; white-space: normal; overflow-wrap: anywhere; }
+.paper-manager-settings .paper-manager-preview:last-child { margin-bottom: 0; }
+.paper-manager-settings .paper-manager-panel > .paper-manager-hint:last-child { margin-bottom: 0; }
 .paper-manager-settings .paper-manager-field > span:has(.b3-switch) { display: flex; align-items: center; justify-self: end; }
 .paper-manager-conflicts { max-height: none; overflow: visible; }
 .paper-manager-conflict { padding: 14px 0; border-top: 1px solid var(--b3-border-color); }
@@ -650,3 +611,36 @@
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+/* Batch translation uses SiYuan controls and theme colors. */
+.paper-manager-batch { display: flex; flex-direction: column; gap: 12px; max-height: min(780px, 80vh); min-height: 0; }
+.paper-manager-batch-heading, .paper-manager-batch-selection, .paper-manager-batch-footer { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.paper-manager-batch-heading > span { font-size: 12px; }
+.paper-manager-batch-toolbar { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(150px, 240px) auto; align-items: end; gap: 12px; }
+.paper-manager-batch-toolbar label { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.paper-manager-batch-toolbar .b3-text-field, .paper-manager-batch-toolbar .b3-select { width: 100%; box-sizing: border-box; }
+.paper-manager-batch-list { flex: 1; min-height: 140px; overflow: auto; border: 1px solid var(--b3-border-color); border-radius: var(--b3-border-radius); }
+.paper-manager-batch-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 12px; padding: 14px 16px; border-bottom: 1px solid var(--b3-border-color); }
+.paper-manager-batch-row:last-child { border-bottom: 0; }
+.paper-manager-batch-title { display: flex; align-items: baseline; gap: 10px; min-width: 0; cursor: pointer; overflow-wrap: anywhere; }
+.paper-manager-batch-title input { flex-shrink: 0; accent-color: var(--b3-theme-primary); }
+.paper-manager-batch-state { max-width: 240px; font-size: 12px; overflow-wrap: anywhere; }
+.paper-manager-batch-info { grid-column: 1 / -1; margin-left: 26px; font-size: 13px; line-height: 1.65; overflow-wrap: anywhere; }
+.paper-manager-batch-notes { white-space: pre-wrap; max-height: 100px; overflow: auto; }
+.paper-manager-batch-info details { margin-top: 4px; }
+.paper-manager-batch-info summary { cursor: pointer; }
+.paper-manager-batch-info p { white-space: pre-wrap; margin: 6px 0; }
+.paper-manager-batch-info a { margin-top: 4px; }
+.paper-manager-batch-footer { justify-content: space-between; font-size: 12px; }
+.paper-manager-batch-footer > span { flex: 1; min-width: 180px; }
+.paper-manager-batch-footer > div { display: flex; gap: 8px; }
+.paper-manager-batch-empty { padding: 40px 20px; text-align: center; color: var(--b3-theme-on-surface); }
+@media (max-width: 640px) {
+  .paper-manager-batch-toolbar { grid-template-columns: minmax(0, 1fr); }
+  .paper-manager-batch-row { grid-template-columns: minmax(0, 1fr); }
+  .paper-manager-batch-state { margin-left: 26px; max-width: none; }
+}
+.paper-manager-inline-field { display: flex; align-items: end; gap: 10px; }
+.paper-manager-inline-field .paper-manager-field { flex: 1; min-width: 0; }
+.paper-manager-inline-field > .b3-button { flex: 0 0 auto; margin-bottom: 12px; }
+.paper-manager-settings [data-config-json] { width: 100%; min-height: 320px; box-sizing: border-box; font-family: var(--b3-font-family-code); }

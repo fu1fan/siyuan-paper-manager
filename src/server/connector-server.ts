@@ -7,6 +7,7 @@ import {
   MAX_JSON_BODY_BYTES,
   SOURCE,
 } from "../constants";
+import { errorMessage } from "../core/errors";
 import type { ImportAttachment, ImportCandidate, ZoteroAttachmentMetadata } from "../types/import";
 import { canonicalFromRaw } from "../core/normalize";
 import { getNodeRequire, type NodeRequire, requireNode } from "../core/env";
@@ -69,7 +70,7 @@ export class ConnectorServer {
     this.ensureTempDirectory();
     this.server = http.createServer((request, response) => {
       void this.handleRequest(request, response).catch((error) => {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = errorMessage(error);
         console.error("[paper-manager] Connector 请求失败", error);
         this.options.onProtocolError?.(message);
         if (!response.headersSent) this.respondJson(response, error instanceof ProtocolError ? error.status : 500, { error: message });
@@ -604,15 +605,14 @@ function connectorStartError(error: unknown): string {
     if (error.code === "EADDRINUSE") return "端口已被占用，请关闭 Zotero 或修改 Connector 端口";
     if (error.code === "EACCES") return "没有监听该端口的权限";
   }
-  return error instanceof Error ? error.message : String(error);
+  return errorMessage(error);
 }
 
 class ProtocolError extends Error {
   constructor(readonly status: number, message: string) { super(message); }
 }
-function errorMessage(error: unknown): string { return error instanceof Error ? error.message : String(error); }
 
-export function decodeHeaderTitle(value: string): string {
+function decodeHeaderTitle(value: string): string {
   return value.replace(/=\?UTF-8\?([BQ])\?([^?]*)\?=/gi, (original, encoding: string, body: string) => {
     try {
       if (encoding.toUpperCase() === "B") return Buffer.from(body, "base64").toString("utf8");

@@ -259,3 +259,27 @@ it("rejects invalid confirmed citekeys before creating or uploading", async () =
   expect(kernel.createDocument).not.toHaveBeenCalled();
   expect(kernel.uploadAsset).not.toHaveBeenCalled();
 });
+
+describe("refreshing a paper's metadata summary", () => {
+  it("rebuilds the summary from the database row without rewriting metadata columns", async () => {
+    const { processor, kernel, libraries } = setup([]);
+    await processor.repair("paper-doc");
+    expect(libraries.readPaper).toHaveBeenCalledWith("paper-doc");
+    // The database stays authoritative: repair must not push metadata back into columns.
+    expect(libraries.syncPaper).toHaveBeenCalledWith("paper-doc", expect.anything(), false);
+    expect(kernel.setBlockAttrs).toHaveBeenCalled();
+  });
+
+  it("serializes repair with an import so a concurrent import cannot interleave", async () => {
+    const order: string[] = [];
+    const { processor, libraries } = setup([]);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    libraries.readPaper.mockImplementation(async () => { order.push("repair-read"); await gate; return paper(); });
+    const repair = processor.repair("paper-doc").then(() => order.push("repair-done"));
+    const second = processor.repair("paper-doc").then(() => order.push("second-done"));
+    release();
+    await Promise.all([repair, second]);
+    expect(order).toEqual(["repair-read", "repair-done", "repair-read", "second-done"]);
+  });
+});

@@ -7,6 +7,27 @@ export function escapeHtml(value: unknown): string {
     .replace(/'/g, "&#39;");
 }
 
+/** One creator per line as "姓, 名"; the inverse of `parseCreatorLines`. */
+export function creatorLines(creators: readonly { family: string; given: string }[]): string {
+  return creators.map(creator => [creator.family, creator.given].filter(Boolean).join(", ")).join("\n");
+}
+
+/**
+ * Parse the "姓, 名" textarea format.  A name without a comma is treated as a
+ * surname so a single-token Chinese name still becomes one creator.
+ */
+export function parseCreatorLines(value: string): Array<{ family: string; given: string; creatorType: "author" }> {
+  return value.split("\n").map(line => line.trim()).filter(Boolean).map(line => {
+    const [family, ...given] = line.split(",");
+    return { family: (family ?? "").trim(), given: given.join(",").trim(), creatorType: "author" as const };
+  });
+}
+
+/** Shared dialog footer with the standard scrollable-content wrapper. */
+export function dialogFooter(attributes = ""): string {
+  return `<div class="paper-manager-dialog-footer"><div class="paper-manager-actions"${attributes ? ` ${attributes}` : ""}></div></div>`;
+}
+
 export function button(label: string, primary = false): HTMLButtonElement {
   const element = document.createElement("button");
   element.type = "button";

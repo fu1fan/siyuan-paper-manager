@@ -1,6 +1,7 @@
 import { ATTR } from "../constants";
 import { decodeLibraryData } from "../core/codec";
 import type { KernelClient } from "../core/kernel";
+import { errorMessage } from "../core/errors";
 
 /** Native document tags are separate from the paper database's keyword column. */
 export async function applyDocumentTag(kernel: KernelClient, docId: string, next: string): Promise<void> {
@@ -42,7 +43,7 @@ export async function syncDocumentTags(kernel: KernelClient, next: string): Prom
       const docs = await kernel.query(`SELECT id FROM blocks WHERE type = 'd' AND id = '${id.replaceAll("'", "''")}' LIMIT 1`);
       if (!docs.length) continue; // Missing notes are handled by membership synchronization.
       await applyDocumentTag(kernel, id, next);
-    } catch (error) { failures.push(`${id}：${error instanceof Error ? error.message : String(error)}`); }
+    } catch (error) { failures.push(`${id}：${errorMessage(error)}`); }
   }
   if (failures.length) throw new Error(`设置已保存，但 ${failures.length} 篇文档标签未同步；再次保存可重试。${failures.slice(0, 3).join("；")}`);
 }

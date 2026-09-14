@@ -7,7 +7,8 @@ import { MetadataExtractor } from "../../services/metadata-extractor";
 import type { MetadataCandidate } from "../../types/import";
 import type { PluginSettings } from "../../types/settings";
 import { candidatePreviewHtml } from "./paper-preview";
-import { button, escapeHtml } from "../dom";
+import { button, creatorLines, escapeHtml, parseCreatorLines } from "../dom";
+import { errorMessage } from "../../core/errors";
 
 export async function openImportPdfDialog(
   processor: ItemProcessor,
@@ -65,7 +66,7 @@ export async function openImportPdfDialog(
     const c = selected.canonical;
     dialog.element.querySelectorAll<HTMLTextAreaElement>("[data-edit]").forEach(input => {
       const key = input.dataset.edit!;
-      input.value = key === "authors" ? c.creators.map(a => [a.family, a.given].filter(Boolean).join(", ")).join("\n") : String(c[key as keyof typeof c] ?? "");
+      input.value = key === "authors" ? creatorLines(c.creators) : String(c[key as keyof typeof c] ?? "");
     });
     preview.innerHTML = candidatePreviewHtml(selected);
   };
@@ -111,7 +112,7 @@ export async function openImportPdfDialog(
       candidates = [{
         provider: "filename",
         confidence: 0.2,
-        reason: `提取失败：${error instanceof Error ? error.message : String(error)}`,
+        reason: `提取失败：${errorMessage(error)}`,
         canonical: { itemType: "journalArticle", title, creators: [], tags: [] },
       }];
       candidateSelect.innerHTML = `<option value="0">文件名兜底 · ${escapeHtml(title)}</option>`;
@@ -147,7 +148,7 @@ export async function openImportPdfDialog(
     } catch (error) {
       if (request !== extractionRequest || controller.signal.aborted) return;
       updatePreview();
-      setWarnings([`检索未完成：${error instanceof Error ? error.message : String(error)}。${candidates.length ? "已有候选仍可使用。" : "请重试。"}`]);
+      setWarnings([`检索未完成：${errorMessage(error)}。${candidates.length ? "已有候选仍可使用。" : "请重试。"}`]);
     } finally {
       progress.stop();
       if (request === extractionRequest) {
@@ -169,10 +170,7 @@ export async function openImportPdfDialog(
     const edited = { ...selected.canonical };
     dialog.element.querySelectorAll<HTMLTextAreaElement>("[data-edit]").forEach(input => {
       const key = input.dataset.edit!;
-      if (key === "authors") edited.creators = input.value.split("\n").map(name => name.trim()).filter(Boolean).map(name => {
-        const [family, ...given] = name.split(",");
-        return { family: family!.trim(), given: given.join(",").trim(), creatorType: "author" };
-      });
+      if (key === "authors") edited.creators = parseCreatorLines(input.value);
       else Object.assign(edited, { [key]: input.value.trim() || undefined });
     });
     if (!edited.title) { showMessage("标题不能为空", 4000, "error"); return; }
@@ -190,7 +188,7 @@ export async function openImportPdfDialog(
       if (result.action !== "cancelled") showMessage(`PDF 导入完成：${result.title}`, 5000, "info");
       dialog.destroy();
     } catch (error) {
-      showMessage(`PDF 导入失败：${error instanceof Error ? error.message : String(error)}`, 7000, "error");
+      showMessage(`PDF 导入失败：${errorMessage(error)}`, 7000, "error");
       importButton.disabled = false;
       importButton.textContent = "导入并创建";
       fileInput.disabled = extractButton.disabled = lookupButton.disabled = query.disabled = false;

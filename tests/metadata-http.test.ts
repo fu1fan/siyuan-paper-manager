@@ -79,14 +79,38 @@ it("fails over official Zotero DNS addresses without changing TLS hostname or sh
   } finally { vi.unstubAllGlobals(); }
 });
 
-it("does not send other metadata hosts through the Zotero fallback", async () => {
-  const request = Object.assign(new EventEmitter(), { setHeader: vi.fn(), write: vi.fn(), end: vi.fn(), abort: vi.fn() });
-  const require = vi.fn(() => ({ net: { request: () => request } }));
+it("routes the official recognizer through the Zotero fallback and other hosts through the default fetch", async () => {
+  const require = vi.fn();
+  const globalFetch = vi.fn(async () => new Response("browser", { status: 200 }));
   vi.stubGlobal("require", require);
+  vi.stubGlobal("fetch", globalFetch);
   try {
+    // A non-Zotero host uses the ordinary browser fetch, never the native fallback.
+    const request = Object.assign(new EventEmitter(), { setHeader: vi.fn(), write: vi.fn(), end: vi.fn(), abort: vi.fn() });
+    require.mockImplementation((id: string) => id === "@electron/remote" ? { net: { request: () => request } } : ({}));
     const pending = metadataFetch("https://api.crossref.org/works");
     request.emit("error", new Error("net::ERR_CONNECTION_RESET"));
     await expect(pending).rejects.toThrow("ERR_CONNECTION_RESET");
     expect(require).not.toHaveBeenCalledWith("node:https");
+    expect(globalFetch).not.toHaveBeenCalled();
+
+    // The official recognizer does take the DNS-failover path on a connection reset.
+    const httpsRequest = vi.fn();
+    const failing = Object.assign(new EventEmitter(), {
+      setHeader: vi.fn(), write: vi.fn(), abort: vi.fn(),
+      end() { queueMicrotask(() => failing.emit("error", new Error("net::ERR_CONNECTION_RESET"))); },
+    });
+    require.mockImplementation((id: string) => id === "@electron/remote" ? { net: { request: () => failing } }
+      : id === "node:dns" ? { promises: { lookup: vi.fn().mockResolvedValue([{ address: "192.0.2.9", family: 4 }]) } }
+      : id === "node:https" ? { request: httpsRequest } : ({}));
+    // The DNS-pinned retry fails too, so the call settles with the last error.
+    httpsRequest.mockImplementation(() => {
+      const retry = Object.assign(new EventEmitter(), { end: vi.fn(), destroy: vi.fn() });
+      queueMicrotask(() => retry.emit("error", new Error("read ECONNRESET")));
+      return retry;
+    });
+    await expect(metadataFetch("https://services.zotero.org/recognizer/recognize", { method: "POST", body: "{}" })).rejects.toThrow("ECONNRESET");
+    expect(require).toHaveBeenCalledWith("node:https");
+    expect(globalFetch).not.toHaveBeenCalled();
   } finally { vi.unstubAllGlobals(); }
 });

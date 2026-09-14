@@ -2,7 +2,7 @@ import { getFrontend } from "siyuan";
 
 export type NodeRequire = (id: string) => unknown;
 
-export function isDesktopFrontend(): boolean {
+function isDesktopFrontend(): boolean {
   try {
     return ["desktop", "desktop-window"].includes(getFrontend());
   } catch {
@@ -47,15 +47,6 @@ export function unlinkIfExists(pathname: string, requireFn?: NodeRequire): void 
   }
 }
 
-export function removeDirIfExists(pathname: string, requireFn?: NodeRequire): void {
-  const fs = requireNode<typeof import("node:fs")>("fs", requireFn ?? getNodeRequire());
-  try {
-    fs.rmSync(pathname, { recursive: true, force: true });
-  } catch (error) {
-    console.warn("[paper-manager] 临时目录清理失败", pathname, error);
-  }
-}
-
 export async function sha256(bytes: Uint8Array, requireFn?: NodeRequire): Promise<string> {
   if (globalThis.crypto?.subtle) {
     const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes as BufferSource);
@@ -65,6 +56,6 @@ export async function sha256(bytes: Uint8Array, requireFn?: NodeRequire): Promis
   return crypto.createHash("sha256").update(bytes).digest("hex");
 }
 
-export function isErrno(error: unknown, code: string): boolean {
+function isErrno(error: unknown, code: string): boolean {
   return Boolean(error && typeof error === "object" && "code" in error && error.code === code);
 }

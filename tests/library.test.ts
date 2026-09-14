@@ -399,3 +399,32 @@ describe("library data decoding", () => {
     expect("columnOrder" in decoded).toBe(false);
   });
 });
+
+it("loads batch translation notes and attachment attributes without changing the database", async () => {
+  const data = fullLibraryData();
+  const getBlockAttrs = vi.fn(async (id: string) => {
+    if (id === "library") return { [ATTR.libraryData]: JSON.stringify(data) };
+    if (id === "unreadable") throw new Error("读取失败");
+    return {
+      [ATTR.attachments]: JSON.stringify([{ title: "原稿", assetAddress: "assets/source.pdf", mimeType: "application/pdf", sha256: "hash" }]),
+      [ATTR.translationDual]: "assets/dual.pdf",
+    };
+  });
+  const getAttributeView = vi.fn(async () => ({ av: { keyValues: [
+    { key: { id: "block", type: "block" }, values: [
+      { blockID: "item", block: { id: "doc", content: "论文" } },
+      { blockID: "bad", block: { id: "unreadable" } },
+      { blockID: "detached", isDetached: true, block: { content: "未绑定" } },
+    ] },
+    { key: { id: "note-key", name: "备注", type: "text" }, values: [{ blockID: "item", text: { content: "手填备注\n第二行" } }] },
+    { key: { id: "project-key", type: "mSelect" }, values: [{ blockID: "item", mSelect: [{ content: "我的项目" }] }] },
+  ] } }));
+  const fake = { getBlockAttrs, getAttributeView, query: async () => [{ content: "库" }] } as unknown as KernelClient;
+  const records = await new LibraryService(fake).listTranslationPapers("library");
+  expect(records).toHaveLength(2);
+  expect(records[0]).toMatchObject({ docId: "doc", notes: "手填备注\n第二行", projectNames: ["我的项目"], paper: {
+    attachments: [expect.objectContaining({ assetAddress: "assets/source.pdf" })], translation: { dual: "assets/dual.pdf" },
+  } });
+  expect(records[1]?.loadError).toContain("读取失败");
+  expect(getAttributeView).toHaveBeenCalledTimes(1);
+});

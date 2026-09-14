@@ -20,7 +20,7 @@ export function attachmentState(paper: AttachmentState): AttachmentState {
   return structuredClone({ attachments: paper.attachments, translation: paper.translation, originalPdf: paper.originalPdf });
 }
 
-export function isPdfAttachment(attachment: PaperAttachment): boolean {
+function isPdfAttachment(attachment: PaperAttachment): boolean {
   return attachment.mimeType === "application/pdf" || /\.pdf$/i.test(attachment.assetAddress);
 }
 

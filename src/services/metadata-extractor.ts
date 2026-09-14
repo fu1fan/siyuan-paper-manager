@@ -17,6 +17,7 @@ import { chineseLayoutTitle, pdfTextLines, type PdfLine } from "./pdf-layout";
 import { extractChineseThesis } from "./chinese-thesis";
 import { pdfDocumentOptions } from "./pdf-runtime";
 import * as pdfjs from "pdfjs-dist/legacy/build/pdf.mjs";
+import { errorMessage } from "../core/errors";
 
 export interface PdfMetadataSnapshot {
   info: Record<string, unknown>;
@@ -68,7 +69,7 @@ export class MetadataExtractor {
     try {
       snapshot = await inspectPdf(bytes, this.options.pdfOptions, status => this.progress(status), this.options.signal);
     } catch (error) {
-      warnings.push(`PDF 本地解析失败：${message(error)}`);
+      warnings.push(`PDF 本地解析失败：${errorMessage(error)}`);
     }
     this.options.signal?.throwIfAborted();
     const detectedDoi = findDoi(snapshot.pages?.slice(0, 3).flatMap((page) => page.map((line) => line.text)).join("\n") ?? snapshot.text)
@@ -93,7 +94,7 @@ export class MetadataExtractor {
       try {
         candidates.push(...await this.cnkiByTitle(local.canonical));
       } catch (error) {
-        warnings.push(`知网在线补充检索未完成（${message(error)}）；已有候选仍可使用，请核对后导入。如不需要联网补充，可在设置中关闭「中文检索（实验性）」`);
+        warnings.push(`知网在线补充检索未完成（${errorMessage(error)}）；已有候选仍可使用，请核对后导入。如不需要联网补充，可在设置中关闭「中文检索（实验性）」`);
       }
     }
 
@@ -110,7 +111,7 @@ export class MetadataExtractor {
           const identifier = string(raw.arxiv) ? `arXiv:${raw.arxiv}` : string(raw.doi) || string(raw.isbn);
           if (identifier) await supplement(identifier);
         }
-      } catch (error) { this.options.signal?.throwIfAborted(); warnings.push(`Zotero 在线识别失败：${message(error)}`); }
+      } catch (error) { this.options.signal?.throwIfAborted(); warnings.push(`Zotero 在线识别失败：${errorMessage(error)}`); }
     }
     if (!candidates.some(c => ["arxiv", "crossref", "citoid", "zotero"].includes(c.provider))
       && local.canonical.title && !containsCjk(local.canonical.title) && local.provider !== "filename") {
@@ -118,7 +119,7 @@ export class MetadataExtractor {
         const matches = await this.crossrefByTitle(local.canonical);
         candidates.push(...matches);
         if (!matches.length) warnings.push("Crossref：标题检索无匹配结果");
-      } catch (error) { this.options.signal?.throwIfAborted(); warnings.push(`Crossref：${message(error)}`); }
+      } catch (error) { this.options.signal?.throwIfAborted(); warnings.push(`Crossref：${errorMessage(error)}`); }
     }
     this.progress("正在合并候选、保留本地信息并去重（不联网）");
     this.options.signal?.throwIfAborted();
@@ -169,7 +170,7 @@ export class MetadataExtractor {
     const warnings: string[] = [];
     if (doi && !arxiv) {
       try { const candidate = await this.crossrefByDoi(doi); if (candidate) candidates.push(candidate); }
-      catch (error) { this.options.signal?.throwIfAborted(); warnings.push(`Crossref：${message(error)}`); }
+      catch (error) { this.options.signal?.throwIfAborted(); warnings.push(`Crossref：${errorMessage(error)}`); }
     }
     if (arxiv) {
       try {
@@ -177,13 +178,13 @@ export class MetadataExtractor {
         const xml = await arxivClient.query(arxiv, this.fetchImpl, this.options.signal, this.timeoutMs, status => this.progress(status));
         const candidate = arxivCandidate(xml);
         if (candidate) candidates.push(candidate);
-      } catch (error) { this.options.signal?.throwIfAborted(); warnings.push(`arXiv：${message(error).replace(/^arXiv[：\s]*/i, "")}`); }
+      } catch (error) { this.options.signal?.throwIfAborted(); warnings.push(`arXiv：${errorMessage(error).replace(/^arXiv[：\s]*/i, "")}`); }
     }
     if (!candidates.length) {
       try {
         const candidate = await this.citoidByDoi(target);
         if (candidate && candidate.canonical.title !== "未命名文献") candidates.push(candidate);
-      } catch (error) { this.options.signal?.throwIfAborted(); warnings.push(`Citoid：${message(error)}`); }
+      } catch (error) { this.options.signal?.throwIfAborted(); warnings.push(`Citoid：${errorMessage(error)}`); }
     }
     this.options.signal?.throwIfAborted();
 
@@ -242,7 +243,7 @@ export class MetadataExtractor {
       const notes: string[] = [];
       const failed = (error: unknown, stage: string) => {
         if (this.options.signal?.aborted || (error instanceof Error && error.name === "AbortError")) throw error;
-        notes.push(`${stage}未完成：${message(error)}`);
+        notes.push(`${stage}未完成：${errorMessage(error)}`);
       };
       try {
         this.progress("正在请求 CNKI 详情页：补充期刊、作者和摘要");
@@ -620,9 +621,6 @@ function string(value: unknown): string {
   return typeof value === "string" ? value.trim() : value == null ? "" : String(value).trim();
 }
 
-function message(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
 
 class PermanentHttpError extends Error {}
 

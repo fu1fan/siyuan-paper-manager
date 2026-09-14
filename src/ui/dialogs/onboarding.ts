@@ -1,7 +1,8 @@
 import { Dialog, showMessage } from "siyuan";
 import type { KernelClient } from "../../core/kernel";
 import type { LibraryService, PaperLibraryInfo } from "../../services/library-service";
-import { button, escapeHtml, inputValue } from "../dom";
+import { button, dialogFooter, escapeHtml, inputValue } from "../dom";
+import { errorMessage } from "../../core/errors";
 
 export async function openOnboardingDialog(
   kernel: KernelClient,
@@ -20,7 +21,7 @@ export async function openOnboardingDialog(
         `<option value="${escapeHtml(notebook.id)}">${escapeHtml(notebook.name)}</option>`).join("")}</select></label>
       <label class="paper-manager-field"><span>文献库名称</span><input class="b3-text-field" data-title value="论文文献库"></label>
       <label class="paper-manager-field"><span>文档路径</span><input class="b3-text-field" data-path value="/论文文献库"></label>
-      </div><div class="paper-manager-dialog-footer"><div class="paper-manager-actions" data-actions></div></div>
+      </div>${dialogFooter("data-actions")}
     </div>`,
   });
   const actions = dialog.element.querySelector<HTMLElement>("[data-actions]")!;
@@ -39,7 +40,7 @@ export async function openOnboardingDialog(
       showMessage("论文文献库已创建", 4000, "info");
       dialog.destroy();
     } catch (error) {
-      showMessage(`创建文献库失败：${error instanceof Error ? error.message : String(error)}`, 7000, "error");
+      showMessage(`创建文献库失败：${errorMessage(error)}`, 7000, "error");
       create.disabled = false;
       create.textContent = "创建并设为默认";
     }

@@ -8,6 +8,7 @@ import type {
   PaperCanonical,
   PaperData,
 } from "../types/paper";
+import { errorMessage } from "../core/errors";
 import type { PluginSettings } from "../types/settings";
 import { paperStateAttrs } from "../core/codec";
 import { readFileBytes, sha256, unlinkIfExists } from "../core/env";
@@ -266,7 +267,7 @@ export class ItemProcessor {
         await this.libraries.syncPaper(docId, paper, writeMetadata);
         return;
       } catch (error) {
-        if (attempt >= 2) throw new Error(`论文页 ${docId} 已保存，但数据库同步自动重试后仍失败：${error instanceof Error ? error.message : String(error)}`);
+        if (attempt >= 2) throw new Error(`论文页 ${docId} 已保存，但数据库同步自动重试后仍失败：${errorMessage(error)}`);
         await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
       }
     }
@@ -292,7 +293,7 @@ export class ItemProcessor {
           [ATTR.error]: String(error instanceof Error ? error.message : error).slice(0, 1000),
         });
       } catch { /* keep the original failure */ }
-      throw new Error(`论文页已创建但初始化失败：${error instanceof Error ? error.message : String(error)}`);
+      throw new Error(`论文页已创建但初始化失败：${errorMessage(error)}`);
     }
   }
 

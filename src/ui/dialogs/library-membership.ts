@@ -1,7 +1,8 @@
 import { Dialog } from "siyuan";
 import type { MembershipDifference, MembershipScan } from "../../services/library-membership";
 import { differenceKey } from "../../services/library-membership";
-import { button, escapeHtml } from "../dom";
+import { button, dialogFooter, escapeHtml } from "../dom";
+import { errorMessage } from "../../core/errors";
 
 export function openMembershipDialog(initial: MembershipScan,
   resolve: (selected: MembershipDifference[], action: "apply" | "mute") => Promise<string>,
@@ -14,7 +15,7 @@ export function openMembershipDialog(initial: MembershipScan,
     content: `<div class="b3-dialog__content paper-manager-dialog"><div class="paper-manager-dialog-scroll">
       <h3>${escapeHtml(initial.title)}</h3><p class="paper-manager-hint">以数据库为权威核对直属子笔记。勾选删除会通过思源文档历史可恢复的删除流程删除笔记及全部下级笔记；创建笔记仅恢复数据库中现有的信息，不恢复已丢失的阅读记录或附件。</p>
       <div data-membership-list></div><p class="paper-manager-hint">“本次忽略”下次打开仍会提醒。“不再提醒”保存到对应文档的隐藏属性；文档已删除时保存在文献库隐藏属性中。</p>
-      <p data-membership-message role="status"></p></div><div class="paper-manager-dialog-footer"><div class="paper-manager-actions" data-membership-actions></div></div></div>` });
+      <p data-membership-message role="status"></p></div>${dialogFooter("data-membership-actions")}</div>` });
   const root = dialog.element;
   const list = root.querySelector<HTMLElement>("[data-membership-list]")!;
   const message = root.querySelector<HTMLElement>("[data-membership-message]")!;
@@ -61,7 +62,7 @@ export function openMembershipDialog(initial: MembershipScan,
       const scan = await rescan();
       entries = (scan?.differences ?? []).filter(entry => !ignoredThisTime.has(differenceKey(entry)));
       render();
-    } catch (error) { message.textContent = `处理未完成：${error instanceof Error ? error.message : String(error)}`; }
+    } catch (error) { message.textContent = `处理未完成：${errorMessage(error)}`; }
     finally {
       busy = false;
       root.querySelectorAll<HTMLInputElement | HTMLButtonElement | HTMLSelectElement>("input, button, select").forEach(control => { control.disabled = false; });

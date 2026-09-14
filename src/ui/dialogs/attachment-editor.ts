@@ -1,7 +1,23 @@
 import type { PaperData } from "../../types/paper";
 import { attachmentState, originalPdfCandidates, type AttachmentEdit, type AttachmentState, type PendingAttachment } from "../../services/attachments";
-import { safeAssetUrl } from "../../core/normalize";
+import { assetLinkTarget } from "../../core/normalize";
 import { escapeHtml } from "../dom";
+
+type AttachmentRow = { item: { title: string; assetAddress: string; mimeType: string; sha256: string }; type: "attachment" | "mono" | "dual" };
+
+function attachmentLabel(row: AttachmentRow): string {
+  if (row.type === "mono") return "单语译稿";
+  if (row.type === "dual") return "双语译稿";
+  return row.item.mimeType === "text/html" || /\.html?$/i.test(row.item.assetAddress) ? "网页快照" : "附件";
+}
+
+function attachmentRowHtml(row: AttachmentRow, index: number): string {
+  const label = attachmentLabel(row);
+  const url = assetLinkTarget(row.item.assetAddress);
+  return `<div class="paper-manager-attachment-row"><div class="paper-manager-attachment-main"><label><span class="paper-manager-attachment-kind">${label}</span><input class="b3-text-field" data-attachment-name="${index}" aria-label="${label}名称 ${index + 1}" value="${escapeHtml(row.item.title)}" maxlength="200"></label>
+    <span class="paper-manager-hint paper-manager-attachment-path" title="${escapeHtml(row.item.assetAddress)}">${row.item.assetAddress.startsWith("pending:") ? "待保存上传" : escapeHtml(row.item.assetAddress)}</span></div>
+    <div class="paper-manager-actions">${url ? `<a class="b3-button b3-button--outline" href="/${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">打开</a>` : ""}<button type="button" class="b3-button b3-button--cancel" data-attachment-delete="${index}" aria-label="删除${escapeHtml(row.item.title)}">删除</button></div></div>`;
+}
 
 export function mountAttachmentEditor(host: HTMLElement, paper: PaperData, changed: () => void, initialFiles: Map<string, File> = new Map()) {
   const baseline = attachmentState(paper);
@@ -27,7 +43,7 @@ export function mountAttachmentEditor(host: HTMLElement, paper: PaperData, chang
   const error = host.querySelector<HTMLElement>("[data-attachment-error]")!;
   const tell = (text: string) => { error.textContent = text; error.hidden = !text; };
   const translationTitle = (type: "mono" | "dual") => draft.translation[type === "mono" ? "monoTitle" : "dualTitle"] || (type === "mono" ? "单语翻译版" : "双语对照版");
-  const entries = () => [
+  const entries = (): AttachmentRow[] => [
     ...draft.attachments.map(item => ({ item, type: "attachment" as const })),
     ...(["mono", "dual"] as const).flatMap(type => draft.translation[type] ? [{ type, item: {
       title: translationTitle(type), assetAddress: draft.translation[type]!, mimeType: "application/pdf", sha256: "",
@@ -42,36 +58,28 @@ export function mountAttachmentEditor(host: HTMLElement, paper: PaperData, chang
       ? "有多个 PDF，指定原稿后才能翻译。译稿不会作为原稿候选。"
       : "翻译和 PDF 元数据识别默认使用该原稿。更换原稿不会自动重新生成已有译稿。";
   };
+  const renameRow = (rows: AttachmentRow[], control: HTMLInputElement) => {
+    const row = rows[Number(control.dataset.attachmentName)]!;
+    if (!control.value.trim()) { tell("附件名称不能为空"); control.value = row.item.title; return; }
+    remember();
+    if (row.type === "attachment") row.item.title = control.value.trim();
+    else draft.translation[row.type === "mono" ? "monoTitle" : "dualTitle"] = control.value.trim();
+    tell(""); host.querySelector<HTMLButtonElement>("[data-undo]")!.hidden = false; refreshOriginal(); changed();
+  };
+  const deleteRow = (rows: AttachmentRow[], control: HTMLButtonElement) => {
+    remember();
+    const row = rows[Number(control.dataset.attachmentDelete)]!;
+    if (row.type === "attachment") draft.attachments = draft.attachments.filter(item => item.assetAddress !== row.item.assetAddress);
+    else { delete draft.translation[row.type]; delete draft.translation[row.type === "mono" ? "monoTitle" : "dualTitle"]; }
+    if (draft.originalPdf === row.item.assetAddress) draft.originalPdf = undefined;
+    tell(""); render(); changed();
+  };
   const render = () => {
     const rows = entries();
     host.querySelector<HTMLElement>("[data-count]")!.textContent = `${rows.length} 个附件`;
-    list.innerHTML = rows.length ? rows.map(({ item, type }, index) => {
-      const url = safeAssetUrl(item.assetAddress);
-      const label = type === "mono" ? "单语译稿" : type === "dual" ? "双语译稿" : item.mimeType === "text/html" || /\.html?$/i.test(item.assetAddress) ? "网页快照" : "附件";
-      return `<div class="paper-manager-attachment-row"><div class="paper-manager-attachment-main"><label><span class="paper-manager-attachment-kind">${label}</span><input class="b3-text-field" data-attachment-name="${index}" aria-label="${label}名称 ${index + 1}" value="${escapeHtml(item.title)}" maxlength="200"></label>
-        <span class="paper-manager-hint paper-manager-attachment-path" title="${escapeHtml(item.assetAddress)}">${item.assetAddress.startsWith("pending:") ? "待保存上传" : escapeHtml(item.assetAddress)}</span></div>
-        <div class="paper-manager-actions">${url ? `<a class="b3-button b3-button--outline" href="/${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">打开</a>` : ""}<button type="button" class="b3-button b3-button--cancel" data-attachment-delete="${index}" aria-label="删除${escapeHtml(item.title)}">删除</button></div></div>`;
-    }).join("") : '<p class="paper-manager-hint">暂无附件，可添加 PDF、网页快照或其他文件。</p>';
-    list.querySelectorAll<HTMLInputElement>("[data-attachment-name]").forEach(control => {
-      control.onchange = () => {
-        const row = rows[Number(control.dataset.attachmentName)]!;
-        if (!control.value.trim()) { tell("附件名称不能为空"); control.value = row.item.title; return; }
-        remember();
-        if (row.type === "attachment") row.item.title = control.value.trim();
-        else draft.translation[row.type === "mono" ? "monoTitle" : "dualTitle"] = control.value.trim();
-        tell(""); host.querySelector<HTMLButtonElement>("[data-undo]")!.hidden = false; refreshOriginal(); changed();
-      };
-    });
-    list.querySelectorAll<HTMLButtonElement>("[data-attachment-delete]").forEach(control => {
-      control.onclick = () => {
-        remember();
-        const row = rows[Number(control.dataset.attachmentDelete)]!;
-        if (row.type === "attachment") draft.attachments = draft.attachments.filter(item => item.assetAddress !== row.item.assetAddress);
-        else { delete draft.translation[row.type]; delete draft.translation[row.type === "mono" ? "monoTitle" : "dualTitle"]; }
-        if (draft.originalPdf === row.item.assetAddress) draft.originalPdf = undefined;
-        tell(""); render(); changed();
-      };
-    });
+    list.innerHTML = rows.length ? rows.map(attachmentRowHtml).join("") : '<p class="paper-manager-hint">暂无附件，可添加 PDF、网页快照或其他文件。</p>';
+    list.querySelectorAll<HTMLInputElement>("[data-attachment-name]").forEach(control => { control.onchange = () => renameRow(rows, control); });
+    list.querySelectorAll<HTMLButtonElement>("[data-attachment-delete]").forEach(control => { control.onclick = () => deleteRow(rows, control); });
     host.querySelector<HTMLButtonElement>("[data-undo]")!.hidden = !history.length;
     refreshOriginal(); setDisabled(disabled);
   };

@@ -6,6 +6,7 @@ import { newNodeId } from "../core/node-id";
 import { sanitizeDocumentName } from "../core/naming";
 import { TemplateService } from "../core/templates";
 import { paperFromRow, type PaperLibraryInfo } from "./library-service";
+import { errorMessage } from "../core/errors";
 
 export interface MembershipDifference {
   kind: "delete-note" | "create-note" | "outside-note";
@@ -139,7 +140,7 @@ export class LibraryMembershipService {
           await this.createAndBind(libraryId, entry);
         }
         result.changed++;
-      } catch (error) { result.failures.push(`${requested.title}：${error instanceof Error ? error.message : String(error)}`); }
+      } catch (error) { result.failures.push(`${requested.title}：${errorMessage(error)}`); }
     }
     return result;
   }

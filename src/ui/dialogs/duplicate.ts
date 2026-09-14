@@ -1,8 +1,8 @@
 import { Dialog } from "siyuan";
 import type { DuplicateMatch, DuplicateResolution, PaperData } from "../../types/paper";
-import { button, escapeHtml } from "../dom";
+import { button, dialogFooter, escapeHtml } from "../dom";
 
-export function resolveDuplicateDialog(match: DuplicateMatch, incoming: PaperData): Promise<DuplicateResolution> {
+export function openDuplicateResolutionDialog(match: DuplicateMatch, incoming: PaperData): Promise<DuplicateResolution> {
   return new Promise((resolve) => {
     let completed = false;
     const finish = (result: DuplicateResolution, dialog: Dialog) => {
@@ -32,7 +32,7 @@ export function resolveDuplicateDialog(match: DuplicateMatch, incoming: PaperDat
         <p>现有：${escapeHtml(match.existing.canonical.title)}<br>传入：${escapeHtml(incoming.canonical.title)}</p>
         <p class="paper-manager-hint">默认合并只填补空字段、补充去重后的附件，不覆盖阅读笔记。勾选下列字段才会用传入值覆盖：</p>
         <div class="paper-manager-conflicts">${rows || "<p>没有字段冲突。</p>"}</div>
-        </div><div class="paper-manager-dialog-footer"><div class="paper-manager-actions" data-actions></div></div>
+        </div>${dialogFooter("data-actions")}
       </div>`,
       destroyCallback: () => {
         if (!completed) { completed = true; resolve({ action: "cancel" }); }

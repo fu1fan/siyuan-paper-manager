@@ -10,7 +10,7 @@ export interface CnkiTransport {
 const databases = "YSTT4HG0,LSTPFY1C,JUP3MUPD,MPMFIG1A,WQ0UVIAA,BLZOG7CK,PWFIRAGL,EMRPGLPA,NLBO1Z6R,NN3FJMUV";
 const overseasDatabases = "CJFQ,CDMD,CIPD,CCND,CYFD,CCJD,BDZK,CISD,CJFN";
 
-export function cnkiHome(region: CnkiRegion): string {
+function cnkiHome(region: CnkiRegion): string {
   return region === "oversea" ? "https://chn.oversea.cnki.net/kns/defaultresult/index" : "https://kns.cnki.net/kns8s/defaultresult/index";
 }
 export function trustedCnkiUrl(value: string, base = cnkiHome("mainland")): string {
