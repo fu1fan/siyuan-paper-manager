@@ -2,6 +2,15 @@ import path from "node:path";
 import type { NodeRequire } from "../src/core/env";
 import { configPath, detectPdf2zh, inspectPdf2zh, resolvePdf2zh, systemConfigPath } from "../src/services/pdf2zh-deployment";
 
+/**
+ * These helpers branch on the real platform and only accept Windows
+ * executables as `.exe`, so expectations must be derived the same way.
+ * `findUv` falls back from `uv.exe` to `uv`, so stubbing `uv` works on both.
+ */
+const WINDOWS = process.platform === "win32";
+const PATH_LOOKUP = WINDOWS ? "where" : "which";
+const PDF2ZH_BIN = WINDOWS ? "pdf2zh.exe" : "pdf2zh";
+
 /** Builds a NodeRequire stand-in from a table of `execFile` results keyed by "cmd arg1 arg2". */
 function requireWith(execResults: Record<string, { stdout: string; code?: number }>, files: string[] = []) {
   const calls: string[] = [];
@@ -40,17 +49,19 @@ describe("pdf2zh managed config paths", () => {
 
 describe("detecting an installed pdf2zh", () => {
   it("prefers the uv tool bin over PATH", async () => {
-    const bin = path.join("/home/alice/.local/bin", "pdf2zh");
+    const binDir = "/home/alice/.local/bin";
+    const bin = path.join(binDir, PDF2ZH_BIN);
     const { requireFn } = requireWith({
       "uv --version": { stdout: "uv 0.5.0\n" },
-      "uv tool dir --bin": { stdout: "/home/alice/.local/bin\n" },
+      "uv tool dir --bin": { stdout: `${binDir}\n` },
     }, [bin]);
     expect(await detectPdf2zh(requireFn)).toBe(bin);
   });
 
   it("falls back to PATH when uv is absent", async () => {
-    const { requireFn } = requireWith({ "which pdf2zh": { stdout: "/usr/local/bin/pdf2zh\n" } }, ["/usr/local/bin/pdf2zh"]);
-    expect(await detectPdf2zh(requireFn)).toBe("/usr/local/bin/pdf2zh");
+    const located = path.join("/usr/local/bin", PDF2ZH_BIN);
+    const { requireFn } = requireWith({ [`${PATH_LOOKUP} pdf2zh`]: { stdout: `${located}\n` } }, [located]);
+    expect(await detectPdf2zh(requireFn)).toBe(located);
   });
 
   it("returns null when nothing is installed", async () => {
@@ -65,13 +76,14 @@ describe("detecting an installed pdf2zh", () => {
 });
 
 describe("inspecting a uv-installed pdf2zh", () => {
-  const bin = "/home/alice/.local/bin/pdf2zh";
+  const binDir = "/home/alice/.local/bin";
+  const bin = path.join(binDir, PDF2ZH_BIN);
   it("reads the version and interpreter from the uv tool environment", async () => {
     const toolDir = "/home/alice/.local/share/uv/tools";
     const { requireFn } = requireWith({
       "uv --version": { stdout: "uv 0.5.0\n" },
       "uv tool list --show-paths --show-python": { stdout: "pdf2zh v1.9.6\n" },
-      "uv tool dir --bin": { stdout: "/home/alice/.local/bin\n" },
+      "uv tool dir --bin": { stdout: `${binDir}\n` },
       "uv tool dir": { stdout: `${toolDir}\n` },
     }, [bin]);
     expect(await inspectPdf2zh(requireFn)).toMatchObject({ executable: bin, version: "1.9.6", toolDir });
