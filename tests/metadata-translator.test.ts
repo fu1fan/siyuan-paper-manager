@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRequire } from "node:module";
 import { KernelClient } from "../src/core/kernel";
+import { DEFAULT_SETTINGS } from "../src/types/settings";
 import { MetadataExtractor, parseCnkiHtml } from "../src/services/metadata-extractor";
 import { parseProgress, translationWorkspacePath, TranslatorService } from "../src/services/translator";
 import { paper } from "./fixtures";
@@ -100,7 +101,8 @@ describe("translator integration", () => {
       if (sourceChanged) {
         await expect(translation).rejects.toThrow("原稿已更改");
         expect(persisted).toBe(false);
-        expect(removals).toEqual([]);
+        // 原稿变化导致提交失败：已上传但未入库的译稿必须回收，不能留下孤儿资源。
+        expect(removals).toEqual(["/data/assets/张2026示例论文-mono.pdf", "/data/assets/张2026示例论文-dual.pdf"]);
         return;
       }
       const result = await translation;
@@ -117,4 +119,36 @@ describe("translator integration", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+});
+
+it("keeps a translated asset when persistence saves its reference before failing", async () => {
+  const root = mkdtempSync(join(tmpdir(), "paper-manager-partial-save-"));
+  const dataDir = join(root, "data", "assets");
+  mkdirSync(dataDir, { recursive: true });
+  writeFileSync(join(dataDir, "input.pdf"), "%PDF-1.4\ninput");
+  const fixture = fileURLToPath(new URL("./fixtures/fake-pdf2zh.mjs", import.meta.url));
+  let current = paper({ attachments: [{ title: "input", mimeType: "application/pdf", assetAddress: "assets/input.pdf", sha256: "input" }] });
+  const removed: string[] = [];
+  const translator = new TranslatorService({
+    getWorkspaceInfo: async () => ({ workspaceDir: root }),
+    uploadAsset: async () => "assets/result-mono.pdf",
+    removeWorkspaceFile: async (path: string) => { removed.push(path); },
+  } as unknown as KernelClient, {
+    requireFn: createRequire(import.meta.url),
+    spawnProcess: (command, args, options) => spawn(command, [fixture, ...args], options),
+    readPaper: async () => current,
+    persist: async (_docId, updated) => {
+      // setBlockAttrs succeeded; the subsequent metadata refresh failed.
+      current = updated;
+      throw new Error("摘要刷新失败");
+    },
+  });
+  try {
+    await expect(translator.translate("doc", { ...DEFAULT_SETTINGS, pdf2zhPath: process.execPath }))
+      .rejects.toThrow("摘要刷新失败");
+    expect(current.translation.mono).toBe("assets/result-mono.pdf");
+    expect(removed).toEqual([]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

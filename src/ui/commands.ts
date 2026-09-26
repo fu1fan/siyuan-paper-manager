@@ -89,17 +89,17 @@ export function registerPaperUi(
 
 function openQuickMenu(event: MouseEvent, actions: PaperUiActions): void {
   const menu = new Menu("paper-manager-quick-menu");
-  menu.addItem({ icon: "iconDownload", label: "文献·导入本地 PDF", click: () => run(actions.importPdf) });
-  menu.addItem({ icon: "iconUpload", label: "文献·导出文献库引用", click: () => run(() => actions.exportLibrary(currentDocumentId() ?? undefined)) });
+  menu.addItem({ icon: "iconDownload", label: "导入本地 PDF", click: () => run(actions.importPdf) });
+  menu.addItem({ icon: "iconUpload", label: "导出文献库引用", click: () => run(() => actions.exportLibrary(currentDocumentId() ?? undefined)) });
   menu.addSeparator();
   const status = actions.getStatus().connector;
   if (canUseNode()) menu.addItem({
     icon: status.state === "listening" ? "iconPause" : "iconPlay",
-    label: status.state === "listening" ? "文献·停止 Zotero 接收" : "文献·启动 Zotero 接收",
+    label: status.state === "listening" ? "停止 Zotero 接收" : "启动 Zotero 接收",
     click: () => run(actions.toggleConnector),
   });
-  menu.addItem({ icon: "iconInfo", label: "文献·环境自检", click: () => run(actions.selfCheck) });
-  menu.addItem({ icon: "iconSettings", label: "文献·插件设置", click: actions.openSettings });
+  menu.addItem({ icon: "iconInfo", label: "环境自检", click: () => run(actions.selfCheck) });
+  menu.addItem({ icon: "iconSettings", label: "插件设置", click: actions.openSettings });
   menu.open(topBarMenuPosition(event));
 }
 

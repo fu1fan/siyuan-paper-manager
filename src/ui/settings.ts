@@ -7,7 +7,7 @@ import { normalizeSettings, pdf2zhLanguageCode, serializeArgs, splitArgString } 
 import { escapeHtml } from "./dom";
 import { openOnboardingDialog } from "./dialogs/onboarding";
 import { configPath, detectPdf2zh, findUv, installPdf2zh, installUv, inspectPdf2zh, systemConfigPath, uninstallPdf2zh, resolvePdf2zh, scanPython } from "../services/pdf2zh-deployment";
-import { canonicalSecretEnvKey, pdf2zhPrimarySecretKey, pdf2zhRequiresSecret, withCredentialPlaceholders } from "../services/pdf2zh-secrets";
+import { canonicalSecretEnvKey, pdf2zhCredentialKeys, pdf2zhRequiresSecret, withCredentialPlaceholders } from "../services/pdf2zh-secrets";
 import { canonicalPdf2zhConfig, cloneConfig, configModelValue, configTranslatorValue, firstTranslator, maskSecrets, modelEnvKey, restoreMaskedSecrets, secretSafeConfig } from "../services/pdf2zh-config";
 import { errorMessage } from "../core/errors";
 
@@ -71,6 +71,47 @@ export class SettingsPanel {
   readonly setting: Setting;
   private draft: PluginSettings;
   private configSaveTimer?: ReturnType<typeof setTimeout>;
+  private configRoot?: HTMLElement;
+  private configRevision = 0;
+  private savedConfigRevision = 0;
+  private confirming = false;
+  private deployBusy = false;
+  private pythonChoiceRevision = 0;
+
+  /** 部署操作（扫描/安装/升级/卸载）互斥：进行中禁用相关按钮，防止并发写同一 uv 环境。 */
+  private async withDeployBusy(root: HTMLElement, work: () => Promise<void>): Promise<void> {
+    if (this.deployBusy) return;
+    this.deployBusy = true;
+    const buttons = root.querySelectorAll<HTMLButtonElement>(
+      "[data-scan-pdf2zh], [data-uninstall-pdf2zh], [data-upgrade-pdf2zh], [data-install-pdf2zh], [data-scan-python]",
+    );
+    for (const button of buttons) button.disabled = true;
+    try {
+      await work();
+    } finally {
+      this.deployBusy = false;
+      for (const button of buttons) button.disabled = false;
+    }
+  }
+
+  /** 部署区可展开的终端输出；保留最近 500 行并滚动到底。 */
+  private deployTerminal(root: HTMLElement): { append: (line: string) => void; clear: () => void; show: () => void } {
+    const details = root.querySelector<HTMLDetailsElement>("[data-term]")!;
+    const pre = root.querySelector<HTMLElement>("[data-term-log]")!;
+    const append = (line: string) => {
+      details.hidden = false;
+      const lines = pre.textContent ? pre.textContent.split("\n") : [];
+      lines.push(line);
+      if (lines.length > 500) lines.splice(0, lines.length - 500);
+      pre.textContent = lines.join("\n");
+      pre.scrollTop = pre.scrollHeight;
+    };
+    return {
+      append,
+      clear: () => { pre.textContent = ""; },
+      show: () => { details.hidden = false; details.open = true; },
+    };
+  }
 
   constructor(
     private readonly displayName: string,
@@ -84,9 +125,12 @@ export class SettingsPanel {
     this.setting = new Setting({
       width: "820px",
       height: "680px",
-      confirmCallback: () => { void this.save(); },
+      confirmCallback: () => { this.confirming = true; this.cancelConfigTimer(); void this.save(); },
       // A debounced config write must not fire after the dialog's editor is gone.
-      destroyCallback: () => { if (this.configSaveTimer) clearTimeout(this.configSaveTimer); this.configSaveTimer = undefined; },
+      destroyCallback: () => {
+        this.cancelConfigTimer();
+        if (!this.confirming) this.configRevision++;
+      },
     });
     this.setting.addItem({ title: "", direction: "column", createActionElement: () => this.build() });
   }
@@ -94,8 +138,12 @@ export class SettingsPanel {
   open(): void { this.setting.open(this.displayName); }
 
   private build(): HTMLElement {
+    this.confirming = false;
+    this.savedConfigRevision = ++this.configRevision;
     this.draft = structuredClone(this.getSettings());
+    this.pythonChoiceRevision = 0;
     const root = document.createElement("div");
+    this.configRoot = root;
     root.className = "paper-manager-form paper-manager-settings";
     const tabs = document.createElement("div");
     tabs.className = "paper-manager-tabs";
@@ -142,15 +190,25 @@ export class SettingsPanel {
   private bindEvents(root: HTMLElement): void {
     root.addEventListener("input", (event) => this.capture(event));
     root.addEventListener("change", (event) => this.capture(event));
-    root.querySelector<HTMLInputElement>("[data-secret-name]")?.addEventListener("input", (event) => { this.setSecretName(String((event.target as HTMLInputElement).value), configTranslatorValue(this.draft.pdf2zhConfig ?? {})); this.scheduleSaveConfig(root); });
-    root.querySelector<HTMLSelectElement>("[data-config-key=translator]")?.addEventListener("change", (event) => { const service = String((event.target as HTMLSelectElement).value).trim(); this.syncVisualToJson(root); this.setSecretNameForService(service, root); this.refreshTranslatorControls(root, service); });
+    root.addEventListener("input", (event) => {
+      const input = event.target as HTMLInputElement;
+      if (!input.matches("[data-secret-name]")) return;
+      this.setSecretName(input.dataset.secretName!, input.value);
+      this.scheduleSaveConfig(root);
+    });
+    root.querySelector<HTMLSelectElement>("[data-config-key=translator]")?.addEventListener("change", () => this.syncVisualToJson(root));
     root.querySelector<HTMLButtonElement>("[data-scan-python]")?.addEventListener("click", () => void this.scanPython(root));
     root.querySelector<HTMLButtonElement>("[data-scan-pdf2zh]")?.addEventListener("click", () => void this.scanPdf2zh(root));
     root.querySelector<HTMLButtonElement>("[data-uninstall-pdf2zh]")?.addEventListener("click", () => void this.uninstallPdf2zh(root));
     root.querySelector<HTMLButtonElement>("[data-upgrade-pdf2zh]")?.addEventListener("click", () => void this.installPdf2zh(root, true));
     root.querySelector<HTMLButtonElement>("[data-install-pdf2zh]")?.addEventListener("click", () => void this.installPdf2zh(root));
-    root.querySelector<HTMLInputElement>("[data-python-manual]")?.addEventListener("change", () => void this.selectPython(root, root.querySelector<HTMLInputElement>("[data-python-manual]")!.value));
-    root.querySelector<HTMLButtonElement>("[data-test-secrets]")?.addEventListener("click", () => { try { const value = ({ [this.secretEnvKey(configTranslatorValue(this.draft.pdf2zhConfig ?? {}))]: root.querySelector<HTMLInputElement>("[data-secret-name]")?.value.trim() || "" }); const entries = Object.entries(value).filter(([, name]) => typeof name === "string" && name.trim()); if (!entries.length) throw new Error("请先填写映射"); const missing = entries.filter(([, name]) => !this.getSecret?.(String(name))); showMessage(missing.length ? `缺少密钥：${missing.map(([, name]) => name).join("、")}` : `已找到 ${entries.length} 个密钥`, 4000, missing.length ? "error" : undefined); } catch (error) { showMessage(`密钥映射格式错误：${errorMessage(error)}`, 4000, "error"); } });
+    const manualPython = root.querySelector<HTMLInputElement>("[data-python-manual]");
+    manualPython?.addEventListener("input", () => this.updatePythonChoice(root, manualPython.value));
+    manualPython?.addEventListener("change", () => void this.selectPython(root, manualPython.value));
+    root.querySelector<HTMLButtonElement>("[data-test-secrets]")?.addEventListener("click", () => {
+      const result = this.testSecrets(root);
+      showMessage(result.message, 4000, result.error ? "error" : undefined);
+    });
     root.querySelector<HTMLButtonElement>("[data-load-config]")?.addEventListener("click", () => void this.loadConfig(root));
     root.querySelector<HTMLButtonElement>("[data-import-system-config]")?.addEventListener("click", () => void this.importSystemConfig(root));
   }
@@ -161,14 +219,14 @@ export class SettingsPanel {
     const config = this.draft.pdf2zhConfig ?? {};
     const service = configTranslatorValue(config);
     return `
-      <h3>pdf2zh 部署 <span class="paper-manager-badge paper-manager-badge--testing">测试中</span></h3><div class="paper-manager-actions"><button type="button" class="b3-button" data-scan-pdf2zh>扫描 pdf2zh</button><button type="button" class="b3-button" data-uninstall-pdf2zh>卸载</button><button type="button" class="b3-button" data-upgrade-pdf2zh>升级</button></div><div class="paper-manager-preview" data-pdf2zh-status data-deploy-status>尚未扫描</div><div data-pdf2zh-existing hidden><div class="paper-manager-preview" data-pdf2zh-detail></div></div><div data-pdf2zh-deploy><div class="paper-manager-preview">一键部署（自动查找 Python 并安装 pdf2zh）仍在测试中，在部分系统环境可能失败。若自动部署不可用，可自行安装后在上方「pdf2zh 路径」中填写可执行文件路径，再点「扫描 pdf2zh」。</div><div class="paper-manager-actions"><button type="button" class="b3-button" data-scan-python>扫描 Python</button><select class="b3-select" data-python-select><option value="">选择用于部署的 Python</option></select></div><label class="paper-manager-field"><span>手动选择 Python 路径</span><input class="b3-text-field" data-python-manual placeholder="/path/to/python"></label><button type="button" class="b3-button" data-install-pdf2zh>安装 pdf2zh</button></div>
+      <h3>pdf2zh 部署 <span class="paper-manager-badge paper-manager-badge--testing">测试中</span></h3><div class="paper-manager-actions"><button type="button" class="b3-button" data-scan-pdf2zh>扫描 pdf2zh</button><button type="button" class="b3-button" data-uninstall-pdf2zh>卸载</button><button type="button" class="b3-button" data-upgrade-pdf2zh>升级</button></div><div class="paper-manager-preview" data-pdf2zh-status>尚未扫描</div><div data-pdf2zh-existing hidden><div class="paper-manager-preview" data-pdf2zh-detail></div></div><div data-pdf2zh-deploy><div class="paper-manager-preview">一键部署会自动查找 Python 并通过 uv 安装 pdf2zh，安装过程输出显示在下方「终端输出」中。若自动部署不可用，可自行安装后在下方「pdf2zh 路径」中填写可执行文件路径，再点「扫描 pdf2zh」。</div><div class="paper-manager-actions"><button type="button" class="b3-button" data-scan-python>扫描 Python</button><select class="b3-select" data-python-select><option value="">选择用于部署的 Python</option></select></div><label class="paper-manager-field"><span>手动选择 Python 路径</span><input class="b3-text-field" data-python-manual value="${escapeHtml(this.draft.pythonPath)}" placeholder="/path/to/python"></label><div class="paper-manager-actions"><button type="button" class="b3-button" data-install-pdf2zh>安装 pdf2zh</button></div></div><div class="paper-manager-preview" data-deploy-status hidden></div><details class="paper-manager-term" data-term hidden><summary>终端输出</summary><pre data-term-log></pre></details>
       <h3>pdf2zh 配置文件</h3>
       <div class="paper-manager-actions"><button type="button" class="b3-button" data-load-config>读取托管配置</button><button type="button" class="b3-button" data-import-system-config>读取系统配置并覆盖</button></div>
       <div class="paper-manager-tabs paper-manager-config-tabs"><button type="button" data-config-tab="visual" data-active="true">可视化</button><button type="button" data-config-tab="json">JSON</button></div>
       <section data-config-panel="visual"><label class="paper-manager-field"><span>字体路径</span><input class="b3-text-field" data-config-key="NOTO_FONT_PATH"></label>${translatorSelect(config)}<label class="paper-manager-field"><span>模型名称（大模型服务）</span><input class="b3-text-field" data-config-key="model" value="${escapeHtml(configModelValue(config))}" placeholder="如 deepseek-chat" ${serviceSupportsModel(service) ? "" : "disabled"}></label></section>
       <section data-config-panel="json" hidden><textarea class="b3-text-field" rows="9" data-config-json placeholder="{}"></textarea></section>
-      <div class="paper-manager-inline-field"><label class="paper-manager-field"><span>服务密钥名称</span><input class="b3-text-field" data-secret-name value="${escapeHtml(this.secretNameForService(service))}" placeholder="填写思源「密钥和变量」中的名称" ${serviceRequiresKey(service) ? "" : "disabled"}></label><button type="button" class="b3-button" data-test-secrets>测试密钥</button></div>
-      <div class="paper-manager-preview">可视化和 JSON 编辑的是同一个 pdf2zh 配置对象；未知字段只在 JSON 标签页中保留。只填写一个思源「密钥和变量」中的密钥名称；环境变量名会根据上方翻译服务自动生成。密钥值不会写入 JSON。</div>
+      <div class="paper-manager-inline-field"><div data-secret-fields>${this.secretFieldsHtml(service)}</div><button type="button" class="b3-button" data-test-secrets ${serviceRequiresKey(service) ? "" : "disabled"}>测试密钥</button></div>
+      <div class="paper-manager-preview">可视化和 JSON 编辑的是同一个 pdf2zh 配置对象；未知字段只在 JSON 标签页中保留。请为服务所需的每个环境变量填写对应的思源「密钥和变量」名称。密钥值不会写入 JSON。</div>
       <h3>插件翻译设置</h3>
       ${languageSelect("源语言", "translateFrom", pdf2zhLanguageCode(this.draft.translateFrom), true, "data-key")}
       ${languageSelect("目标语言", "translateTo", pdf2zhLanguageCode(this.draft.translateTo), false, "data-key")}
@@ -183,9 +241,58 @@ export class SettingsPanel {
       <div class="paper-manager-preview">请求并发数对应 pdf2zh 的 --thread（-t），默认 4；同时翻译多篇时，总请求并发最多约为两项设置的乘积。服务所需密钥请在 pdf2zh 配置文件或环境变量中设置。并行篇数下次提交时生效，取消会停止全部任务。自动删除仅在新翻译及元数据保存成功后执行；删除失败不会影响新版本。</div>`;
   }
 
-  private async scanPdf2zh(root: HTMLElement): Promise<void> { const status = root.querySelector<HTMLElement>("[data-pdf2zh-status]")!; try { const installed = await inspectPdf2zh(); const existing = root.querySelector<HTMLElement>("[data-pdf2zh-existing]")!; const deploy = root.querySelector<HTMLElement>("[data-pdf2zh-deploy]")!; if (installed) { this.draft.pdf2zhPath = installed.executable; if (installed.pythonPath) this.draft.pythonPath = installed.pythonPath; status.textContent = "已找到可用的 pdf2zh，已自动关联其 Python。"; root.querySelector<HTMLElement>("[data-pdf2zh-detail]")!.textContent = `${installed.version ? `版本 ${installed.version} · ` : ""}${installed.executable}${installed.pythonPath ? ` · Python ${installed.pythonPath}` : ""}`; existing.hidden = false; deploy.hidden = true; await this.loadConfig(root); } else { status.textContent = "未找到可用的 pdf2zh，请选择 Python 后部署。"; existing.hidden = true; deploy.hidden = false; } } catch (error) { status.textContent = `扫描失败：${errorMessage(error)}`; } }
+  private async scanPdf2zh(root: HTMLElement): Promise<void> {
+    const status = root.querySelector<HTMLElement>("[data-pdf2zh-status]")!;
+    const choiceRevision = this.pythonChoiceRevision;
+    try {
+      const installed = await inspectPdf2zh(undefined, this.draft.pythonPath || undefined);
+      const pathInstalled = installed ? null : await detectPdf2zh();
+      const existing = root.querySelector<HTMLElement>("[data-pdf2zh-existing]")!;
+      const deploy = root.querySelector<HTMLElement>("[data-pdf2zh-deploy]")!;
+      const executable = installed?.executable ?? pathInstalled;
+      if (executable) {
+        this.draft.pdf2zhPath = executable;
+        if (installed?.pythonPath && !this.draft.pythonPath && choiceRevision === this.pythonChoiceRevision) {
+          this.draft.pythonPath = installed.pythonPath;
+          this.syncPythonControls(root);
+        }
+        status.textContent = installed
+          ? `已找到可用的 pdf2zh。部署 Python：${this.draft.pythonPath || "尚未选择"}。`
+          : "检测到 PATH 中的 pdf2zh（非插件部署）。";
+        root.querySelector<HTMLElement>("[data-pdf2zh-detail]")!.textContent =
+          `${installed?.version ? `版本 ${installed.version} · ` : ""}${executable}${installed?.pythonPath ? ` · Python ${installed.pythonPath}` : ""}`;
+        existing.hidden = false;
+        deploy.hidden = true;
+        await this.loadConfig(root);
+      } else {
+        status.textContent = "未找到可用的 pdf2zh，请选择 Python 后部署。";
+        existing.hidden = true;
+        deploy.hidden = false;
+      }
+    } catch (error) {
+      status.textContent = `扫描失败：${errorMessage(error)}`;
+    }
+  }
 
-  private async uninstallPdf2zh(root: HTMLElement): Promise<void> { const status = root.querySelector<HTMLElement>("[data-pdf2zh-status]")!; try { const result = await uninstallPdf2zh(); status.textContent = result.code === 0 ? "pdf2zh 已卸载。" : `卸载失败：${result.stderr}`; if (result.code === 0) { this.draft.pdf2zhPath = "pdf2zh"; await this.scanPdf2zh(root); } } catch (error) { status.textContent = `卸载失败：${errorMessage(error)}`; } }
+  private async uninstallPdf2zh(root: HTMLElement): Promise<void> {
+    const status = root.querySelector<HTMLElement>("[data-pdf2zh-status]")!;
+    const term = this.deployTerminal(root);
+    await this.withDeployBusy(root, async () => {
+      try {
+        term.clear();
+        term.show();
+        status.textContent = "正在卸载 pdf2zh…";
+        const result = await uninstallPdf2zh(undefined, this.draft.pythonPath || undefined, line => term.append(line));
+        status.textContent = result.code === 0 ? "pdf2zh 已卸载。" : `卸载失败：${result.stderr || "未知错误"}`;
+        if (result.code === 0) {
+          this.draft.pdf2zhPath = "pdf2zh";
+          await this.scanPdf2zh(root);
+        }
+      } catch (error) {
+        status.textContent = `卸载失败：${errorMessage(error)}`;
+      }
+    });
+  }
 
   private bindConfigTabs(root: HTMLElement): void {
     for (const tab of root.querySelectorAll<HTMLButtonElement>("[data-config-tab]")) tab.addEventListener("click", () => {
@@ -211,7 +318,10 @@ export class SettingsPanel {
     const values = new Map<string, string>();
     for (const input of root.querySelectorAll<HTMLInputElement | HTMLSelectElement>("[data-config-key]")) values.set(input.dataset.configKey!, input.value);
     const fontPath = values.get("NOTO_FONT_PATH");
-    if (fontPath != null && fontPath !== "") config["NOTO_FONT_PATH"] = fontPath;
+    if (fontPath != null) {
+      if (fontPath) config["NOTO_FONT_PATH"] = fontPath;
+      else delete config["NOTO_FONT_PATH"];
+    }
     const service = values.get("translator")?.trim() || configTranslatorValue(config);
     const model = values.get("model")?.trim() || "";
     const previous = firstTranslator(config);
@@ -243,15 +353,13 @@ export class SettingsPanel {
         const raw = key === "translator" ? service : key === "model" ? configModelValue(config) : config[key];
         input.value = raw == null ? "" : String(raw);
       }
-      const secret = root.querySelector<HTMLInputElement>("[data-secret-name]");
-      if (secret) secret.value = this.secretNameForService(service);
       this.refreshTranslatorControls(root, service);
     } catch { /* leave invalid JSON visible for save validation */ }
   }
 
   private refreshTranslatorControls(root: HTMLElement, service: string): void {
-    const secret = root.querySelector<HTMLInputElement>("[data-secret-name]");
-    if (secret) secret.disabled = !serviceRequiresKey(service);
+    const fields = root.querySelector<HTMLElement>("[data-secret-fields]");
+    if (fields) fields.innerHTML = this.secretFieldsHtml(service);
     const model = root.querySelector<HTMLInputElement>("[data-config-key=model]");
     if (model) model.disabled = !serviceSupportsModel(service);
     const test = root.querySelector<HTMLButtonElement>("[data-test-secrets]");
@@ -259,16 +367,106 @@ export class SettingsPanel {
   }
 
   private async scanPython(root: HTMLElement): Promise<void> {
-    const status = root.querySelector<HTMLElement>("[data-deploy-status]")!; const select = root.querySelector<HTMLSelectElement>("[data-python-select]")!;
-    try { const list = await scanPython(); select.innerHTML = list.map(item => `<option value="${escapeHtml(item.path)}" ${item.path === this.draft.pythonPath ? "selected" : ""} ${item.supported ? "" : "disabled"}>Python ${item.version} · ${escapeHtml(item.arch)} · ${escapeHtml(item.path)}${item.supported ? "" : "（不支持）"}</option>`).join(""); select.onchange = () => void this.selectPython(root, select.value); status.textContent = `发现 ${list.length} 个 Python；同一解释器的 python/python3 已合并。`; } catch (error) { status.textContent = `扫描失败：${errorMessage(error)}`; }
+    const status = root.querySelector<HTMLElement>("[data-deploy-status]")!;
+    const select = root.querySelector<HTMLSelectElement>("[data-python-select]")!;
+    await this.withDeployBusy(root, async () => {
+      try {
+        status.hidden = false;
+        status.textContent = "正在查找 Python 解释器…";
+        const list = await scanPython(undefined, (done, total) => {
+          status.textContent = `正在验证解释器 ${done}/${total}…`;
+        });
+        select.innerHTML = `<option value="">选择用于部署的 Python</option>` + list.map(item => {
+          const note = item.support === "supported" ? "" : item.support === "unverified" ? "（未验证）" : "（不支持）";
+          const disabled = item.support === "unsupported" ? "disabled" : "";
+          return `<option value="${escapeHtml(item.path)}" ${disabled}>Python ${item.version} · ${escapeHtml(item.arch)} · ${escapeHtml(item.path)}${note}</option>`;
+        }).join("");
+        this.syncPythonControls(root);
+        select.onchange = () => void this.selectPython(root, select.value);
+        status.textContent = `发现 ${list.length} 个 Python；同一解释器的 python/python3 已合并。${this.draft.pythonPath ? `当前部署 Python：${this.draft.pythonPath}` : "请从列表选择或手动填写路径。"}`;
+      } catch (error) {
+        status.hidden = false;
+        status.textContent = `扫描失败：${errorMessage(error)}`;
+      }
+    });
   }
 
-  private async selectPython(root: HTMLElement, python: string): Promise<void> { const status = root.querySelector<HTMLElement>("[data-deploy-status]")!; const value = python.trim(); if (!value) return; this.draft.pythonPath = value; status.textContent = "正在检测 pdf2zh 安装和配置…"; try { const executable = await detectPdf2zh(); if (executable) this.draft.pdf2zhPath = executable; await this.loadConfig(root); status.textContent = executable ? `已找到 pdf2zh：${executable}，配置已读取。` : "未找到 pdf2zh；配置已读取。"; } catch (error) { status.textContent = `检测失败：${errorMessage(error)}`; } }
+  private syncPythonControls(root: HTMLElement): void {
+    const python = this.draft.pythonPath?.trim() ?? "";
+    const select = root.querySelector<HTMLSelectElement>("[data-python-select]");
+    if (select) select.value = [...select.options].some(option => option.value === python && !option.disabled) ? python : "";
+    const manual = root.querySelector<HTMLInputElement>("[data-python-manual]");
+    if (manual) manual.value = python;
+  }
+
+  private updatePythonChoice(root: HTMLElement, python: string): void {
+    this.draft.pythonPath = python.trim();
+    this.pythonChoiceRevision++;
+    this.syncPythonControls(root);
+    const status = root.querySelector<HTMLElement>("[data-deploy-status]")!;
+    status.hidden = false;
+    status.textContent = this.draft.pythonPath ? `当前部署 Python：${this.draft.pythonPath}` : "请从列表选择或手动填写 Python 路径。";
+  }
+
+  private async selectPython(root: HTMLElement, python: string): Promise<void> {
+    this.updatePythonChoice(root, python);
+    if (!this.draft.pythonPath) return;
+    const revision = this.pythonChoiceRevision;
+    const selectedPython = this.draft.pythonPath;
+    const status = root.querySelector<HTMLElement>("[data-deploy-status]")!;
+    status.textContent = "正在检测 pdf2zh 安装和配置…";
+    try {
+      const executable = await detectPdf2zh();
+      if (revision !== this.pythonChoiceRevision) return;
+      if (executable) this.draft.pdf2zhPath = executable;
+      await this.loadConfig(root);
+      if (revision !== this.pythonChoiceRevision) return;
+      status.textContent = `${executable ? `已找到 pdf2zh：${executable}` : "未找到 pdf2zh"}；配置已读取。当前部署 Python：${selectedPython}`;
+    } catch (error) {
+      if (revision === this.pythonChoiceRevision) status.textContent = `检测失败：${errorMessage(error)}`;
+    }
+  }
 
   private async installPdf2zh(root: HTMLElement, upgrade = false): Promise<void> {
-    const status = root.querySelector<HTMLElement>("[data-pdf2zh-status]")!; const python = root.querySelector<HTMLSelectElement>("[data-python-select]")?.value || root.querySelector<HTMLInputElement>("[data-python-manual]")?.value || this.draft.pythonPath;
-    if (!python) { status.textContent = "请先扫描并选择 Python 3.11–3.13。"; return; }
-    try { let uv = await findUv(); if (!uv) { status.textContent = "正在安装 uv…"; const result = await installUv(python); if (result.code !== 0) throw new Error(result.stderr || "uv 安装失败"); uv = await findUv(); } if (!uv) throw new Error("安装后仍未找到 uv，请重启思源后重试"); status.textContent = upgrade ? "正在升级 pdf2zh…" : "正在通过 uv 安装 pdf2zh…"; const result = await installPdf2zh(python, uv); if (result.code !== 0) throw new Error(result.stderr || "pdf2zh 安装失败"); const executable = await resolvePdf2zh(uv); if (!executable) throw new Error("安装完成但未找到 pdf2zh 可执行文件"); this.draft.pythonPath = python; this.draft.pdf2zhPath = executable; status.textContent = `pdf2zh ${upgrade ? "升级" : "安装"}完成：${executable}`; await this.scanPdf2zh(root); } catch (error) { status.textContent = `安装失败：${errorMessage(error)}`; }
+    const status = root.querySelector<HTMLElement>("[data-deploy-status]")!;
+    const python = this.draft.pythonPath?.trim() ?? "";
+    const term = this.deployTerminal(root);
+    if (!python) {
+      status.hidden = false;
+      status.textContent = "请先扫描并选择 Python 3.11–3.13。";
+      return;
+    }
+    await this.withDeployBusy(root, async () => {
+      status.hidden = false;
+      term.clear();
+      try {
+        let uv = await findUv(undefined, python);
+        if (!uv) {
+          term.show();
+          status.textContent = "第 1/3 步：正在安装 uv…";
+          term.append("$ python -m pip install --user uv");
+          const result = await installUv(python, undefined, line => term.append(line));
+          if (result.code !== 0) throw new Error(`uv 安装失败：${result.stderr || "无输出"}`);
+          uv = await findUv(undefined, python);
+        }
+        if (!uv) throw new Error("uv 安装完成但无法调用；请在「额外 CLI 参数」上方手动填写已安装的 pdf2zh 路径，或手动执行 pip install uv 后重试");
+        term.show();
+        status.textContent = upgrade ? "第 2/3 步：正在升级 pdf2zh…" : "第 2/3 步：正在通过 uv 安装 pdf2zh…";
+        term.append(`$ ${uv.display} tool install --force --python ${python} pdf2zh`);
+        const result = await installPdf2zh(python, uv, undefined, line => term.append(line));
+        if (result.code !== 0) throw new Error(`pdf2zh 安装失败：${result.stderr || "无输出"}`);
+        status.textContent = "第 3/3 步：正在验证安装…";
+        const executable = await resolvePdf2zh(uv);
+        if (!executable) throw new Error("安装完成但未找到 pdf2zh 可执行文件");
+        this.draft.pythonPath = python;
+        this.syncPythonControls(root);
+        this.draft.pdf2zhPath = executable;
+        status.textContent = `pdf2zh ${upgrade ? "升级" : "安装"}完成：${executable}`;
+        await this.scanPdf2zh(root);
+      } catch (error) {
+        status.textContent = `${errorMessage(error)}（详见终端输出）`;
+      }
+    });
   }
 
   private async loadConfig(root: HTMLElement): Promise<void> {
@@ -302,23 +500,77 @@ export class SettingsPanel {
       if (!fs.existsSync(source)) throw new Error(`未找到系统配置：${source}`);
       const parsed = JSON.parse(fs.readFileSync(source, "utf8"));
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("系统配置不是 JSON 对象");
+      this.cancelConfigTimer();
+      const revision = ++this.configRevision;
       const workspace = await this.kernel.getWorkspaceInfo(); const target = configPath(workspace.workspaceDir);
+      if (revision !== this.configRevision) return;
       const path = requireNode<typeof import("node:path")>("path"); fs.mkdirSync(path.dirname(target), { recursive: true });
       const safeConfig = secretSafeConfig(canonicalPdf2zhConfig(parsed));
       fs.writeFileSync(target, `${JSON.stringify(safeConfig, null, 2)}\n`, "utf8");
+      this.savedConfigRevision = revision;
       this.draft.pdf2zhConfigPath = target; this.draft.pdf2zhConfig = safeConfig;
       await this.loadConfig(root); showMessage("系统配置已导入托管配置", 3000);
     } catch (error) { showMessage(`导入系统配置失败：${errorMessage(error)}`, 5000, "error"); }
   }
 
-  private scheduleSaveConfig(root: HTMLElement): void { if (this.configSaveTimer) clearTimeout(this.configSaveTimer); this.configSaveTimer = setTimeout(() => { this.configSaveTimer = undefined; void this.saveConfig(root); }, 500); }
+  private cancelConfigTimer(): void {
+    if (this.configSaveTimer) clearTimeout(this.configSaveTimer);
+    this.configSaveTimer = undefined;
+  }
 
-  private async saveConfig(root: HTMLElement): Promise<void> { try { const area = root.querySelector<HTMLTextAreaElement>("[data-config-json]")!; if (root.querySelector<HTMLButtonElement>("[data-config-tab='visual']")?.dataset.active === "true") this.syncVisualToJson(root); const parsedRaw = JSON.parse(area.value || "{}"); if (!parsedRaw || typeof parsedRaw !== "object" || Array.isArray(parsedRaw)) throw new Error("配置必须是 JSON 对象"); const parsed = canonicalPdf2zhConfig(restoreMaskedSecrets(parsedRaw, this.draft.pdf2zhConfig) as Record<string, unknown>); const fs = requireNode<typeof import("node:fs")>("fs"); const path = requireNode<typeof import("node:path")>("path"); const workspace = await this.kernel.getWorkspaceInfo(); const target = configPath(workspace.workspaceDir); fs.mkdirSync(path.dirname(target), { recursive: true }); const safeConfig = secretSafeConfig(parsed); fs.writeFileSync(target, `${JSON.stringify(safeConfig, null, 2)}\n`, "utf8"); this.draft.pdf2zhConfigPath = target; this.draft.pdf2zhConfig = safeConfig; area.value = JSON.stringify(maskSecrets(safeConfig), null, 2); this.syncJsonToVisual(root); } catch (error) { showMessage(`保存配置失败：${errorMessage(error)}`, 5000, "error"); } }
+  private scheduleSaveConfig(root: HTMLElement): void {
+    const revision = ++this.configRevision;
+    this.cancelConfigTimer();
+    this.configSaveTimer = setTimeout(() => {
+      this.configSaveTimer = undefined;
+      void this.saveConfig(root, revision).catch((error) => {
+        if (revision === this.configRevision) showMessage(`保存配置失败：${errorMessage(error)}`, 5000, "error");
+      });
+    }, 500);
+  }
 
-  private secretEnvKey(service: string): string { return pdf2zhPrimarySecretKey(service) || `${service.trim().toUpperCase()}_API_KEY`; }
-  private secretNameForService(service: string): string { return this.draft.pdf2zhSecretNames?.[this.secretEnvKey(service)] ?? ""; }
-  private setSecretName(name: string, service = configTranslatorValue(this.draft.pdf2zhConfig ?? {})): void { const key = this.secretEnvKey(service); if (!serviceRequiresKey(service)) { const next = { ...(this.draft.pdf2zhSecretNames ?? {}) }; delete next[key]; this.draft.pdf2zhSecretNames = next; return; } this.draft.pdf2zhSecretNames = { ...(this.draft.pdf2zhSecretNames ?? {}), [key]: name.trim() }; }
-  private setSecretNameForService(service: string, root?: HTMLElement): void { const input = (root ?? document).querySelector<HTMLInputElement>("[data-secret-name]"); if (input) input.value = this.secretNameForService(service); }
+  private async saveConfig(root: HTMLElement, revision: number): Promise<void> {
+    const area = root.querySelector<HTMLTextAreaElement>("[data-config-json]")!;
+    if (root.querySelector<HTMLButtonElement>("[data-config-tab='visual']")?.dataset.active === "true") this.syncVisualToJson(root);
+    const parsedRaw = JSON.parse(area.value || "{}");
+    if (!parsedRaw || typeof parsedRaw !== "object" || Array.isArray(parsedRaw)) throw new Error("配置必须是 JSON 对象");
+    const parsed = canonicalPdf2zhConfig(restoreMaskedSecrets(parsedRaw, this.draft.pdf2zhConfig) as Record<string, unknown>);
+    const fs = requireNode<typeof import("node:fs")>("fs");
+    const path = requireNode<typeof import("node:path")>("path");
+    const workspace = await this.kernel.getWorkspaceInfo();
+    // Older workspace lookups must never overwrite a newer edit or a closed dialog.
+    if (revision !== this.configRevision) return;
+    const target = configPath(workspace.workspaceDir);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    const safeConfig = secretSafeConfig(parsed);
+    fs.writeFileSync(target, `${JSON.stringify(safeConfig, null, 2)}\n`, "utf8");
+    this.savedConfigRevision = revision;
+    this.draft.pdf2zhConfigPath = target;
+    this.draft.pdf2zhConfig = safeConfig;
+    area.value = JSON.stringify(maskSecrets(safeConfig), null, 2);
+    this.syncJsonToVisual(root);
+  }
+
+  private secretFieldsHtml(service: string): string {
+    const keys = pdf2zhCredentialKeys(service);
+    if (!keys.length) return `<div class="paper-manager-preview">此服务无需密钥。</div>`;
+    return keys.map(key => `<label class="paper-manager-field"><span>${escapeHtml(key)}</span><input class="b3-text-field" data-secret-name="${escapeHtml(key)}" value="${escapeHtml(this.draft.pdf2zhSecretNames?.[key] ?? "")}" placeholder="填写思源「密钥和变量」中的名称"></label>`).join("");
+  }
+
+  private setSecretName(key: string, name: string): void {
+    this.draft.pdf2zhSecretNames = { ...(this.draft.pdf2zhSecretNames ?? {}), [key]: name.trim() };
+  }
+
+  private testSecrets(root: HTMLElement): { message: string; error: boolean } {
+    const keys = pdf2zhCredentialKeys(configTranslatorValue(this.draft.pdf2zhConfig ?? {}));
+    const names = new Map([...root.querySelectorAll<HTMLInputElement>("[data-secret-name]")]
+      .map(input => [input.dataset.secretName!, input.value.trim()]));
+    const unmapped = keys.filter(key => !names.get(key));
+    if (unmapped.length) return { message: `请先填写映射：${unmapped.join("、")}`, error: true };
+    const missing = keys.filter(key => !this.getSecret?.(names.get(key)!));
+    if (missing.length) return { message: `缺少密钥：${missing.map(key => names.get(key)).join("、")}`, error: true };
+    return { message: `已找到 ${keys.length} 个密钥`, error: false };
+  }
 
   private capture(event: Event): void {
     const input = event.target as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
@@ -381,6 +633,9 @@ export class SettingsPanel {
 
   private async save(): Promise<void> {
     try {
+      if (this.configRevision > this.savedConfigRevision && this.configRoot?.querySelector("[data-config-json]")) {
+        await this.saveConfig(this.configRoot, ++this.configRevision);
+      }
       const settings = normalizeSettings(this.draft);
       settings.onboardingCompleted = Boolean(settings.defaultLibraryDocId);
       await this.onSave(settings);

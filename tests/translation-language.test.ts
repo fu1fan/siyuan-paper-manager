@@ -94,17 +94,20 @@ it("ignores language keys left over in the managed config", async () => {
   } finally { cleanup(); }
 });
 
-it("does not write language keys into the managed config", async () => {
-  const { root, translator, cleanup } = setup();
+it("does not modify language keys in the source config", async () => {
+  const { root, translator, args, cleanup } = setup();
   try {
+    const target = join(root, "pdf2zh", "config.json");
+    mkdirSync(join(root, "pdf2zh"), { recursive: true });
+    const original = JSON.stringify({ PDF2ZH_LANG_FROM: "English", PDF2ZH_LANG_TO: "Simplified Chinese", translators: [{ name: "google", envs: {} }] });
+    writeFileSync(target, original);
     await translator.translate("doc", withLanguages(root, {
       translateFrom: "ja", translateTo: "ko",
-      // 已有配置文件里残留的语言键应被剔除，不能原样写回。
-      pdf2zhConfigPath: join(root, "pdf2zh", "config.json"),
+      pdf2zhConfigPath: target,
     })).catch(() => {});
-    const written = JSON.parse(readFileSync(join(root, "pdf2zh", "config.json"), "utf8")) as Record<string, unknown>;
-    expect(written.PDF2ZH_LANG_FROM).toBeUndefined();
-    expect(written.PDF2ZH_LANG_TO).toBeUndefined();
+    expect(flag(args[0]!, "-li")).toBe("ja");
+    expect(flag(args[0]!, "-lo")).toBe("ko");
+    expect(readFileSync(target, "utf8")).toBe(original);
   } finally { cleanup(); }
 });
 

@@ -34,6 +34,7 @@ interface ConnectorSession {
   updatedAt: number;
   expectedAttachments: number;
   pendingUploads: number;
+  uploadedBytes: number;
   processing?: Promise<void>;
   attachmentStatus: Map<string, { id: string; parentItemId: string; title: string; progress: number | false; error?: string }>;
   timer?: ReturnType<typeof setTimeout>;
@@ -50,13 +51,25 @@ export interface ConnectorServerOptions {
   graceMs?: number;
   sessionTtlMs?: number;
   attachmentWaitMs?: number;
+  maxAttachmentBytes?: number;
+  maxSessionBytes?: number;
+  maxTotalAttachmentBytes?: number;
+  maxConcurrentUploads?: number;
 }
+
+const DEFAULT_ATTACHMENT_BYTES = 32 * 1024 * 1024;
+const DEFAULT_SESSION_BYTES = 128 * 1024 * 1024;
+const DEFAULT_TOTAL_BYTES = 512 * 1024 * 1024;
+const DEFAULT_CONCURRENT_UPLOADS = 4;
+const MAX_SESSIONS = 128;
 
 export class ConnectorServer {
   private readonly requireFn: NodeRequire;
   private server: import("node:http").Server | null = null;
   private readonly sessions = new Map<string, ConnectorSession>();
   private cleanupTimer: ReturnType<typeof setInterval> | null = null;
+  private activeUploads = 0;
+  private totalUploadedBytes = 0;
 
   constructor(private readonly options: ConnectorServerOptions) {
     const requireFn = options.requireFn ?? getNodeRequire();
@@ -102,6 +115,7 @@ export class ConnectorServer {
     }
     const sessions = [...this.sessions.values()];
     this.sessions.clear();
+    this.totalUploadedBytes = 0;
     if (this.server) {
       const server = this.server;
       this.server = null;
@@ -113,7 +127,8 @@ export class ConnectorServer {
   }
 
   private async handleRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {
-    this.setCommonHeaders(response);
+    this.setCommonHeaders(request, response);
+    this.validateSource(request);
     if (request.method === "OPTIONS") {
       response.statusCode = 204;
       response.end();
@@ -225,12 +240,13 @@ export class ConnectorServer {
     const sessionId = cleanId(payload.sessionID) || randomId();
     // Connector 会重发请求；活动会话也必须幂等，不能覆盖已上传附件与定时器。
     if (!this.sessions.has(sessionId)) {
+      this.ensureSessionCapacity();
       const now = Date.now();
       const session: ConnectorSession = {
         id: sessionId,
         uri: string(payload.uri ?? payload.url) || undefined,
         items: items.map((raw, index) => ({ id: itemId(raw, index), raw: cloneRecord(raw), imported: false, delivered: new Set<string>() })),
-        attachments: [], createdAt: now, updatedAt: now,
+        attachments: [], createdAt: now, updatedAt: now, uploadedBytes: 0,
         expectedAttachments: expectedAttachmentCount(items), pendingUploads: 0, attachmentStatus: new Map(),
       };
       for (const item of session.items) {
@@ -264,16 +280,16 @@ export class ConnectorServer {
       this.respondJson(response, 201, { id: metadata.id, progress: 100 });
       return;
     }
+    this.beginUpload(session);
     if (previous) {
       this.removeTempFile(previous.tempPath);
       session.attachments = session.attachments.filter((attachment) => attachment !== previous);
       parent.delivered.delete(metadata.id);
     }
-    session.pendingUploads += 1;
     session.updatedAt = Date.now();
     session.attachmentStatus.set(metadata.id, { id: metadata.id, parentItemId: parent.id, title: metadata.title || "附件", progress: 0 });
     try {
-      const attachment = await this.streamAttachment(request, metadata);
+      const attachment = await this.streamAttachment(request, metadata, session);
       if (this.sessions.get(session.id) !== session) {
         this.removeTempFile(attachment.tempPath);
         throw new ProtocolError(409, "session closed");
@@ -285,6 +301,7 @@ export class ConnectorServer {
       throw error;
     } finally {
       session.pendingUploads -= 1;
+      this.activeUploads -= 1;
       session.updatedAt = Date.now();
       // Modern Connectors omit the attachment list in saveItems. Keep the session
       // and patch its existing document even if the download finishes much later.
@@ -295,7 +312,7 @@ export class ConnectorServer {
   }
 
   private async handleSingleFile(request: IncomingMessage, response: ServerResponse): Promise<void> {
-    const payload = await readJson(request, 64 * 1024 * 1024);
+    const payload = await readJson(request, Math.min(this.maxAttachmentBytes(), 64 * 1024 * 1024));
     const session = this.requireSession(payload.sessionID);
     if (typeof payload.snapshotContent !== "string" || !payload.snapshotContent.trim()) throw new ProtocolError(400, "snapshotContent must be HTML text");
     const rawItem = Array.isArray(payload.items) ? payload.items.find(isRecord) : undefined;
@@ -304,8 +321,10 @@ export class ConnectorServer {
     const placeholder = [...session.attachmentStatus.values()].find((entry) => entry.parentItemId === parent.id && session.items.some((item) =>
       Array.isArray(item.raw.attachments) && item.raw.attachments.some((a) => isRecord(a) && cleanId(a.id) === entry.id && a.mimeType === "text/html")));
     const id = cleanId(payload.id) || placeholder?.id || `snapshot-${parent.id}`;
+    const snapshotBytes = Buffer.byteLength(payload.snapshotContent, "utf8");
     const existing = session.attachments.find((attachment) => attachment.id === id);
     if (!existing || session.attachmentStatus.get(id)?.progress === false) {
+      this.reserveBytes(session, snapshotBytes);
       if (existing) {
         this.removeTempFile(existing.tempPath);
         session.attachments = session.attachments.filter((attachment) => attachment !== existing);
@@ -329,16 +348,26 @@ export class ConnectorServer {
     metadata.contentType ||= header(request, "content-type").split(";", 1)[0];
     const sessionId = cleanId(url.searchParams.get("sessionID")) || randomId();
     let session = this.sessions.get(sessionId);
+    const newSession = !session;
     if (session?.items[0]?.imported) { request.resume(); this.respondJson(response, 201, { canRecognize: false }); return; }
     metadata.id = cleanId(metadata.id) || `standalone-${sessionId}`;
-    const attachment = await this.streamAttachment(request, metadata);
-    const id = attachment.parentItemId = "standalone";
-    const raw = { id, itemType: "document", title: metadata.title || metadata.filename || "独立附件", url: metadata.url };
     if (!session) {
-      session = { id: sessionId, uri: string(metadata.url), items: [{ id, raw, imported: false, delivered: new Set() }],
-        attachments: [], attachmentStatus: new Map(), createdAt: Date.now(), updatedAt: Date.now(), expectedAttachments: 1, pendingUploads: 0 };
+      this.ensureSessionCapacity();
+      session = { id: sessionId, uri: string(metadata.url), items: [{ id: "standalone", raw: {}, imported: false, delivered: new Set() }],
+        attachments: [], attachmentStatus: new Map(), createdAt: Date.now(), updatedAt: Date.now(), expectedAttachments: 1, pendingUploads: 0, uploadedBytes: 0 };
       this.sessions.set(sessionId, session);
     }
+    try { this.beginUpload(session); }
+    catch (error) {
+      if (newSession) this.sessions.delete(sessionId);
+      throw error;
+    }
+    let attachment: StoredAttachment;
+    try { attachment = await this.streamAttachment(request, metadata, session); }
+    finally { session.pendingUploads -= 1; this.activeUploads -= 1; }
+    const id = attachment.parentItemId = "standalone";
+    const raw = { id, itemType: "document", title: metadata.title || metadata.filename || "独立附件", url: metadata.url };
+    session.items[0]!.raw = raw;
     this.storeAttachment(session, attachment);
     this.scheduleDispatch(session);
     this.respondJson(response, 201, { id: attachment.id, canRecognize: false });
@@ -452,6 +481,7 @@ export class ConnectorServer {
   private async streamAttachment(
     request: IncomingMessage,
     metadata: ZoteroAttachmentMetadata,
+    session: ConnectorSession,
   ): Promise<StoredAttachment> {
     const fs = requireNode<typeof import("node:fs")>("fs", this.requireFn);
     const path = requireNode<typeof import("node:path")>("path", this.requireFn);
@@ -461,8 +491,19 @@ export class ConnectorServer {
     const filename = safeFilename(metadata.filename || metadata.title || "attachment", mimeExtension(metadata.contentType ?? metadata.mimeType));
     const tempPath = path.join(this.options.tempDirectory, `${randomId()}-${id}-${filename}`);
     try {
+      let bytes = 0;
+      const contentLength = Number(header(request, "content-length"));
+      if (Number.isFinite(contentLength) && contentLength > this.maxAttachmentBytes()) throw new ProtocolError(413, "附件超过大小限制");
+      const limiter = new stream.Transform({ transform: (chunk: Buffer, _encoding, callback) => {
+        bytes += chunk.length;
+        try {
+          if (bytes > this.maxAttachmentBytes()) throw new ProtocolError(413, "附件超过大小限制");
+          this.reserveBytes(session, chunk.length);
+          callback(null, chunk);
+        } catch (error) { callback(error as Error); }
+      } });
       await new Promise<void>((resolve, reject) => {
-        stream.pipeline(request, fs.createWriteStream(tempPath), (error) => error ? reject(error) : resolve());
+        stream.pipeline(request, limiter, fs.createWriteStream(tempPath), (error) => error ? reject(error) : resolve());
       });
     } catch (error) {
       this.removeTempFile(tempPath);
@@ -485,6 +526,7 @@ export class ConnectorServer {
       if (!session.pendingUploads && !session.processing && session.updatedAt < cutoff) {
         if (session.timer) clearTimeout(session.timer);
         this.sessions.delete(id);
+        this.totalUploadedBytes -= session.uploadedBytes;
         for (const attachment of session.attachments) this.removeTempFile(attachment.tempPath);
       }
     }
@@ -502,13 +544,50 @@ export class ConnectorServer {
     fs.mkdirSync(this.options.tempDirectory, { recursive: true });
   }
 
-  private setCommonHeaders(response: ServerResponse): void {
-    response.setHeader("Access-Control-Allow-Origin", "*");
+  private maxAttachmentBytes(): number { return this.options.maxAttachmentBytes ?? DEFAULT_ATTACHMENT_BYTES; }
+
+  private ensureSessionCapacity(): void {
+    this.cleanupExpired();
+    if (this.sessions.size >= MAX_SESSIONS) throw new ProtocolError(429, "Connector 会话数已达上限");
+  }
+
+  private reserveBytes(session: ConnectorSession, bytes: number): void {
+    if (session.uploadedBytes + bytes > (this.options.maxSessionBytes ?? DEFAULT_SESSION_BYTES))
+      throw new ProtocolError(413, "会话附件总量超过限制");
+    if (this.totalUploadedBytes + bytes > (this.options.maxTotalAttachmentBytes ?? DEFAULT_TOTAL_BYTES))
+      throw new ProtocolError(429, "Connector 附件总量超过限制");
+    session.uploadedBytes += bytes;
+    this.totalUploadedBytes += bytes;
+  }
+
+  private beginUpload(session: ConnectorSession): void {
+    if (this.activeUploads >= (this.options.maxConcurrentUploads ?? DEFAULT_CONCURRENT_UPLOADS) || session.pendingUploads >= 2)
+      throw new ProtocolError(429, "附件上传并发数已达上限");
+    this.activeUploads += 1;
+    session.pendingUploads += 1;
+  }
+
+  private validateSource(request: IncomingMessage): void {
+    const host = header(request, "host").toLowerCase();
+    if (!/^(127\.0\.0\.1|localhost):\d+$/.test(host)) throw new ProtocolError(403, "invalid connector host");
+    const origin = header(request, "origin");
+    if (origin && !/^(chrome-extension|moz-extension|safari-web-extension):\/\/[^/]+\/?$/.test(origin))
+      throw new ProtocolError(403, "browser origin is not a Connector extension");
+    if (!origin && header(request, "sec-fetch-site").toLowerCase() === "cross-site")
+      throw new ProtocolError(403, "cross-site browser request denied");
+  }
+
+  private setCommonHeaders(request: IncomingMessage, response: ServerResponse): void {
+    const origin = header(request, "origin");
+    if (/^(chrome-extension|moz-extension|safari-web-extension):\/\/[^/]+\/?$/.test(origin)) {
+      response.setHeader("Access-Control-Allow-Origin", origin);
+      response.setHeader("Vary", "Origin");
+      response.setHeader("Access-Control-Allow-Private-Network", "true");
+    }
     response.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
     response.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Metadata, X-Zotero-Version, X-Zotero-Connector-API-Version");
     response.setHeader("X-Zotero-Version", "7.0.0");
     response.setHeader("Access-Control-Expose-Headers", "X-Zotero-Version");
-    response.setHeader("Access-Control-Allow-Private-Network", "true");
     response.setHeader("Cache-Control", "no-store");
   }
 

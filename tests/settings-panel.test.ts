@@ -1,3 +1,8 @@
+import { createRequire } from "node:module";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { configPath } from "../src/services/pdf2zh-deployment";
 import { DEFAULT_SETTINGS } from "../src/types/settings";
 import { SettingsPanel } from "../src/ui/settings";
 
@@ -62,4 +67,106 @@ describe("translation settings placement", () => {
     expect(settingsSectionHtml(panelHtml())).toMatch(/-li/);
     expect(settingsSectionHtml(panelHtml())).toMatch(/-lo/);
   });
+});
+
+describe("translation credential mappings", () => {
+  it("renders every Tencent credential and preserves its separate mapping", () => {
+    const html = panelHtml({
+      pdf2zhConfig: { translators: [{ name: "tencent", envs: {} }] },
+      pdf2zhSecretNames: { TENCENTCLOUD_SECRET_ID: "tencent-id", TENCENTCLOUD_SECRET_KEY: "tencent-key" },
+    });
+    expect(html).toContain('data-secret-name="TENCENTCLOUD_SECRET_ID" value="tencent-id"');
+    expect(html).toContain('data-secret-name="TENCENTCLOUD_SECRET_KEY" value="tencent-key"');
+  });
+
+  it("renders one field for a single-key service and none for a keyless service", () => {
+    const deepseek = panelHtml({ pdf2zhConfig: { translators: [{ name: "deepseek", envs: {} }] } });
+    expect(deepseek.match(/data-secret-name=/g)).toHaveLength(1);
+    expect(deepseek).toContain('data-secret-name="DEEPSEEK_API_KEY"');
+    const google = panelHtml({ pdf2zhConfig: { translators: [{ name: "google", envs: {} }] } });
+    expect(google).not.toContain('data-secret-name=');
+    expect(google).toContain('data-test-secrets disabled');
+  });
+
+  it("tests all Tencent mappings and reports an absent or unresolved key", () => {
+    const getSecret = vi.fn((name: string) => ({ "tencent-id": "id-value", "tencent-key": "key-value" })[name] ?? "");
+    const panel = new SettingsPanel("test", () => ({
+      ...DEFAULT_SETTINGS,
+      pdf2zhConfig: { translators: [{ name: "tencent", envs: {} }] },
+    }), {} as never, {} as never, async () => {}, getSecret);
+    const inputs = [
+      { dataset: { secretName: "TENCENTCLOUD_SECRET_ID" }, value: "tencent-id" },
+      { dataset: { secretName: "TENCENTCLOUD_SECRET_KEY" }, value: "tencent-key" },
+    ];
+    const root = { querySelectorAll: () => inputs } as unknown as HTMLElement;
+    const test = (panel as unknown as { testSecrets(root: HTMLElement): { message: string; error: boolean } }).testSecrets.bind(panel);
+    expect(test(root)).toEqual({ message: "已找到 2 个密钥", error: false });
+    expect(getSecret).toHaveBeenCalledWith("tencent-id");
+    expect(getSecret).toHaveBeenCalledWith("tencent-key");
+    inputs[1]!.value = "";
+    expect(test(root)).toEqual({ message: "请先填写映射：TENCENTCLOUD_SECRET_KEY", error: true });
+    inputs[1]!.value = "unknown";
+    expect(test(root)).toEqual({ message: "缺少密钥：unknown", error: true });
+  });
+});
+
+it("removes a cleared visual font path from JSON, disk, and the reopened control", async () => {
+  const workspaceDir = mkdtempSync(join(tmpdir(), "paper-font-path-"));
+  const originalWindow = (globalThis as { window?: unknown }).window;
+  (globalThis as { window?: unknown }).window = { require: createRequire(import.meta.url) };
+  try {
+    const panel = new SettingsPanel("test", () => ({
+      ...DEFAULT_SETTINGS,
+      pdf2zhConfig: { NOTO_FONT_PATH: "/old/font.ttf", translators: [{ name: "google", envs: {} }] },
+    }), { getWorkspaceInfo: async () => ({ workspaceDir }) } as never, {} as never, async () => {});
+    const font = { dataset: { configKey: "NOTO_FONT_PATH" }, value: "" };
+    const translator = { dataset: { configKey: "translator" }, value: "google" };
+    const model = { dataset: { configKey: "model" }, value: "", disabled: false };
+    const area = { value: "" };
+    const visualTab = { dataset: { active: "true" } };
+    const root = {
+      querySelectorAll: (selector: string) => selector === "[data-config-key]" ? [font, translator, model] : [],
+      querySelector: (selector: string) => ({
+        "[data-config-json]": area,
+        "[data-config-key=model]": model,
+        "[data-config-tab='visual']": visualTab,
+      })[selector as "[data-config-json]"] ?? null,
+    } as unknown as HTMLElement;
+    const methods = panel as unknown as {
+      renderConfigVisual(root: HTMLElement): void;
+      syncVisualToJson(root: HTMLElement): void;
+      syncJsonToVisual(root: HTMLElement): void;
+      saveConfig(root: HTMLElement, revision: number): Promise<void>;
+    };
+
+    methods.renderConfigVisual(root);
+    expect(font.value).toBe("/old/font.ttf");
+    font.value = "";
+    methods.syncVisualToJson(root);
+    expect(JSON.parse(area.value)).not.toHaveProperty("NOTO_FONT_PATH");
+    await methods.saveConfig(root, 0);
+    const saved = JSON.parse(readFileSync(configPath(workspaceDir), "utf8"));
+    expect(saved).not.toHaveProperty("NOTO_FONT_PATH");
+    expect(font.value).toBe("");
+    const reopened = new SettingsPanel("test", () => ({ ...DEFAULT_SETTINGS, pdf2zhConfig: saved }),
+      {} as never, {} as never, async () => {}) as unknown as { renderConfigVisual(root: HTMLElement): void };
+    area.value = "";
+    font.value = "/stale/font.ttf";
+    reopened.renderConfigVisual(root);
+    expect(font.value).toBe("");
+
+    visualTab.dataset.active = "false";
+    area.value = JSON.stringify({ ...saved, NOTO_FONT_PATH: "/json/font.ttf" });
+    methods.syncJsonToVisual(root);
+    expect(font.value).toBe("/json/font.ttf");
+    area.value = JSON.stringify(saved);
+    methods.syncJsonToVisual(root);
+    expect(font.value).toBe("");
+    await methods.saveConfig(root, 0);
+    expect(JSON.parse(readFileSync(configPath(workspaceDir), "utf8"))).not.toHaveProperty("NOTO_FONT_PATH");
+  } finally {
+    if (originalWindow === undefined) delete (globalThis as { window?: unknown }).window;
+    else (globalThis as { window?: unknown }).window = originalWindow;
+    rmSync(workspaceDir, { recursive: true, force: true });
+  }
 });

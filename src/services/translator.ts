@@ -7,7 +7,7 @@ import { getNodeRequire, type NodeRequire, requireNode } from "../core/env";
 import { KernelClient } from "../core/kernel";
 import { sanitizeDocumentName } from "../core/naming";
 import { resolveShellEnvironment } from "./pdf2zh-deployment";
-import { canonicalSecretEnvKey, ensureCredentialPlaceholders, isSecretKey } from "./pdf2zh-secrets";
+import { canonicalSecretEnvKey, ensureCredentialPlaceholders, isSecretKey, redactSecretValues } from "./pdf2zh-secrets";
 import { errorMessage } from "../core/errors";
 
 export interface TranslationResult {
@@ -141,7 +141,7 @@ export class TranslatorService {
   private async runTranslation(docId: string, settings: PluginSettings, signal: AbortSignal, untranslatedOnly = false): Promise<TranslationResult> {
     const paper = await this.options.readPaper(docId);
     signal.throwIfAborted();
-    this.emit({ state: "running", docId, title: paper.canonical.title || paper.citekey || docId, citekey: paper.citekey, message: "正在准备翻译" } as any);
+    this.emit({ state: "running", docId, title: paper.canonical.title || paper.citekey || docId, citekey: paper.citekey, message: "正在准备翻译" });
     if (untranslatedOnly && (paper.translation.mono || paper.translation.dual)) throw new Error("该论文已有译文，已跳过批量翻译");
     const pdf = translationSource(paper);
     const fs = requireNode<typeof import("node:fs")>("fs", this.requireFn);
@@ -156,7 +156,12 @@ export class TranslatorService {
     const executable = await resolveExecutable(settings.pdf2zhPath, this.requireFn);
     const service = selectedPdf2zhService(settings);
     const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "siyuan-paper-translate-"));
-    const configPath = preparePdf2zhConfig(settings, service, this.options.getSecret, fs, path, os);
+    let config: PreparedPdf2zhConfig;
+    try { config = preparePdf2zhConfig(settings, service, this.options.getSecret, fs, path, os); }
+    catch (error) {
+      try { fs.rmSync(outputDir, { recursive: true, force: true }); } catch { /* system tmp cleanup */ }
+      throw error;
+    }
     const languages = translationLanguages(settings);
     const args = [
       "-o", outputDir,
@@ -164,15 +169,19 @@ export class TranslatorService {
       "-li", languages.source,
       "-lo", languages.target,
       "--thread", String(normalizeTranslationThreads(settings.translationThreads)),
-      ...configArgs(configPath),
-      ...withoutConfig(extractThreadArgs(settings.pdf2zhArgs).args, Boolean(configPath)),
+      ...configArgs(config.path),
+      ...withoutConfig(extractThreadArgs(settings.pdf2zhArgs).args, Boolean(config.path)),
       pdfPath,
     ];
     const startedAt = Date.now();
     this.emit({ state: "running", docId, message: "正在启动 pdf2zh" });
+    // 已上传但尚未写入元数据的资源：任务失败或取消时必须回收，避免孤儿附件。
+    const uploadedAssets: string[] = [];
+    let committed = false;
+    let persistAttempted = false;
     try {
       signal.throwIfAborted();
-      await this.spawn(executable, args, docId, settings);
+      await this.spawn(executable, args, docId, settings, signal, config.secretEnv);
       signal.throwIfAborted();
       this.emit({ state: "running", docId, message: "正在保存译稿" });
       const outputs = locateOutputs(outputDir, path.basename(pdfPath, path.extname(pdfPath)), fs, path);
@@ -182,12 +191,14 @@ export class TranslatorService {
       const monoBytes = new Uint8Array(fs.readFileSync(outputs.mono));
       const monoName = `${sanitizeDocumentName(paper.citekey)}-mono.pdf`;
       const mono = await this.kernel.uploadAsset(settings.translationAssetsDir, monoBytes, monoName, "application/pdf");
+      uploadedAssets.push(mono);
       signal.throwIfAborted();
       let dual: string | undefined;
       if (settings.translationDual && outputs.dual) {
         const dualBytes = new Uint8Array(fs.readFileSync(outputs.dual));
         const dualName = `${sanitizeDocumentName(paper.citekey)}-dual.pdf`;
         dual = await this.kernel.uploadAsset(settings.translationAssetsDir, dualBytes, dualName, "application/pdf");
+        uploadedAssets.push(dual);
       }
       signal.throwIfAborted();
       const commit = async () => {
@@ -203,7 +214,9 @@ export class TranslatorService {
           mono, dual, executable, args, completedAt: new Date().toISOString(),
           monoTitle: latest.translation.monoTitle, dualTitle: dual ? latest.translation.dualTitle : undefined,
         };
+        persistAttempted = true;
         await this.options.persist(docId, latest);
+        committed = true;
         return settings.autoDeleteOldTranslations
           ? await this.cleanupOldTranslations(previousTranslation, latest.translation, latest.attachments.map(item => item.assetAddress))
           : { deleted: [], warnings: [] };
@@ -218,7 +231,37 @@ export class TranslatorService {
         cleanupWarnings: cleanup.warnings,
       };
     } finally {
+      if (!committed) {
+        // persist may save the document attributes before a later refresh or
+        // database sync fails. Keep any asset that the document now references.
+        let referenced: Set<string> | undefined;
+        if (persistAttempted) {
+          try {
+            const current = await this.options.readPaper(docId);
+            referenced = new Set([
+              current.translation.mono,
+              current.translation.dual,
+              ...current.attachments.map(item => item.assetAddress),
+            ].filter((address): address is string => Boolean(address)));
+          } catch (error) {
+            console.warn("[paper-manager] 无法确认译稿引用，保留已上传资源", docId, error);
+          }
+        }
+        for (const address of uploadedAssets) {
+          if (persistAttempted && (!referenced || referenced.has(address))) continue;
+          try { await this.kernel.removeWorkspaceFile(translationWorkspacePath(address)); }
+          catch (error) { console.warn("[paper-manager] 清理未入库的翻译资源失败", address, error); }
+        }
+      }
       try { fs.rmSync(outputDir, { recursive: true, force: true }); } catch { /* system tmp cleanup */ }
+      if (config.tempDir) {
+        try { fs.rmSync(config.tempDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }); }
+        catch (error) {
+          // If removal is blocked, overwrite any credential that pdf2zh wrote back.
+          try { fs.writeFileSync(config.path!, config.safeContent!, { encoding: "utf8", mode: 0o600 }); }
+          catch (scrubError) { console.warn("[paper-manager] 无法清理临时 pdf2zh 配置", config.path, error, scrubError); }
+        }
+      }
     }
   }
 
@@ -235,41 +278,61 @@ export class TranslatorService {
     if (running) this.emit(running.state);
   }
 
-  private async spawn(executable: string, args: string[], docId: string, settings: PluginSettings): Promise<void> {
+  private async spawn(executable: string, args: string[], docId: string, settings: PluginSettings, signal: AbortSignal, configSecrets: Record<string, string> = {}): Promise<void> {
     const childProcess = requireNode<typeof import("node:child_process")>("child_process", this.requireFn);
     const shellEnv = await resolveShellEnvironment(this.requireFn);
+    // Cancellation can happen while the shell environment is being resolved.
+    // Keep this check and the child binding in the same synchronous turn.
+    const task = this.active.get(docId);
+    signal.throwIfAborted();
+    if (!task || task.controller.signal !== signal) throw new Error("翻译已取消");
     return new Promise((resolve, reject) => {
       const child = (this.options.spawnProcess ?? childProcess.spawn)(executable, args, {
         shell: false,
         windowsHide: true,
         stdio: ["ignore", "pipe", "pipe"],
-        env: buildPdf2zhEnv(settings, this.options.getSecret, shellEnv),
+        env: buildPdf2zhEnv(settings, this.options.getSecret, shellEnv, configSecrets),
       });
-      const task = this.active.get(docId);
-      if (task) task.child = child;
+      task.child = child;
       let stderr = "";
-      const handleOutput = (chunk: Uint8Array) => {
-        const line = new TextDecoder().decode(chunk);
-        const progress = parseProgress(line);
+      // 流式解码：多字节字符跨 chunk 时不会被切成 U+FFFD。
+      const stdoutDecoder = new TextDecoder();
+      const stderrDecoder = new TextDecoder();
+      let lastLogEmit = 0;
+      const handleText = (text: string) => {
+        const progress = parseProgress(text);
+        // 日志行高频出现时节流，进度变化始终即时广播。
+        if (progress == null) {
+          const now = Date.now();
+          if (now - lastLogEmit < 150) return;
+          lastLogEmit = now;
+        }
         this.emit({
           state: "running",
           docId,
           progress,
-          message: progress == null ? line.trim().slice(-160) || "翻译中" : `翻译中 ${progress}%`,
+          message: progress == null ? text.trim().slice(-160) || "翻译中" : `翻译中 ${progress}%`,
         });
       };
-      child.stdout?.on("data", handleOutput);
+      child.stdout?.on("data", (chunk: Uint8Array) => handleText(stdoutDecoder.decode(chunk, { stream: true })));
       child.stderr?.on("data", (chunk: Uint8Array) => {
-        const text = new TextDecoder().decode(chunk);
+        const text = stderrDecoder.decode(chunk, { stream: true });
         stderr = `${stderr}${text}`.slice(-8_000);
-        handleOutput(chunk);
+        handleText(text);
       });
-      child.once("error", reject);
-      child.once("close", (code, signal) => {
-        if (signal) reject(new Error(`pdf2zh 已中止 (${signal})`));
+      child.once("error", (error) => reject(signal.aborted ? cancellationError(signal) : error));
+      child.once("close", (code, exitSignal) => {
+        stderr = `${stderr}${stderrDecoder.decode()}`.slice(-8_000);
+        // Windows 上 kill 的进程以非零退出码结束且不带信号，必须以取消状态为准，
+        // 否则用户主动取消会被误报为「退出码 1」失败。
+        if (signal.aborted) reject(cancellationError(signal));
+        else if (exitSignal) reject(new Error(`pdf2zh 已中止 (${exitSignal})`));
         else if (code === 0) resolve();
         else reject(new Error(`pdf2zh 退出码 ${String(code)}：${stderr.trim().slice(-1000)}`));
       });
+      // A custom spawnProcess can cancel synchronously before returning the
+      // child. It is now bound and has listeners, so terminate it immediately.
+      if (signal.aborted) child.kill("SIGTERM");
     });
   }
 
@@ -302,7 +365,17 @@ export class TranslatorService {
   }
 }
 
-function selectedPdf2zhService(settings: PluginSettings): string { const config = settings.pdf2zhConfig; if (config && Array.isArray(config.translators)) { const first = config.translators[0]; if (first && typeof first === "object" && typeof (first as Record<string, unknown>).name === "string") return String((first as Record<string, unknown>).name); } if (config && typeof config.translator === "string") return config.translator; return settings.translateService; }
+function selectedPdf2zhService(settings: PluginSettings): string {
+  const config = settings.pdf2zhConfig;
+  if (config && Array.isArray(config.translators)) {
+    const first = config.translators[0];
+    if (first && typeof first === "object" && typeof (first as Record<string, unknown>).name === "string") {
+      return String((first as Record<string, unknown>).name);
+    }
+  }
+  if (config && typeof config.translator === "string") return config.translator;
+  return settings.translateService;
+}
 
 /**
  * pdf2zh 的语言只走 -li/-lo：配置里的 PDF2ZH_LANG_FROM/TO 仅被它的 GUI（gui.py）
@@ -322,47 +395,54 @@ function configArgs(configPath?: string): string[] {
   return configPath ? ["--config", configPath] : [];
 }
 
+interface PreparedPdf2zhConfig {
+  path?: string;
+  /** 临时配置所在目录，调用方翻译结束后必须清理。 */
+  tempDir?: string;
+  /** 原配置中的明文凭据只经本次子进程环境传递。 */
+  secretEnv?: Record<string, string>;
+  safeContent?: string;
+}
+
 /**
  * pdf2zh 的 BaseTranslator.set_envs 会用配置里该服务的 envs 整表替换内置默认表，
  * 且只遍历替换后仍存在的键去读取 os.environ；配置缺少凭据键名时，插件注入的密钥
  * 会被忽略并抛 KeyError。因此由插件管理的配置必须补齐凭据键名占位（值保持 null）。
- * 配置不可写时退回临时配置文件，保证本次翻译仍能带着正确的 envs 启动。
+ * 每次翻译使用独立的临时配置。pdf2zh 会把环境密钥回写到传入的配置文件，
+ * 因此原配置只读取，临时配置在子进程退出后删除，避免回写污染原配置或并行任务。
  */
 function preparePdf2zhConfig(
   settings: PluginSettings,
   service: string,
   getSecret: ((name: string) => string) | undefined,
-  fs: Pick<typeof import("node:fs"), "existsSync" | "readFileSync" | "mkdirSync" | "writeFileSync" | "mkdtempSync">,
-  path: Pick<typeof import("node:path"), "dirname" | "join">,
+  fs: Pick<typeof import("node:fs"), "existsSync" | "readFileSync" | "writeFileSync" | "mkdtempSync" | "rmSync">,
+  path: Pick<typeof import("node:path"), "join">,
   os: Pick<typeof import("node:os"), "tmpdir">,
-): string | undefined {
-  const resolved = resolvedSecrets(settings, getSecret);
-  const normalize = (config: Record<string, unknown>): Record<string, unknown> =>
-    scrubInjectedSecrets(ensureCredentialPlaceholders(config, service), service, resolved);
+): PreparedPdf2zhConfig {
   const target = settings.pdf2zhConfigPath?.trim();
+  let base = asConfigRecord(settings.pdf2zhConfig);
   if (target) {
     try {
-      const exists = fs.existsSync(target);
-      const current = exists ? asConfigRecord(JSON.parse(String(fs.readFileSync(target, "utf8")))) : asConfigRecord(settings.pdf2zhConfig);
-      const next = normalize(current);
-      if (!exists || JSON.stringify(next) !== JSON.stringify(current)) {
-        fs.mkdirSync(path.dirname(target), { recursive: true });
-        fs.writeFileSync(target, `${JSON.stringify(next, null, 2)}\n`, "utf8");
-      }
-      return target;
+      if (fs.existsSync(target)) base = asConfigRecord(JSON.parse(String(fs.readFileSync(target, "utf8"))));
     } catch (error) {
-      console.warn("[paper-manager] 托管 pdf2zh 配置不可用，改用临时配置", target, error);
+      console.warn("[paper-manager] 无法读取 pdf2zh 配置，改用插件设置", target, error);
     }
   }
-  const base = asConfigRecord(settings.pdf2zhConfig);
-  if (!Object.keys(base).length) return undefined;
+  if (!target && !Object.keys(base).length && !Object.keys(resolvedSecrets(settings, getSecret)).length) return {};
+  const secretEnv = plaintextConfigSecrets(base, service);
+  const safe = redactSecretValues(ensureCredentialPlaceholders(base, service));
+  const safeContent = `${JSON.stringify(safe, null, 2)}\n`;
+  let tempDir: string | undefined;
   try {
-    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "siyuan-pdf2zh-config-")), "config.json");
-    fs.writeFileSync(file, `${JSON.stringify(normalize(base), null, 2)}\n`, "utf8");
-    return file;
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "siyuan-pdf2zh-config-"));
+    const file = path.join(tempDir, "config.json");
+    fs.writeFileSync(file, safeContent, { encoding: "utf8", mode: 0o600 });
+    return { path: file, tempDir, secretEnv, safeContent };
   } catch (error) {
-    console.warn("[paper-manager] 无法写入 pdf2zh 临时配置，将直接使用插件设置", error);
-    return undefined;
+    if (tempDir) {
+      try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch { /* system tmp cleanup */ }
+    }
+    throw new Error(`无法写入 pdf2zh 临时配置：${errorMessage(error)}`);
   }
 }
 
@@ -384,8 +464,18 @@ function withoutConfig(args: string[], managed: boolean): string[] {
   return output;
 }
 
-function buildPdf2zhEnv(settings: PluginSettings, getSecret?: (name: string) => string, base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  return { ...base, ...resolvedSecrets(settings, getSecret) };
+function buildPdf2zhEnv(settings: PluginSettings, getSecret?: (name: string) => string, base: NodeJS.ProcessEnv = process.env, configSecrets: Record<string, string> = {}): NodeJS.ProcessEnv {
+  return { ...base, ...configSecrets, ...resolvedSecrets(settings, getSecret) };
+}
+
+function plaintextConfigSecrets(config: Record<string, unknown>, service: string): Record<string, string> {
+  const entry = Array.isArray(config.translators) ? config.translators.find(item => item && typeof item === "object"
+    && String((item as Record<string, unknown>).name ?? "").toLowerCase() === service.trim().toLowerCase()) : undefined;
+  const envs = entry && typeof entry === "object" ? (entry as Record<string, unknown>).envs : undefined;
+  if (!envs || typeof envs !== "object" || Array.isArray(envs)) return {};
+  return Object.fromEntries(Object.entries(envs as Record<string, unknown>)
+    .filter(([key, value]) => isSecretKey(key) && typeof value === "string" && Boolean(value.trim()))
+    .map(([key, value]) => [key, value as string]));
 }
 
 /**
@@ -412,28 +502,6 @@ function resolvedSecrets(settings: PluginSettings, getSecret?: (name: string) =>
     }
   }
   return resolved;
-}
-
-/** pdf2zh 读取进程环境后会把密钥回写到配置文件；能由环境提供的密钥在启动前一律清空。 */
-function scrubInjectedSecrets(config: Record<string, unknown>, service: string, resolved: Record<string, string>): Record<string, unknown> {
-  const keys = Object.keys(resolved);
-  if (!keys.length) return config;
-  const list = Array.isArray(config.translators) ? (config.translators as unknown[]) : [];
-  const index = list.findIndex(entry => entry && typeof entry === "object" && !Array.isArray(entry)
-    && String((entry as Record<string, unknown>).name ?? "").toLowerCase() === service.trim().toLowerCase());
-  if (index < 0) return config;
-  const entry = { ...(list[index] as Record<string, unknown>) };
-  const envs = entry.envs && typeof entry.envs === "object" && !Array.isArray(entry.envs)
-    ? { ...(entry.envs as Record<string, unknown>) } : {};
-  let changed = false;
-  for (const key of keys) {
-    if (typeof envs[key] === "string" && envs[key]) { envs[key] = null; changed = true; }
-  }
-  if (!changed) return config;
-  entry.envs = envs;
-  list[index] = entry;
-  config.translators = list;
-  return config;
 }
 
 export function translationWorkspacePath(address: string): string {
@@ -526,6 +594,10 @@ function validatePdf(pathname: string, fs: typeof import("node:fs")): void {
 
 function isWithin(root: string, target: string, separator: string): boolean {
   return target === root || target.startsWith(`${root}${separator}`);
+}
+
+function cancellationError(signal: AbortSignal): Error {
+  return signal.reason instanceof Error ? signal.reason : new Error("翻译已取消");
 }
 
 function translationError(error: unknown): string {

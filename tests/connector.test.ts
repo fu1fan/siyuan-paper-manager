@@ -39,6 +39,87 @@ describe("ConnectorServer", () => {
     }
   }
 
+  it("rejects website origins and DNS rebinding hosts while accepting extension and originless clients", async () => {
+    const onImport = vi.fn();
+    await boot("connector-origin-", { requireFn: createRequire(import.meta.url), onImport });
+    const endpoint = `${base}/connector/saveItems`;
+    const body = JSON.stringify({ sessionID: "safe", items: [{ id: "paper", title: "Paper" }] });
+    const website = await fetch(endpoint, { method: "POST", headers: { Origin: "https://evil.example", "Content-Type": "application/json" }, body });
+    expect(website.status).toBe(403);
+    expect(website.headers.get("access-control-allow-origin")).toBeNull();
+    expect((await fetch(`${base}/connector/sessionProgress`, { method: "POST", body: JSON.stringify({ sessionID: "safe" }) })).status).toBe(404);
+    expect((await fetch(endpoint, { method: "OPTIONS", headers: { Origin: "https://evil.example", "Access-Control-Request-Method": "POST" } })).status).toBe(403);
+    expect((await fetch(endpoint, { method: "POST", headers: { "Sec-Fetch-Site": "cross-site", "Content-Type": "application/json" }, body })).status).toBe(403);
+    const rebindingStatus = await new Promise<number | undefined>((resolve, reject) => {
+      const request = httpRequest(endpoint, { method: "POST", headers: { Host: `evil.example:${new URL(base).port}`, "Content-Type": "application/json" } },
+        (response) => { response.resume(); response.on("end", () => resolve(response.statusCode)); });
+      request.on("error", reject);
+      request.end(body);
+    });
+    expect(rebindingStatus).toBe(403);
+    const extension = await fetch(`${base}/connector/ping`, { method: "POST", headers: { Origin: "chrome-extension://abcdefghijklmnop" } });
+    expect(extension.status).toBe(200);
+    expect(extension.headers.get("access-control-allow-origin")).toBe("chrome-extension://abcdefghijklmnop");
+    expect((await fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body })).status).toBe(201);
+  });
+
+  it("limits streamed attachment bytes, aggregate session bytes, and concurrent uploads", async () => {
+    await boot("connector-limits-", { requireFn: createRequire(import.meta.url), onImport: () => "doc",
+      maxAttachmentBytes: 8, maxSessionBytes: 12, maxConcurrentUploads: 1, graceMs: 1000 });
+    const save = await fetch(`${base}/connector/saveItems`, { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionID: "limited", items: [{ id: "paper", title: "Paper", attachments: [{ id: "a" }, { id: "b" }] }] }) });
+    expect(save.status).toBe(201);
+    const upload = (id: string, body: string) => fetch(`${base}/connector/saveAttachment?sessionID=limited`, {
+      method: "POST", headers: { "X-Metadata": JSON.stringify({ id, parentItemID: "paper" }) }, body,
+    });
+    expect((await upload("large", "123456789")).status).toBe(413);
+    expect(readdirSync(directory)).toHaveLength(0);
+    expect((await upload("a", "12345678")).status).toBe(201);
+    expect((await upload("b", "12345")).status).toBe(413);
+    expect(readdirSync(directory)).toHaveLength(1);
+
+    let pending!: ReturnType<typeof httpRequest>;
+    const finished = new Promise<number | undefined>((resolve, reject) => {
+      pending = httpRequest(`${base}/connector/saveAttachment?sessionID=limited`, {
+        method: "POST", headers: { "X-Metadata": JSON.stringify({ id: "slow", parentItemID: "paper" }) },
+      }, (response) => { response.resume(); response.on("end", () => resolve(response.statusCode)); });
+      pending.on("error", reject);
+      pending.write("x");
+    });
+    await vi.waitFor(async () => {
+      const progress = await (await fetch(`${base}/connector/sessionProgress`, { method: "POST", body: JSON.stringify({ sessionID: "limited" }) })).json();
+      expect(progress.items[0].attachments).toEqual(expect.arrayContaining([expect.objectContaining({ id: "slow" })]));
+    });
+    expect((await upload("parallel", "x")).status).toBe(429);
+    pending.end();
+    expect(await finished).toBe(201);
+  });
+
+  it("applies the session quota to JSON SingleFile snapshots", async () => {
+    await boot("connector-snapshot-limit-", { requireFn: createRequire(import.meta.url), onImport: () => "doc",
+      maxAttachmentBytes: 1024, maxSessionBytes: 10 });
+    expect((await fetch(`${base}/connector/saveItems`, { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionID: "snapshot-limit", items: [{ id: "paper", title: "Paper" }] }) })).status).toBe(201);
+    const snapshot = { sessionID: "snapshot-limit", snapshotContent: "12345678901" };
+    expect((await fetch(`${base}/connector/saveSingleFile`, { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(snapshot) })).status).toBe(413);
+    expect(readdirSync(directory)).toHaveLength(0);
+  });
+
+  it("limits cumulative uploads across sessions", async () => {
+    await boot("connector-global-limit-", { requireFn: createRequire(import.meta.url), onImport: () => "doc",
+      maxAttachmentBytes: 8, maxSessionBytes: 12, maxTotalAttachmentBytes: 12 });
+    for (const id of ["one", "two"]) {
+      expect((await fetch(`${base}/connector/saveItems`, { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionID: id, items: [{ id: "paper", title: "Paper" }] }) })).status).toBe(201);
+    }
+    const upload = (session: string, body: string) => fetch(`${base}/connector/saveAttachment?sessionID=${session}`, {
+      method: "POST", headers: { "X-Metadata": JSON.stringify({ id: "pdf", parentItemID: "paper" }) }, body,
+    });
+    expect((await upload("one", "12345678")).status).toBe(201);
+    expect((await upload("two", "12345")).status).toBe(429);
+  });
+
   it("implements ping, version checks, multi-item attachment mapping, and 501", async () => {
     const received: ImportCandidate[] = [];
     await boot("paper-manager-connector-test-", {

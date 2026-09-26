@@ -404,6 +404,23 @@
 .paper-manager-settings .paper-manager-preview:last-child { margin-bottom: 0; }
 .paper-manager-settings .paper-manager-panel > .paper-manager-hint:last-child { margin-bottom: 0; }
 .paper-manager-settings .paper-manager-field > span:has(.b3-switch) { display: flex; align-items: center; justify-self: end; }
+.paper-manager-term { margin: 6px 0; }
+.paper-manager-term summary { cursor: pointer; font-size: 12px; color: var(--b3-theme-on-surface); }
+.paper-manager-term pre {
+  max-height: 220px;
+  overflow: auto;
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  border-radius: var(--b3-border-radius);
+  background: var(--b3-theme-surface);
+  border: 1px solid var(--b3-border-color);
+  font-family: var(--b3-font-family-code);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
 .paper-manager-conflicts { max-height: none; overflow: visible; }
 .paper-manager-conflict { padding: 14px 0; border-top: 1px solid var(--b3-border-color); }
 .paper-manager-conflicts .paper-manager-import-toggle { display: flex; align-items: center; }
@@ -644,3 +661,86 @@
 .paper-manager-inline-field .paper-manager-field { flex: 1; min-width: 0; }
 .paper-manager-inline-field > .b3-button { flex: 0 0 auto; margin-bottom: 12px; }
 .paper-manager-settings [data-config-json] { width: 100%; min-height: 320px; box-sizing: border-box; font-family: var(--b3-font-family-code); }
+
+/* Deployment reads as a status, setup flow, and optional terminal output. */
+.paper-manager-settings [data-panel="translation"] > h3 { padding-top: 18px; border-top: 1px solid var(--b3-border-color); }
+.paper-manager-settings [data-panel="translation"] > h3:first-child { padding-top: 0; border-top: 0; }
+.paper-manager-settings [data-panel="translation"] > .paper-manager-actions { justify-content: flex-start; }
+.paper-manager-settings [data-pdf2zh-status],
+.paper-manager-settings [data-deploy-status] {
+  padding: 10px 12px;
+  border: 1px solid var(--b3-border-color);
+  border-left: 3px solid var(--b3-theme-primary);
+  border-radius: var(--b3-border-radius);
+  background: var(--b3-theme-surface);
+  color: var(--b3-theme-on-background);
+  font-size: 13px;
+  line-height: 1.55;
+}
+.paper-manager-settings [data-pdf2zh-existing] { margin: 4px 0 12px; overflow-wrap: anywhere; }
+.paper-manager-settings [data-pdf2zh-deploy] {
+  margin: 12px 0;
+  padding: 14px 16px;
+  border: 1px solid var(--b3-border-color);
+  border-radius: var(--b3-border-radius);
+  background: var(--b3-theme-surface);
+}
+.paper-manager-settings [data-pdf2zh-deploy] > .paper-manager-preview:first-child { margin: 0 0 12px; }
+.paper-manager-settings [data-pdf2zh-deploy] .paper-manager-actions { justify-content: flex-start; gap: 8px; margin: 0; }
+.paper-manager-settings [data-python-select] { flex: 1 1 260px; min-width: 0; max-width: 100%; }
+.paper-manager-settings [data-pdf2zh-deploy] .paper-manager-field { margin: 10px 0; padding: 10px 0; }
+.paper-manager-settings [data-pdf2zh-deploy] .paper-manager-field > span { font-size: 12px; }
+.paper-manager-settings .paper-manager-config-tabs { margin-top: 14px; }
+.paper-manager-settings [data-config-panel="visual"] { margin-bottom: 2px; }
+.paper-manager-settings .paper-manager-inline-field { min-width: 0; }
+.paper-manager-settings [data-secret-fields] { flex: 1 1 auto; min-width: 0; }
+.paper-manager-settings [data-secret-fields] .paper-manager-field { padding: 6px 0; }
+.paper-manager-settings .paper-manager-inline-field .paper-manager-field { border-bottom: 0; }
+.paper-manager-settings [data-config-json] { min-height: 240px; resize: vertical; line-height: 1.5; }
+.paper-manager-settings .paper-manager-term { margin: 10px 0 0; }
+.paper-manager-settings .paper-manager-term summary { padding: 6px 0; font-size: 13px; }
+
+/* Keep the batch controls and selection summary clear above the scrollable list. */
+.paper-manager-batch { gap: 0; padding: 18px 20px 0; box-sizing: border-box; }
+.paper-manager-batch-heading { align-items: baseline; padding-bottom: 14px; border-bottom: 1px solid var(--b3-border-color); }
+.paper-manager-batch-heading strong { font-size: 16px; line-height: 1.4; overflow-wrap: anywhere; }
+.paper-manager-batch-heading > span { color: var(--b3-theme-on-surface); line-height: 1.5; }
+.paper-manager-batch-toolbar { padding: 16px 0 12px; }
+.paper-manager-batch-toolbar label { font-size: 12px; font-weight: 500; }
+.paper-manager-batch-selection { gap: 6px 12px; padding: 0 0 12px; }
+.paper-manager-batch-selection [data-count] { font-weight: 500; line-height: 1.5; }
+.paper-manager-batch-row { gap: 4px 12px; padding: 12px 14px; }
+.paper-manager-batch-row:hover { background: var(--b3-list-hover); }
+.paper-manager-batch-title { align-items: flex-start; line-height: 1.5; }
+.paper-manager-batch-title input { margin: 4px 0 0; }
+.paper-manager-batch-title strong { font-weight: 500; }
+.paper-manager-batch-state { align-self: start; line-height: 1.5; }
+.paper-manager-batch-info { color: var(--b3-theme-on-surface); font-size: 12px; line-height: 1.55; }
+.paper-manager-batch-notes { max-height: 4.7em; }
+.paper-manager-batch-footer { flex: 0 0 auto; margin: 0 -20px; padding: 12px 20px; border-top: 1px solid var(--b3-border-color); background: var(--b3-theme-background); }
+.paper-manager-batch-footer > span { line-height: 1.5; }
+
+/* Import sources, candidate, and preview remain distinct when content is long. */
+.paper-manager-import:not(.paper-manager-metadata-editor) .paper-manager-import-scroll { padding-top: 18px; }
+.paper-manager-import:not(.paper-manager-metadata-editor) .paper-manager-import-section + .paper-manager-import-section { margin-top: 16px; padding-top: 16px; }
+.paper-manager-import:not(.paper-manager-metadata-editor) .paper-manager-import-lookup { align-items: flex-start; }
+.paper-manager-import:not(.paper-manager-metadata-editor) .paper-manager-import-lookup .paper-manager-hint,
+.paper-manager-import:not(.paper-manager-metadata-editor) .paper-manager-import-lookup .paper-manager-import-hint { line-height: 1.55; }
+.paper-manager-import:not(.paper-manager-metadata-editor) .paper-manager-import-results { gap: 14px; }
+.paper-manager-import:not(.paper-manager-metadata-editor) .paper-manager-paper-preview { min-height: 90px; background: var(--b3-theme-surface); }
+.paper-manager-import:not(.paper-manager-metadata-editor) .paper-manager-import-editor { padding-top: 14px; }
+.paper-manager-import:not(.paper-manager-metadata-editor) .paper-manager-import-editor > summary { padding: 2px 0; }
+@media (max-width: 640px) {
+  .paper-manager-settings [data-pdf2zh-deploy] { padding: 12px; }
+  .paper-manager-settings .paper-manager-inline-field { align-items: stretch; flex-wrap: wrap; gap: 0 8px; }
+  .paper-manager-settings [data-secret-fields] { flex-basis: 100%; }
+  .paper-manager-settings .paper-manager-inline-field .paper-manager-field { flex-basis: 100%; }
+  .paper-manager-settings .paper-manager-inline-field > .b3-button { margin: 0 0 12px auto; }
+  .paper-manager-batch { padding: 12px 12px 0; }
+  .paper-manager-batch-toolbar { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+  .paper-manager-batch-toolbar > button { justify-self: start; }
+  .paper-manager-batch-row { grid-template-columns: minmax(0, 1fr); }
+  .paper-manager-batch-state { margin-left: 26px; }
+  .paper-manager-batch-footer { margin: 0 -12px; padding: 12px; }
+  .paper-manager-batch-footer > div { justify-content: flex-end; flex-wrap: wrap; }
+}

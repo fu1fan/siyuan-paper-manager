@@ -31,7 +31,7 @@ export class Menu {
 }
 
 export class Setting {
-  constructor(_options: unknown) {}
+  constructor(readonly options: { confirmCallback?: () => void; destroyCallback?: () => void }) {}
   addItem(): void {}
   open(): void {}
 }
