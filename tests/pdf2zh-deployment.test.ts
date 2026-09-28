@@ -28,7 +28,8 @@ function requireWith(
     done(result.code ? { code: result.code } : null, result.stdout, "");
   };
   const requireFn: NodeRequire = (id) => ({
-    path, os: { homedir: () => "/home/alice", platform: () => options.platform ?? process.platform },
+    path: options.platform === "win32" ? path.win32 : path,
+    os: { homedir: () => "/home/alice", platform: () => options.platform ?? process.platform },
     fs: {
       existsSync: (name: string) => files.includes(name),
       statSync: (name: string) => ({ isFile: () => files.includes(name) }),
