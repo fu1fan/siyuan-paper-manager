@@ -19,11 +19,13 @@ beforeEach(() => vi.resetModules());
 
 it.each([["3.10.9", "supported"], ["3.12.8", "supported"], ["3.13.2", "unsupported"], ["3.14.0", "unsupported"]])("checks published Python range: %s", async (version, support) => {
   const { scanPython, PYTHON_PROBE } = await import("../src/services/pdf2zh-deployment");
-  const python = "/home/alice/python3";
+  const windows = process.platform === "win32";
+  const python = windows ? "C:\\Python312\\python.exe" : "/home/alice/python3";
+  const prefix = windows ? "C:\\Python312" : "/home/alice/python";
   const list = await scanPython(fakeRequire({
-    "which -a python3": python,
-    [`${python} -c ${PYTHON_PROBE}`]: `${version}\tarm64\t/home/alice/python`,
-  }, [python]));
+    [windows ? "where python" : "which -a python3"]: python,
+    [`${python} -c ${PYTHON_PROBE}`]: `${version}\tarm64\t${prefix}`,
+  }, [python], windows));
   expect(list[0]?.support).toBe(support);
 });
 

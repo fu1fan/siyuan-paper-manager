@@ -1,6 +1,7 @@
 import { createRequire } from "node:module";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync } from "node:fs";
-import { join, win32 } from "node:path";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { realpath } from "node:fs/promises";
+import { join, win32, posix } from "node:path";
 import { tmpdir } from "node:os";
 import { parseFontNames, scanSystemFonts, systemFontDirectories } from "../src/services/system-fonts";
 
@@ -69,20 +70,20 @@ it("scans nested installed files and the first TTC face, skipping corrupt files 
     invalid.writeUInt32BE(0xffffffff, 20);
     writeFileSync(join(directory, "invalid.ttf"), invalid);
     const fonts = await scanSystemFonts(createRequire(import.meta.url), [directory, directory, join(directory, "missing")]);
-    expect(fonts.map(font => font.path).sort()).toEqual([ttc, ttf].map(file => realpathSync(file)).sort());
+    expect(fonts.map(font => font.path).sort()).toEqual((await Promise.all([ttc, ttf].map(file => realpath(file)))).sort());
     expect(fonts.every(font => font.name === "示例宋体")).toBe(true);
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
 it("includes system and user font locations on macOS, Windows and Linux", () => {
-  expect(systemFontDirectories("darwin", "/Users/test", join, {})).toEqual([
+  expect(systemFontDirectories("darwin", "/Users/test", posix.join, {})).toEqual([
     "/Users/test/Library/Fonts", "/Library/Fonts", "/System/Library/Fonts",
   ]);
   expect(systemFontDirectories("win32", "C:\\Users\\test", win32.join, { WINDIR: "D:\\Windows", LOCALAPPDATA: "C:\\Local" })).toEqual([
     "D:\\Windows\\Fonts", "C:\\Local\\Microsoft\\Windows\\Fonts",
   ]);
   expect(systemFontDirectories("win32", "C:\\Users\\test", win32.join, {})).toContain("C:\\Users\\test\\AppData\\Local\\Microsoft\\Windows\\Fonts");
-  expect(systemFontDirectories("linux", "/home/test", join, {})).toEqual([
+  expect(systemFontDirectories("linux", "/home/test", posix.join, {})).toEqual([
     "/home/test/.local/share/fonts", "/home/test/.fonts", "/usr/local/share/fonts", "/usr/share/fonts",
   ]);
 });
