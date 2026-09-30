@@ -14,6 +14,7 @@ export interface PaperUiActions {
   translateLibrary: (docId: string) => Promise<void>;
   exportLibrary: (docId?: string) => Promise<void>;
   openSettings: () => void;
+  openIntroduction?: () => void;
   selfCheck: () => Promise<void>;
   toggleConnector: () => Promise<void>;
   getStatus: () => PluginStatus;
@@ -100,6 +101,7 @@ function openQuickMenu(event: MouseEvent, actions: PaperUiActions): void {
   });
   menu.addItem({ icon: "iconInfo", label: "环境自检", click: () => run(actions.selfCheck) });
   menu.addItem({ icon: "iconSettings", label: "插件设置", click: actions.openSettings });
+  if (actions.openIntroduction) menu.addItem({ icon: "iconHelp", label: "使用指南", click: actions.openIntroduction });
   menu.open(topBarMenuPosition(event));
 }
 

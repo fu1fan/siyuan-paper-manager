@@ -1,6 +1,6 @@
 # siyuan-paper-manager（论文管理）
 
-面向思源笔记桌面端与移动端的论文管理插件：接收 Zotero Connector 文献与附件，以**思源原生数据库**管理多个论文文献库，直接在数据库中维护元数据，一键导出 GB/T 7714 / APA / BibTeX / Typst 等引用，导入本地 PDF 自动识别元数据，并调用本地 pdf2zh 生成单语/双语翻译版。
+面向思源笔记桌面端、网页版与移动端的论文管理插件：接收 Zotero Connector 文献与附件，以**思源原生数据库**管理多个论文文献库，直接在数据库中维护元数据，一键导出 GB/T 7714 / APA / BibTeX / Typst 等引用，导入本地 PDF 自动识别元数据，并调用本地 pdf2zh 生成单语/双语翻译版。
 
 ![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-blue.svg)
 ![SiYuan](https://img.shields.io/badge/SiYuan-%3E%3D3.8.1-green.svg)
@@ -45,10 +45,18 @@
 2. 解压到 `{工作空间}/data/plugins/siyuan-paper-manager/`；
 3. 重启思源，在 设置 → 集市 → 已下载 中启用。
 
+## v6.2.0 更新（2026-10-01）
+
+- **首次使用指南**：四步介绍搭配真实思源截图和简单动画，末页引导 PDF2ZH 安装与密钥配置；可从顶栏菜单或设置底部左侧重新播放。
+- **网页版支持**：新增桌面浏览器兼容标记，支持文献库、本地 PDF/BibTeX 导入和引用导出；Connector、本地 PDF2ZH 执行和知网桌面验证仍需桌面端。
+- **PDF2ZH 依赖修复**：Windows、macOS、Linux 桌面端识别腾讯云 SDK 的 `TextTranslateRequest` / `TextTranslateResponse` 导入错误，在确认的独立环境内自动固定兼容 SDK，复查启动或重试一次；后续安装预先固定该依赖版本，并合并同一安装的并发修复。
+- **部署环境隔离**：插件管理独立的本机环境，安装、升级和卸载不会操作用户原有的 uv 工具目录；保留已有安装路径，校验部署 Python 3.10–3.12，并在翻译任务执行或排队时暂停部署操作。
+- **设置优化**：调整设置分区与窄屏排版，增加「打开密钥和变量设置」入口；翻译字体可从紧凑列表中搜索、预览和选择，支持 macOS、Windows、Linux 的系统及用户字体目录，也可手动填写路径；不存在的路径会提示重新选择，选择「自动选择字体」会从配置中删除旧字体路径。
+
 ## v6.1.0 更新（2026-09-28）
 
 - **Connector 接收加固**：校验本地请求来源与 Host，限制附件、会话和并发上传量，降低浏览器跨站请求及过量上传风险。
-- **翻译配置与密钥**：确认设置时等待配置落盘，避免较早的异步保存覆盖新修改；翻译任务使用单独的临时配置，并在任务结束后清理。腾讯云服务支持分别映射 Secret ID 和 Secret Key，清空字体路径会从配置中删除旧值。
+- **翻译配置与密钥**：确认设置时等待配置落盘，避免较早的异步保存覆盖新修改；翻译任务使用单独的临时配置，并在任务结束后清理。腾讯云服务支持分别映射 Secret ID 和 Secret Key。翻译字体可从紧凑列表中搜索、预览和选择，支持 macOS、Windows、Linux 的系统及用户字体目录，也可手动填写路径；不存在的路径会提示重新选择，选择「自动选择字体」会从配置中删除旧字体路径。
 - **翻译与部署稳定性**：修复取消翻译与进程启动之间的竞态；扫描 Python 后保留手动选择的路径，部署时使用当前所选路径。
 - **界面调整**：优化部署设置、密钥输入、批量翻译列表与导入预览的排版，并改善窄屏布局。
 
@@ -74,18 +82,21 @@
 
 ## 系统要求
 
-- 思源笔记 `>= 3.8.1`，桌面端（Windows / macOS / Linux）或移动端（Android / iOS，含移动端浏览器）；Zotero Connector 接收和 pdf2zh 翻译仅桌面 Node 环境可用
-- 可选：Python 3.11–3.13 与 [pdf2zh](https://github.com/PDFMathTranslate/PDFMathTranslate)（仅翻译功能需要）
+- 思源笔记 `>= 3.8.1`，桌面端（Windows / macOS / Linux）、桌面网页版或移动端（Android / iOS，含移动端浏览器）；Zotero Connector 接收和 pdf2zh 翻译仅桌面 Node 环境可用
+- 可选：Python 3.10–3.12 与 [pdf2zh](https://github.com/PDFMathTranslate/PDFMathTranslate)（仅翻译功能需要）
 - Node.js 22+ 与 pnpm（仅开发时需要）
 
 > ⚠️ Zotero 桌面版默认也占用 `23119` 端口。用本插件接收 Connector 数据时请关闭 Zotero 桌面版，或在插件设置中把端口改成其他值（同时修改 Zotero Connector 扩展的服务器地址）。
 
 ## 快速上手
 
-1. **启用插件**，初始化向导自动打开：选择笔记本，填写文献库名称和路径；
-2. 插件创建文献库文档、插入原生数据库并设为默认库（已有文献库时会自动认领，不重复打扰）；
-3. 浏览器安装 [Zotero Connector](https://www.zotero.org/download/connectors)，在文献页面点击扩展图标，文献即进入默认库；
-4. 或按 `⌥I`（macOS）/ `Alt+I` 导入本地 PDF，自动识别元数据后一键入库。
+1. **首次启用插件**，自动打开四步使用指南：真实截图介绍导入、原生文献库、引用导出，最后引导 PDF2ZH 安装和思源密钥名称映射。支持跳过、逐步浏览和点击截图查看大图；
+2. 在指南末尾点击「先创建文献库」，选择笔记本，填写文献库名称和路径；
+3. 插件创建文献库文档、插入原生数据库并设为默认库（已有文献库时会自动认领，不重复打扰）；
+4. 桌面端可在浏览器安装 [Zotero Connector](https://www.zotero.org/download/connectors)，在文献页面点击扩展图标，文献即进入默认库；
+5. 或按 `⌥I`（macOS）/ `Alt+I` 导入本地 PDF，自动识别元数据后一键入库。
+
+使用指南关闭后不再自动弹出；随时可从顶栏「论文管理 → 使用指南」或插件设置底部左侧的「重新播放欢迎页面」重新打开。已有文献库的用户升级后不会自动弹出介绍。网页版支持文献库、PDF/BibTeX 导入、元数据编辑与引用导出；Zotero Connector、本地 PDF2ZH 翻译和知网桌面验证需要思源桌面端，网页版不显示这些执行入口。
 
 在插件设置的「PDF 元数据」中配置「自动提取元数据」和「使用 Zotero 在线识别」。自动提取默认开启，Zotero 在线识别默认关闭；开启后会发送 PDF 前五页文本、排版、内嵌元数据及文件名。导入页的「提取元数据」按钮可随时手动提取或重新联网获取，不受自动提取开关限制。
 
@@ -128,9 +139,13 @@ Zotero 官方识别接口发生连接重置时，桌面端会尝试官方域名�
 
 ### 翻译配置（pdf2zh）
 
-桌面端设置中的“翻译”页提供 pdf2zh 部署辅助（**测试中**）：可扫描 Python 3.11–3.13，通过 uv 安装或更新 pdf2zh，并自动定位可执行文件。首次使用时如果没有 uv，插件会使用所选 Python 的用户级 pip 安装 uv。一键部署依赖系统环境（PATH、uv、Python 安装方式），在部分系统上可能失败；此时可自行安装 pdf2zh，并在“pdf2zh 路径”中填写可执行文件路径后点“扫描 pdf2zh”。
+桌面端设置中的“翻译”页提供 pdf2zh 部署辅助（**测试中**）：可扫描 Python 3.10–3.12，并通过 uv 在插件独立环境中安装、升级或卸载 pdf2zh。没有 uv 时，会先创建独立虚拟环境安装 uv；所选 Python 需包含 venv 和 ensurepip，Linux 系统 Python 可能需补充对应的 python3-venv 包。扫描会保留已填写的程序路径并检查能否启动；已有 pip/uv 安装仍可使用，升级和卸载由原安装方式管理。旧版本部署到用户级 uv 的安装也按已有安装处理，迁移到插件独立环境需点击“安装并使用独立环境”。安装完成后保存设置。
 
-同一页面可以创建并编辑插件托管的 pdf2zh `config.json`。高级 JSON 会保留未知字段；服务密钥填写思源“设置 → 密钥和变量”中的密钥名称，翻译时才读取并注入子进程，不写入配置文件。
+Windows、macOS、Linux 桌面端在扫描启动检查或实际翻译遇到这条特定导入错误时，会定位 pdf2zh 独立环境，仅修复腾讯云 SDK，并重新检查或重试一次；同一安装的并发修复会合并。无法确认独立环境、缺少 uv 或下载失败时会显示原因，不改动系统 Python。安装会固定 `tencentcloud-sdk-python-tmt==3.1.70`，避免新版腾讯云 SDK 移除 `TextTranslateRequest` 后导致 pdf2zh 1.9.11 无法启动（[上游问题与修复](https://github.com/PDFMathTranslate/PDFMathTranslate/issues/1167)）。
+
+独立环境保存在本机，不随工作区同步：Windows 为 `%LOCALAPPDATA%/siyuan-paper-manager/pdf2zh`，macOS 为 `~/Library/Application Support/siyuan-paper-manager/pdf2zh`，Linux 为 `${XDG_DATA_HOME:-~/.local/share}/siyuan-paper-manager/pdf2zh`。卸载 pdf2zh 会保留托管配置和 uv 引导环境。读取系统配置使用上游的 `~/.config/PDFMathTranslate/config.json`。启动检查不代表模型下载或真实翻译已通过；翻译任务执行或排队期间请先完成任务，再安装、升级或卸载。
+
+同一页面可以创建并编辑插件托管的 pdf2zh `config.json`。高级 JSON 会保留未知字段；服务密钥填写思源“设置 → 密钥和变量”中的密钥名称，翻译时才读取并注入子进程，不写入配置文件。可点击“测试密钥”旁的“打开密钥和变量设置”直接前往配置。
 
 > ℹ️ **源语言 / 目标语言不属于这个配置文件**，它们在「插件翻译设置」中。pdf2zh 只在图形界面（`gui.py`）读取配置里的 `PDF2ZH_LANG_FROM/TO`，命令行路径完全忽略这两个键，缺省回退到 `en → zh`；唯一生效的是命令行参数 `-li`/`-lo`。插件始终显式传入这两个参数，因此这里选的语言一定生效；若你直接用 `pdf2zh` 命令翻译，必须自己加 `-li`/`-lo`。配置里的字体路径（`NOTO_FONT_PATH`）则**会**被命令行读取，所以保留在配置文件面板中。
 
@@ -138,8 +153,8 @@ Zotero 官方识别接口发生连接重置时，桌面端会尝试官方域名�
 
 ```bash
 # 安装（任选其一）
-uv tool install --python 3.12 pdf2zh
-pip install pdf2zh
+uv tool install --python 3.12 --with "tencentcloud-sdk-python-tmt==3.1.70" pdf2zh
+pip install pdf2zh "tencentcloud-sdk-python-tmt==3.1.70"
 ```
 
 - 首次运行需下载排版模型，国内网络建议先设 `HF_ENDPOINT=https://hf-mirror.com`；
@@ -151,8 +166,8 @@ Windows思源桌面端支持通过pip／uv安装的`pdf2zh.exe`；不支持将`.
 
 ```powershell
 # 安装（任选其一）
-uv tool install --python 3.12 pdf2zh
-py -3.12 -m pip install pdf2zh
+uv tool install --python 3.12 --with "tencentcloud-sdk-python-tmt==3.1.70" pdf2zh
+py -3.12 -m pip install pdf2zh "tencentcloud-sdk-python-tmt==3.1.70"
 # 查找入口
 where.exe pdf2zh
 ```

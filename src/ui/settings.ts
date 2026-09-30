@@ -1,4 +1,4 @@
-import { canUseNode, requireNode } from "../core/env";
+import { canUseNode, getNodeRequire, requireNode } from "../core/env";
 import { Setting, showMessage, confirm } from "siyuan";
 import type { KernelClient } from "../core/kernel";
 import type { LibraryService, PaperLibraryInfo } from "../services/library-service";
@@ -6,10 +6,13 @@ import type { PluginSettings } from "../types/settings";
 import { normalizeSettings, pdf2zhLanguageCode, serializeArgs, splitArgString } from "../types/settings";
 import { escapeHtml } from "./dom";
 import { openOnboardingDialog } from "./dialogs/onboarding";
-import { configPath, detectPdf2zh, findUv, installPdf2zh, installUv, inspectPdf2zh, systemConfigPath, uninstallPdf2zh, resolvePdf2zh, scanPython } from "../services/pdf2zh-deployment";
+import { configPath, detectPdf2zh, findUv, installPdf2zh, installUv, inspectPdf2zh, PDF2ZH_COMPAT_REQUIREMENT, systemConfigPath, uninstallPdf2zh, resolvePdf2zh, scanPython, sameExecutable, validateDeploymentPython } from "../services/pdf2zh-deployment";
+import { resolveExecutable } from "../services/translator";
+import { probePdf2zh } from "../services/environment-check";
 import { canonicalSecretEnvKey, pdf2zhCredentialKeys, pdf2zhRequiresSecret, withCredentialPlaceholders } from "../services/pdf2zh-secrets";
 import { canonicalPdf2zhConfig, cloneConfig, configModelValue, configTranslatorValue, firstTranslator, maskSecrets, modelEnvKey, restoreMaskedSecrets, secretSafeConfig } from "../services/pdf2zh-config";
 import { errorMessage } from "../core/errors";
+import { FontPicker, fontPickerHtml } from "./font-picker";
 
 type TabName = "library" | "receiving" | "storage" | "metadata" | "translation";
 
@@ -34,42 +37,42 @@ function activateTab(tabs: HTMLElement, panels: Map<TabName, HTMLElement>, name:
   }
 }
 
+function settingsSection(title: string, description: string, content: string): string {
+  return `<div class="paper-manager-settings-section"><div class="paper-manager-section-heading"><h3>${title}</h3>${description ? `<p class="paper-manager-hint">${escapeHtml(description)}</p>` : ""}</div>${content}</div>`;
+}
+
 function receivingPanelHtml(draft: PluginSettings): string {
   if (!canUseNode()) return `<div class="paper-manager-preview">当前环境不支持 Zotero Connector 浏览器扩展接收，请使用本地 PDF 导入。接收设置保留供桌面端使用。</div>`;
-  return `
-      ${numberField("Zotero 端口", "zoteroPort", draft.zoteroPort)}
-      ${switchField("启动时自动监听", "autoListen", draft.autoListen)}
-      <div class="paper-manager-preview">Connector 与本地 PDF 始终导入默认文献库。</div>`;
+  return settingsSection("Zotero Connector", "浏览器扩展与本地 PDF 均导入默认文献库。", `
+    ${numberField("接收端口", "zoteroPort", draft.zoteroPort, 1024, 65535, "用于接收 Zotero Connector 发送的文献，默认 23119。")}
+    ${switchField("启动时自动监听", "autoListen", draft.autoListen, "启动思源时开启接收服务。")}`);
 }
 
 function storagePanelHtml(draft: PluginSettings): string {
-  return `
-      ${textField("引用键生成格式", "citekeyFormat", draft.citekeyFormat)}
-      <p class="paper-manager-hint">占位符：{title} 标题首段（最多 16 字符），{year} 年份，{author} 第一作者姓氏。中文转无声调拼音，结果全部小写。可添加字母、数字、下划线和连字符。</p>
-      <p class="paper-manager-hint">默认：{title}{year}{author}，例如 flashaccel2026wang。可改为 {author}_{year}_{title}。基础引用键最多 64 字符，重名自动加后缀。保存后用于新导入和手动重新生成，已有引用键保持不变；留空恢复默认。</p>
-      ${textField("论文文档默认标签（留空不添加）", "defaultDocumentTag", draft.defaultDocumentTag)}
-      <p class="paper-manager-hint">填写一个标签名，不含 # 或逗号。保存后同步全部文献库中的论文文档，新建论文也会自动添加。修改会替换原默认标签，清空会删除原默认标签；其他文档标签保留，不修改数据库关键词。</p>
-      ${textField("附件目录", "assetsDir", draft.assetsDir)}
-      <div class="paper-manager-preview">元数据模板与笔记模板随插件打包，不写入 data/templates。</div>`;
+  return settingsSection("论文文档", "设置新论文的命名规则和默认标签。", `
+    ${textField("引用键格式", "citekeyFormat", draft.citekeyFormat, "{title} 标题首段、{year} 年份、{author} 第一作者姓氏。留空恢复默认；保存后用于新导入和手动重新生成。")}
+    <details class="paper-manager-settings-help"><summary>引用键格式示例与规则</summary><p class="paper-manager-hint">默认 {title}{year}{author}，例如 flashaccel2026wang；也可使用 {author}_{year}_{title}。标题首段最多 16 字符，中文转无声调拼音，结果全部小写。可添加字母、数字、下划线和连字符。基础引用键最多 64 字符，重名自动加后缀。已有引用键保持不变。</p></details>
+    ${textField("默认标签", "defaultDocumentTag", draft.defaultDocumentTag, "填写一个标签名，不含 # 或逗号；留空不添加。保存后同步全部文献库中的论文文档，修改会替换原默认标签，清空会移除原默认标签。其他标签和数据库关键词保留。")}`)
+    + settingsSection("附件存储", "", `
+    ${textField("附件目录", "assetsDir", draft.assetsDir, "PDF 等论文附件在工作区内的保存目录。")}
+    <p class="paper-manager-hint">元数据模板与笔记模板随插件打包，不写入 data/templates。</p>`);
 }
 
 function metadataPanelHtml(draft: PluginSettings): string {
-  return `
-      ${switchField("自动提取元数据", "autoExtractMetadata", draft.autoExtractMetadata)}
-      <p class="paper-manager-hint">选择 PDF 后自动提取并联网补充。关闭后仍可在导入页点击「提取元数据」。</p>
-      ${switchField("使用 Zotero 在线识别", "enableZoteroRecognizer", draft.enableZoteroRecognizer)}
-      <p class="paper-manager-hint">开启后，提取时会将 PDF 前五页文本、排版、内嵌元数据及文件名发送至 Zotero 官方识别服务。</p>
-      ${switchField("中文检索（实验性）", "enableCnki", draft.enableCnki)}
-      ${numberField("知网单次请求超时（秒，1–120）", "cnkiTimeoutSeconds", draft.cnkiTimeoutSeconds, 1, 120)}
-      <div class="paper-manager-preview">默认 10 秒。分别用于搜索、详情和引用补充的单次网络请求，包含连接及完整响应接收时间；不包含手动验证等待。保存后下次检索生效。</div>
-      <label class="paper-manager-field"><span>知网站点</span><select class="b3-select" data-key="cnkiRegion"><option value="mainland" ${draft.cnkiRegion !== "oversea" ? "selected" : ""}>中国大陆</option><option value="oversea" ${draft.cnkiRegion === "oversea" ? "selected" : ""}>海外</option></select></label>
-      <div class="paper-manager-preview">知网检索需要思源桌面端。首次检索或会话过期时会打开知网窗口；请完成验证后返回继续，同一会话会自动复用。</div>
-      <div class="paper-manager-preview">提取结果会展示多个候选，导入前可核对并编辑标题、作者与摘要。</div>`;
+  return settingsSection("元数据提取", "提取结果会展示多个候选，导入前可核对并编辑标题、作者与摘要。", `
+    ${switchField("自动提取元数据", "autoExtractMetadata", draft.autoExtractMetadata, "选择 PDF 后自动提取并联网补充。关闭后仍可在导入页点击「提取元数据」。")}
+    ${switchField("Zotero 在线识别", "enableZoteroRecognizer", draft.enableZoteroRecognizer, "提取时会将 PDF 前五页文本、排版、内嵌元数据及文件名发送至 Zotero 官方识别服务。")}`)
+    + settingsSection("中文检索", "实验性功能，需要思源桌面端。", `
+    ${switchField("启用知网检索", "enableCnki", draft.enableCnki)}
+    ${numberField("单次请求超时", "cnkiTimeoutSeconds", draft.cnkiTimeoutSeconds, 1, 120, "单位：秒，范围 1–120，默认 10。用于搜索、详情和引用补充，不包含手动验证等待；保存后下次检索生效。")}
+    <label class="paper-manager-field">${fieldInfo("知网站点")}<select class="b3-select" data-key="cnkiRegion"><option value="mainland" ${draft.cnkiRegion !== "oversea" ? "selected" : ""}>中国大陆</option><option value="oversea" ${draft.cnkiRegion === "oversea" ? "selected" : ""}>海外</option></select></label>
+    <p class="paper-manager-hint">首次检索或会话过期时会打开知网窗口；请完成验证后返回继续，同一会话会自动复用。超时包含连接及完整响应接收时间。</p>`);
 }
 
 export class SettingsPanel {
   readonly setting: Setting;
   private draft: PluginSettings;
+  private initialTab: TabName = "library";
   private configSaveTimer?: ReturnType<typeof setTimeout>;
   private configRoot?: HTMLElement;
   private configRevision = 0;
@@ -77,13 +80,19 @@ export class SettingsPanel {
   private confirming = false;
   private deployBusy = false;
   private pythonChoiceRevision = 0;
+  private managedSelection = false;
+  private fontPicker?: FontPicker;
+
+  private updateManagementControls(root: HTMLElement): void {
+    for (const button of root.querySelectorAll<HTMLButtonElement>("[data-upgrade-pdf2zh], [data-uninstall-pdf2zh]")) button.disabled = this.deployBusy || !this.managedSelection;
+  }
 
   /** 部署操作（扫描/安装/升级/卸载）互斥：进行中禁用相关按钮，防止并发写同一 uv 环境。 */
   private async withDeployBusy(root: HTMLElement, work: () => Promise<void>): Promise<void> {
     if (this.deployBusy) return;
     this.deployBusy = true;
-    const buttons = root.querySelectorAll<HTMLButtonElement>(
-      "[data-scan-pdf2zh], [data-uninstall-pdf2zh], [data-upgrade-pdf2zh], [data-install-pdf2zh], [data-scan-python]",
+    const buttons = root.querySelectorAll<HTMLButtonElement | HTMLInputElement | HTMLSelectElement>(
+      "[data-scan-pdf2zh], [data-uninstall-pdf2zh], [data-upgrade-pdf2zh], [data-install-pdf2zh], [data-scan-python], [data-python-select], [data-python-manual], [data-key=pdf2zhPath]",
     );
     for (const button of buttons) button.disabled = true;
     try {
@@ -91,6 +100,7 @@ export class SettingsPanel {
     } finally {
       this.deployBusy = false;
       for (const button of buttons) button.disabled = false;
+      this.updateManagementControls(root);
     }
   }
 
@@ -120,28 +130,43 @@ export class SettingsPanel {
     private readonly libraries: LibraryService,
     private readonly onSave: (settings: PluginSettings) => Promise<void>,
     private readonly getSecret?: (name: string) => string,
+    private readonly isTranslationRunning: () => boolean = () => false,
+    private readonly openIntroduction?: () => void,
+    private readonly openSecretsSettings?: () => void,
   ) {
     this.draft = structuredClone(getSettings());
     this.setting = new Setting({
-      width: "820px",
-      height: "680px",
+      width: "min(860px, calc(100vw - 32px))",
+      height: "min(720px, calc(100dvh - 64px))",
       confirmCallback: () => { this.confirming = true; this.cancelConfigTimer(); void this.save(); },
       // A debounced config write must not fire after the dialog's editor is gone.
       destroyCallback: () => {
         this.cancelConfigTimer();
+        this.fontPicker?.destroy();
+        this.fontPicker = undefined;
         if (!this.confirming) this.configRevision++;
       },
     });
     this.setting.addItem({ title: "", direction: "column", createActionElement: () => this.build() });
   }
 
-  open(): void { this.setting.open(this.displayName); }
+  open(tab: TabName = "library"): void {
+    if (this.configRoot?.isConnected) {
+      this.configRoot.querySelector<HTMLButtonElement>(`[data-tab="${tab}"]`)?.click();
+      return;
+    }
+    this.initialTab = tab;
+    this.setting.open(this.displayName);
+  }
 
   private build(): HTMLElement {
+    this.fontPicker?.destroy();
+    this.fontPicker = undefined;
     this.confirming = false;
     this.savedConfigRevision = ++this.configRevision;
     this.draft = structuredClone(this.getSettings());
     this.pythonChoiceRevision = 0;
+    this.managedSelection = false;
     const root = document.createElement("div");
     this.configRoot = root;
     root.className = "paper-manager-form paper-manager-settings";
@@ -149,8 +174,13 @@ export class SettingsPanel {
     tabs.className = "paper-manager-tabs";
     tabs.setAttribute("role", "tablist");
     tabs.setAttribute("aria-label", "论文管理设置");
+    const body = document.createElement("div");
+    body.className = "paper-manager-settings-body";
     const panels = new Map<TabName, HTMLElement>();
-    const activate = (name: TabName) => activateTab(tabs, panels, name);
+    const activate = (name: TabName) => {
+      activateTab(tabs, panels, name);
+      body.scrollTop = 0;
+    };
     for (const [name, label] of TAB_NAMES) {
       const tab = document.createElement("button");
       tab.type = "button";
@@ -165,16 +195,44 @@ export class SettingsPanel {
       panel.dataset.panel = name;
       panel.setAttribute("role", "tabpanel");
       panels.set(name, panel);
-      root.append(panel);
+      body.append(panel);
     }
-    root.prepend(tabs);
+    root.append(tabs, body);
+    let replayButton: HTMLButtonElement | undefined;
+    if (this.openIntroduction) {
+      replayButton = document.createElement("button");
+      replayButton.type = "button";
+      replayButton.className = "b3-button b3-button--text paper-manager-settings-replay";
+      replayButton.dataset.replayIntroduction = "";
+      replayButton.textContent = "重新播放欢迎页面";
+      replayButton.title = "查看功能介绍与 PDF2ZH 配置指南";
+      replayButton.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        this.openIntroduction?.();
+      });
+    }
     this.renderPanels(panels);
     this.bindEvents(root);
     this.bindConfigTabs(root);
     this.renderConfigVisual(root);
-    void this.scanPdf2zh(root);
-    activate("library");
+    const fontRoot = root.querySelector<HTMLElement>("[data-font-picker]");
+    if (fontRoot) this.fontPicker = new FontPicker(fontRoot);
+    if (canUseNode()) void this.scanPdf2zh(root);
+    activate(this.initialTab);
+    this.initialTab = "library";
     void this.renderLibraries(root);
+    // Bazaar opens setting directly, bypassing open(). The SDK attaches this
+    // custom control synchronously after build(), so normalize its wrappers
+    // after mounting for both entry points. Only the inner body should scroll.
+    queueMicrotask(() => {
+      if (!root.isConnected) return;
+      root.closest(".config-item")?.classList.add("paper-manager-settings-host");
+      const dialog = root.closest(".b3-dialog__container");
+      dialog?.classList.add("paper-manager-settings-dialog");
+      // Share the native action row, leaving all available height to the settings body.
+      if (replayButton) dialog?.querySelector(".b3-dialog__action")?.prepend(replayButton);
+    });
     return root;
   }
 
@@ -209,69 +267,115 @@ export class SettingsPanel {
       const result = this.testSecrets(root);
       showMessage(result.message, 4000, result.error ? "error" : undefined);
     });
+    root.querySelector<HTMLButtonElement>("[data-open-secrets-settings]")?.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      this.openSecretsSettings?.();
+    });
     root.querySelector<HTMLButtonElement>("[data-load-config]")?.addEventListener("click", () => void this.loadConfig(root));
     root.querySelector<HTMLButtonElement>("[data-import-system-config]")?.addEventListener("click", () => void this.importSystemConfig(root));
   }
 
   /** The translation tab depends on the panel's stored secret name, so it stays a method. */
   private translationPanelHtml(): string {
-    if (!canUseNode()) return `<div class="paper-manager-preview">当前环境不支持 pdf2zh 翻译。可阅读桌面端翻译后同步的 PDF；翻译设置保留供桌面端使用。</div>`;
+    if (!canUseNode()) return `<div class="paper-manager-preview">当前环境不支持 pdf2zh 翻译。可阅读桌面端翻译后同步的 PDF；翻译设置保留供桌面端使用。</div><div class="paper-manager-actions">${this.secretsSettingsButtonHtml()}</div>`;
     const config = this.draft.pdf2zhConfig ?? {};
     const service = configTranslatorValue(config);
-    return `
-      <h3>pdf2zh 部署 <span class="paper-manager-badge paper-manager-badge--testing">测试中</span></h3><div class="paper-manager-actions"><button type="button" class="b3-button" data-scan-pdf2zh>扫描 pdf2zh</button><button type="button" class="b3-button" data-uninstall-pdf2zh>卸载</button><button type="button" class="b3-button" data-upgrade-pdf2zh>升级</button></div><div class="paper-manager-preview" data-pdf2zh-status>尚未扫描</div><div data-pdf2zh-existing hidden><div class="paper-manager-preview" data-pdf2zh-detail></div></div><div data-pdf2zh-deploy><div class="paper-manager-preview">一键部署会自动查找 Python 并通过 uv 安装 pdf2zh，安装过程输出显示在下方「终端输出」中。若自动部署不可用，可自行安装后在下方「pdf2zh 路径」中填写可执行文件路径，再点「扫描 pdf2zh」。</div><div class="paper-manager-actions"><button type="button" class="b3-button" data-scan-python>扫描 Python</button><select class="b3-select" data-python-select><option value="">选择用于部署的 Python</option></select></div><label class="paper-manager-field"><span>手动选择 Python 路径</span><input class="b3-text-field" data-python-manual value="${escapeHtml(this.draft.pythonPath)}" placeholder="/path/to/python"></label><div class="paper-manager-actions"><button type="button" class="b3-button" data-install-pdf2zh>安装 pdf2zh</button></div></div><div class="paper-manager-preview" data-deploy-status hidden></div><details class="paper-manager-term" data-term hidden><summary>终端输出</summary><pre data-term-log></pre></details>
-      <h3>pdf2zh 配置文件</h3>
-      <div class="paper-manager-actions"><button type="button" class="b3-button" data-load-config>读取托管配置</button><button type="button" class="b3-button" data-import-system-config>读取系统配置并覆盖</button></div>
-      <div class="paper-manager-tabs paper-manager-config-tabs"><button type="button" data-config-tab="visual" data-active="true">可视化</button><button type="button" data-config-tab="json">JSON</button></div>
-      <section data-config-panel="visual"><label class="paper-manager-field"><span>字体路径</span><input class="b3-text-field" data-config-key="NOTO_FONT_PATH"></label>${translatorSelect(config)}<label class="paper-manager-field"><span>模型名称（大模型服务）</span><input class="b3-text-field" data-config-key="model" value="${escapeHtml(configModelValue(config))}" placeholder="如 deepseek-chat" ${serviceSupportsModel(service) ? "" : "disabled"}></label></section>
-      <section data-config-panel="json" hidden><textarea class="b3-text-field" rows="9" data-config-json placeholder="{}"></textarea></section>
-      <div class="paper-manager-inline-field"><div data-secret-fields>${this.secretFieldsHtml(service)}</div><button type="button" class="b3-button" data-test-secrets ${serviceRequiresKey(service) ? "" : "disabled"}>测试密钥</button></div>
-      <div class="paper-manager-preview">可视化和 JSON 编辑的是同一个 pdf2zh 配置对象；未知字段只在 JSON 标签页中保留。请为服务所需的每个环境变量填写对应的思源「密钥和变量」名称。密钥值不会写入 JSON。</div>
-      <h3>插件翻译设置</h3>
+    return settingsSection("插件翻译设置", "选择翻译语言，调整任务并发和输出文件。", `
       ${languageSelect("源语言", "translateFrom", pdf2zhLanguageCode(this.draft.translateFrom), true, "data-key")}
       ${languageSelect("目标语言", "translateTo", pdf2zhLanguageCode(this.draft.translateTo), false, "data-key")}
-      <div class="paper-manager-preview">语言以 <code>-li</code>/<code>-lo</code> 命令行参数传给 pdf2zh。pdf2zh 只在图形界面读取配置里的语言键，命令行会忽略它们，所以语言属于插件设置而不是配置文件。字体路径（NOTO_FONT_PATH）则会被命令行读取，仍在上方配置中编辑。</div>
-      ${textField("pdf2zh 路径", "pdf2zhPath", this.draft.pdf2zhPath)}
-      ${numberField("请求并发数（每篇 PDF，1–128）", "translationThreads", this.draft.translationThreads, 1, 128)}
-      ${numberField("同时翻译篇数（1–8）", "translationConcurrency", this.draft.translationConcurrency, 1, 8)}
-      ${switchField("保留双语版", "translationDual", this.draft.translationDual)}
-      ${switchField("重新翻译后删除旧版本", "autoDeleteOldTranslations", this.draft.autoDeleteOldTranslations)}
-      ${textareaField("额外 CLI 参数", "pdf2zhArgs", serializeArgs(this.draft.pdf2zhArgs))}
+      ${numberField("每篇请求并发数", "translationThreads", this.draft.translationThreads, 1, 128, "范围 1–128，默认 4；对应 pdf2zh 的 --thread（-t）。")}
+      ${numberField("同时翻译篇数", "translationConcurrency", this.draft.translationConcurrency, 1, 8, "范围 1–8；总请求并发最多约为两项设置的乘积，下次提交时生效。取消会停止全部任务。")}
+      ${switchField("保留双语版", "translationDual", this.draft.translationDual, "同时保留原文与译文的双语 PDF。")}
+      ${switchField("删除旧翻译版本", "autoDeleteOldTranslations", this.draft.autoDeleteOldTranslations, "仅在新翻译及元数据保存成功后删除；删除失败不会影响新版本。")}`)
+      + settingsSection('pdf2zh 部署 <span class="paper-manager-badge paper-manager-badge--testing">测试中</span>', "扫描已有安装，或选择 Python 一键部署。", `
+      <div class="paper-manager-actions"><button type="button" class="b3-button b3-button--outline" data-scan-pdf2zh>扫描 pdf2zh</button><button type="button" class="b3-button b3-button--text" data-upgrade-pdf2zh disabled>升级</button><button type="button" class="b3-button b3-button--text" data-uninstall-pdf2zh disabled>卸载</button></div>
+      <div class="paper-manager-preview" data-pdf2zh-status>尚未扫描</div>
+      <div data-pdf2zh-existing hidden><div class="paper-manager-preview" data-pdf2zh-detail></div></div>
+      <div data-pdf2zh-deploy>
+        <p class="paper-manager-hint">使用 Python 3.10–3.12 在本机独立环境中安装。升级和卸载仅管理此环境；已有安装可填写下方路径继续使用。安装完成后请保存设置。</p>
+        <label class="paper-manager-field">${fieldInfo("部署 Python")}<div class="paper-manager-python-choice"><select class="b3-select" data-python-select aria-label="部署 Python"><option value="">选择用于部署的 Python</option></select><button type="button" class="b3-button b3-button--outline" data-scan-python>扫描</button></div></label>
+        <label class="paper-manager-field">${fieldInfo("手动 Python 路径")}<input class="b3-text-field" data-python-manual value="${escapeHtml(this.draft.pythonPath)}" placeholder="/path/to/python"></label>
+        <div class="paper-manager-actions"><button type="button" class="b3-button" data-install-pdf2zh>安装并使用独立环境</button></div>
+      </div>
+      ${textField("pdf2zh 路径", "pdf2zhPath", this.draft.pdf2zhPath, "可执行文件路径；已安装在 PATH 中时可填写 pdf2zh。")}
+      <div class="paper-manager-preview" data-deploy-status hidden></div><details class="paper-manager-term" data-term hidden><summary>终端输出</summary><pre data-term-log></pre></details>`)
+      + settingsSection("pdf2zh 配置文件", "选择翻译服务、模型，并映射所需密钥。", `
+      <div class="paper-manager-actions"><button type="button" class="b3-button b3-button--outline" data-load-config>读取托管配置</button><button type="button" class="b3-button b3-button--text" data-import-system-config>读取系统配置并覆盖</button></div>
+      <div class="paper-manager-tabs paper-manager-config-tabs"><button type="button" data-config-tab="visual" data-active="true">可视化</button><button type="button" data-config-tab="json">JSON</button></div>
+      <section data-config-panel="visual">
+        ${translatorSelect(config)}
+        <label class="paper-manager-field">${fieldInfo("模型名称", "仅用于大模型翻译服务。")}<input class="b3-text-field" data-config-key="model" value="${escapeHtml(configModelValue(config))}" placeholder="如 deepseek-chat" ${serviceSupportsModel(service) ? "" : "disabled"}></label>
+        <div class="paper-manager-field">${fieldInfo("翻译字体", "选择本机字体；留空由 pdf2zh 自动选择。")}${fontPickerHtml()}</div>
+      </section>
+      <section data-config-panel="json" hidden><textarea class="b3-text-field" rows="9" data-config-json placeholder="{}" aria-label="pdf2zh JSON 配置"></textarea></section>
+      <div data-secret-fields>${this.secretFieldsHtml(service)}</div>
+      <div class="paper-manager-actions"><button type="button" class="b3-button b3-button--outline" data-test-secrets ${serviceRequiresKey(service) ? "" : "disabled"}>测试密钥</button>${this.secretsSettingsButtonHtml()}</div>
+      <p class="paper-manager-hint">可视化和 JSON 编辑同一份配置；未知字段保留在 JSON 中。请为每个环境变量填写对应的思源密钥名称，密钥值不会写入 JSON。</p>`)
+      + settingsSection("高级选项", "", `
       ${textField("翻译资源目录", "translationAssetsDir", this.draft.translationAssetsDir)}
-      <div class="paper-manager-preview">请求并发数对应 pdf2zh 的 --thread（-t），默认 4；同时翻译多篇时，总请求并发最多约为两项设置的乘积。服务所需密钥请在 pdf2zh 配置文件或环境变量中设置。并行篇数下次提交时生效，取消会停止全部任务。自动删除仅在新翻译及元数据保存成功后执行；删除失败不会影响新版本。</div>`;
+      ${textareaField("额外 CLI 参数", "pdf2zhArgs", serializeArgs(this.draft.pdf2zhArgs), "传给 pdf2zh 的额外命令行参数。")}
+      <details class="paper-manager-settings-help"><summary>语言与配置文件的关系</summary><p class="paper-manager-hint">语言通过 <code>-li</code>/<code>-lo</code> 命令行参数传给 pdf2zh。命令行忽略配置文件里的语言键，因此语言属于插件设置；字体路径 NOTO_FONT_PATH 仍在配置文件中编辑。服务所需密钥通过思源「密钥和变量」映射，或使用环境变量。</p></details>`);
   }
 
   private async scanPdf2zh(root: HTMLElement): Promise<void> {
+    await this.withDeployBusy(root, () => this.refreshPdf2zh(root));
+  }
+
+  private async refreshPdf2zh(root: HTMLElement): Promise<void> {
     const status = root.querySelector<HTMLElement>("[data-pdf2zh-status]")!;
     const choiceRevision = this.pythonChoiceRevision;
+    const configured = this.draft.pdf2zhPath;
+    this.managedSelection = false;
     try {
       const installed = await inspectPdf2zh(undefined, this.draft.pythonPath || undefined);
-      const pathInstalled = installed ? null : await detectPdf2zh();
+      const explicit = configured.trim() && configured.trim() !== "pdf2zh";
+      const executable = explicit ? await resolveExecutable(configured, getNodeRequire()!)
+        : installed?.executable ?? await detectPdf2zh();
+      if ((this.configRoot && root !== this.configRoot) || choiceRevision !== this.pythonChoiceRevision || configured !== this.draft.pdf2zhPath) return;
       const existing = root.querySelector<HTMLElement>("[data-pdf2zh-existing]")!;
-      const deploy = root.querySelector<HTMLElement>("[data-pdf2zh-deploy]")!;
-      const executable = installed?.executable ?? pathInstalled;
-      if (executable) {
-        this.draft.pdf2zhPath = executable;
-        if (installed?.pythonPath && !this.draft.pythonPath && choiceRevision === this.pythonChoiceRevision) {
-          this.draft.pythonPath = installed.pythonPath;
-          this.syncPythonControls(root);
-        }
-        status.textContent = installed
-          ? `已找到可用的 pdf2zh。部署 Python：${this.draft.pythonPath || "尚未选择"}。`
-          : "检测到 PATH 中的 pdf2zh（非插件部署）。";
-        root.querySelector<HTMLElement>("[data-pdf2zh-detail]")!.textContent =
-          `${installed?.version ? `版本 ${installed.version} · ` : ""}${executable}${installed?.pythonPath ? ` · Python ${installed.pythonPath}` : ""}`;
-        existing.hidden = false;
-        deploy.hidden = true;
-        await this.loadConfig(root);
-      } else {
-        status.textContent = "未找到可用的 pdf2zh，请选择 Python 后部署。";
-        existing.hidden = true;
-        deploy.hidden = false;
+      existing.hidden = !executable;
+      // Keep Python selection available for upgrades and installing alongside an external tool.
+      root.querySelector<HTMLElement>("[data-pdf2zh-deploy]")!.hidden = false;
+      if (!executable) {
+        status.textContent = "未找到 pdf2zh，请选择 Python 后安装独立环境。";
+        return;
       }
+      const term = this.deployTerminal(root);
+      const probe = await probePdf2zh(executable, getNodeRequire()!, 15_000, {
+        autoRepair: !this.isTranslationRunning(),
+        onLine: line => { term.show(); term.append(line); status.textContent = line; },
+      });
+      if ((this.configRoot && root !== this.configRoot) || choiceRevision !== this.pythonChoiceRevision || configured !== this.draft.pdf2zhPath) return;
+      if (!probe.ok) throw new Error(probe.detail);
+      this.managedSelection = Boolean(installed && sameExecutable(executable, installed.executable));
+      if (!explicit) {
+        this.draft.pdf2zhPath = executable;
+        const input = root.querySelector<HTMLInputElement>("[data-key=pdf2zhPath]");
+        if (input) input.value = executable;
+      }
+      if (this.managedSelection && installed?.pythonPath && !this.draft.pythonPath) {
+        this.draft.pythonPath = installed.pythonPath;
+        this.syncPythonControls(root);
+      }
+      status.textContent = (probe.detail.includes("已自动修复") ? "腾讯云 SDK 依赖已自动修复。" : "") + (this.managedSelection ? "插件独立环境：启动检查通过，可升级或卸载。"
+        : "已有安装：启动检查通过。请通过原安装方式升级或卸载，或安装插件独立环境。");
+      root.querySelector<HTMLElement>("[data-pdf2zh-detail]")!.textContent =
+        `${this.managedSelection && installed?.version ? `版本 ${installed.version} · ` : ""}${executable}`;
+      if (this.configRevision === this.savedConfigRevision) await this.loadConfig(root);
     } catch (error) {
-      status.textContent = `扫描失败：${errorMessage(error)}`;
+      this.managedSelection = false;
+      status.textContent = `检查失败：${errorMessage(error)}`;
+    } finally {
+      this.updateManagementControls(root);
     }
+  }
+
+  private async requireManagedSelection(): Promise<void> {
+    if (this.isTranslationRunning()) throw new Error("有翻译任务正在执行或排队，请完成后再管理 pdf2zh");
+    const installed = await inspectPdf2zh(undefined, this.draft.pythonPath || undefined);
+    const executable = await resolveExecutable(this.draft.pdf2zhPath, getNodeRequire()!);
+    if (!installed || !sameExecutable(executable, installed.executable)) throw new Error("当前使用已有安装，请通过原安装方式升级或卸载");
   }
 
   private async uninstallPdf2zh(root: HTMLElement): Promise<void> {
@@ -279,14 +383,17 @@ export class SettingsPanel {
     const term = this.deployTerminal(root);
     await this.withDeployBusy(root, async () => {
       try {
+        await this.requireManagedSelection();
         term.clear();
         term.show();
-        status.textContent = "正在卸载 pdf2zh…";
+        status.textContent = "正在卸载插件独立环境中的 pdf2zh…";
         const result = await uninstallPdf2zh(undefined, this.draft.pythonPath || undefined, line => term.append(line));
         status.textContent = result.code === 0 ? "pdf2zh 已卸载。" : `卸载失败：${result.stderr || "未知错误"}`;
         if (result.code === 0) {
           this.draft.pdf2zhPath = "pdf2zh";
-          await this.scanPdf2zh(root);
+          const input = root.querySelector<HTMLInputElement>("[data-key=pdf2zhPath]");
+          if (input) input.value = "pdf2zh";
+          await this.refreshPdf2zh(root);
         }
       } catch (error) {
         status.textContent = `卸载失败：${errorMessage(error)}`;
@@ -354,6 +461,7 @@ export class SettingsPanel {
         input.value = raw == null ? "" : String(raw);
       }
       this.refreshTranslatorControls(root, service);
+      this.fontPicker?.update();
     } catch { /* leave invalid JSON visible for save validation */ }
   }
 
@@ -410,21 +518,7 @@ export class SettingsPanel {
 
   private async selectPython(root: HTMLElement, python: string): Promise<void> {
     this.updatePythonChoice(root, python);
-    if (!this.draft.pythonPath) return;
-    const revision = this.pythonChoiceRevision;
-    const selectedPython = this.draft.pythonPath;
-    const status = root.querySelector<HTMLElement>("[data-deploy-status]")!;
-    status.textContent = "正在检测 pdf2zh 安装和配置…";
-    try {
-      const executable = await detectPdf2zh();
-      if (revision !== this.pythonChoiceRevision) return;
-      if (executable) this.draft.pdf2zhPath = executable;
-      await this.loadConfig(root);
-      if (revision !== this.pythonChoiceRevision) return;
-      status.textContent = `${executable ? `已找到 pdf2zh：${executable}` : "未找到 pdf2zh"}；配置已读取。当前部署 Python：${selectedPython}`;
-    } catch (error) {
-      if (revision === this.pythonChoiceRevision) status.textContent = `检测失败：${errorMessage(error)}`;
-    }
+    if (this.draft.pythonPath) await this.scanPdf2zh(root);
   }
 
   private async installPdf2zh(root: HTMLElement, upgrade = false): Promise<void> {
@@ -433,36 +527,43 @@ export class SettingsPanel {
     const term = this.deployTerminal(root);
     if (!python) {
       status.hidden = false;
-      status.textContent = "请先扫描并选择 Python 3.11–3.13。";
+      status.textContent = "请先扫描并选择 Python 3.10–3.12。";
       return;
     }
     await this.withDeployBusy(root, async () => {
       status.hidden = false;
       term.clear();
       try {
+        if (this.isTranslationRunning()) throw new Error("有翻译任务正在执行或排队，请完成后再管理 pdf2zh");
+        if (upgrade) await this.requireManagedSelection();
+        await validateDeploymentPython(python);
         let uv = await findUv(undefined, python);
         if (!uv) {
           term.show();
           status.textContent = "第 1/3 步：正在安装 uv…";
-          term.append("$ python -m pip install --user uv");
+          term.append("创建 uv 独立虚拟环境并安装 uv…");
           const result = await installUv(python, undefined, line => term.append(line));
           if (result.code !== 0) throw new Error(`uv 安装失败：${result.stderr || "无输出"}`);
           uv = await findUv(undefined, python);
         }
-        if (!uv) throw new Error("uv 安装完成但无法调用；请在「额外 CLI 参数」上方手动填写已安装的 pdf2zh 路径，或手动执行 pip install uv 后重试");
+        if (!uv) throw new Error("uv 安装完成但无法调用；请手动安装 uv 后重试，或填写已有 pdf2zh 的可执行文件路径");
         term.show();
         status.textContent = upgrade ? "第 2/3 步：正在升级 pdf2zh…" : "第 2/3 步：正在通过 uv 安装 pdf2zh…";
-        term.append(`$ ${uv.display} tool install --force --python ${python} pdf2zh`);
+        term.append(`$ ${uv.display} tool install --force --python ${python} --with ${PDF2ZH_COMPAT_REQUIREMENT} pdf2zh`);
         const result = await installPdf2zh(python, uv, undefined, line => term.append(line));
         if (result.code !== 0) throw new Error(`pdf2zh 安装失败：${result.stderr || "无输出"}`);
         status.textContent = "第 3/3 步：正在验证安装…";
         const executable = await resolvePdf2zh(uv);
         if (!executable) throw new Error("安装完成但未找到 pdf2zh 可执行文件");
+        const probe = await probePdf2zh(executable, getNodeRequire()!);
+        if (!probe.ok) throw new Error(`安装后启动检查失败：${probe.detail}`);
         this.draft.pythonPath = python;
         this.syncPythonControls(root);
         this.draft.pdf2zhPath = executable;
+        const input = root.querySelector<HTMLInputElement>("[data-key=pdf2zhPath]");
+        if (input) input.value = executable;
         status.textContent = `pdf2zh ${upgrade ? "升级" : "安装"}完成：${executable}`;
-        await this.scanPdf2zh(root);
+        await this.refreshPdf2zh(root);
       } catch (error) {
         status.textContent = `${errorMessage(error)}（详见终端输出）`;
       }
@@ -470,10 +571,12 @@ export class SettingsPanel {
   }
 
   private async loadConfig(root: HTMLElement): Promise<void> {
+    const revision = this.configRevision;
     try {
       const fs = requireNode<typeof import("node:fs")>("fs");
       const path = requireNode<typeof import("node:path")>("path");
       const workspace = await this.kernel.getWorkspaceInfo();
+      if (revision !== this.configRevision || (this.configRoot && root !== this.configRoot)) return;
       const target = configPath(workspace.workspaceDir);
       this.draft.pdf2zhConfigPath = target;
       const exists = fs.existsSync(target);
@@ -554,7 +657,11 @@ export class SettingsPanel {
   private secretFieldsHtml(service: string): string {
     const keys = pdf2zhCredentialKeys(service);
     if (!keys.length) return `<div class="paper-manager-preview">此服务无需密钥。</div>`;
-    return keys.map(key => `<label class="paper-manager-field"><span>${escapeHtml(key)}</span><input class="b3-text-field" data-secret-name="${escapeHtml(key)}" value="${escapeHtml(this.draft.pdf2zhSecretNames?.[key] ?? "")}" placeholder="填写思源「密钥和变量」中的名称"></label>`).join("");
+    return keys.map(key => `<label class="paper-manager-field">${fieldInfo(key, "填写思源「密钥和变量」中的名称。")}<input class="b3-text-field" data-secret-name="${escapeHtml(key)}" value="${escapeHtml(this.draft.pdf2zhSecretNames?.[key] ?? "")}" placeholder="填写思源「密钥和变量」中的名称"></label>`).join("");
+  }
+
+  private secretsSettingsButtonHtml(): string {
+    return this.openSecretsSettings ? `<button type="button" class="b3-button b3-button--text" data-open-secrets-settings>打开密钥和变量设置 ↗</button>` : "";
   }
 
   private setSecretName(key: string, name: string): void {
@@ -581,6 +688,10 @@ export class SettingsPanel {
       : input instanceof HTMLInputElement && input.type === "number" ? Number(input.value) : input.value;
     if (key === "pdf2zhArgs") value = splitArgString(String(value));
     (this.draft as unknown as Record<string, unknown>)[key] = value;
+    if (key === "pdf2zhPath" && this.configRoot) {
+      this.managedSelection = false;
+      this.updateManagementControls(this.configRoot);
+    }
   }
 
   private async renderLibraries(root: HTMLElement): Promise<void> {
@@ -588,9 +699,9 @@ export class SettingsPanel {
     try {
       const libraries = await this.libraries.discoverLibraries();
       if (!this.draft.defaultLibraryDocId && libraries[0]) this.draft.defaultLibraryDocId = libraries[0].docId;
-      container.innerHTML = `${libraries.length ? librarySelector(libraries, this.draft.defaultLibraryDocId) : "<div class=\"paper-manager-preview\">尚未创建文献库。</div>"}
+      container.innerHTML = `${settingsSection("默认文献库", "选择论文的导入目标，或创建新的文献库。", `${libraries.length ? librarySelector(libraries, this.draft.defaultLibraryDocId) : "<div class=\"paper-manager-preview\">尚未创建文献库。</div>"}
         <div class="paper-manager-actions"><button type="button" class="b3-button" data-create-library>新建文献库</button></div>
-        <div data-library-editor></div>`;
+        `)}<div data-library-editor></div>`;
       container.querySelector<HTMLSelectElement>("[data-default-library]")?.addEventListener("change", (event) => {
         this.draft.defaultLibraryDocId = (event.target as HTMLSelectElement).value;
         void this.renderLibraryEditor(container, libraries);
@@ -614,13 +725,13 @@ export class SettingsPanel {
     if (!editor) return;
     const selected = libraries.find((library) => library.docId === this.draft.defaultLibraryDocId) ?? libraries[0];
     if (!selected) { editor.innerHTML = ""; return; }
-    editor.innerHTML = `<hr class="b3-hr"><h3>${escapeHtml(selected.title)}</h3>
+    editor.innerHTML = settingsSection(escapeHtml(selected.title), "文献库维护", `
       <div class="paper-manager-preview">${escapeHtml(selected.hPath)} · 数据库 ${escapeHtml(selected.data.avId)}</div>
       <div class="paper-manager-preview">请直接在数据库「所属项目」中填写或选择项目，可多选；列的显示与排序也在数据库视图中操作。</div>
       <div class="paper-manager-actions">
         <button type="button" class="b3-button b3-button--text" data-sync>重新同步</button>
         <button type="button" class="b3-button b3-button--text" data-repair>修复数据库</button>
-      </div>`;
+      </div>`);
     editor.querySelector<HTMLButtonElement>("[data-sync]")!.onclick = () => void actionMessage(async () => {
       const result = await this.libraries.syncLibrary(selected.docId);
       return `同步完成：${result.papers} 篇，恢复 ${result.restoredRows} 行，移除 ${result.removedRows} 行，失败 ${result.failed.length} 篇`;
@@ -648,17 +759,20 @@ export class SettingsPanel {
   }
 }
 
-function textField(label: string, key: keyof PluginSettings, value: string): string {
-  return `<label class="paper-manager-field"><span>${escapeHtml(label)}</span><input class="b3-text-field" data-key="${key}" value="${escapeHtml(value)}"></label>`;
+function fieldInfo(label: string, hint = ""): string {
+  return `<div class="paper-manager-field-info"><span>${escapeHtml(label)}</span>${hint ? `<small class="paper-manager-hint">${escapeHtml(hint)}</small>` : ""}</div>`;
 }
-function numberField(label: string, key: keyof PluginSettings, value: number, min = 1024, max = 65535): string {
-  return `<label class="paper-manager-field"><span>${escapeHtml(label)}</span><input class="b3-text-field" type="number" min="${min}" max="${max}" step="1" data-key="${key}" value="${value}"></label>`;
+function textField(label: string, key: keyof PluginSettings, value: string, hint = ""): string {
+  return `<label class="paper-manager-field">${fieldInfo(label, hint)}<input class="b3-text-field" data-key="${key}" value="${escapeHtml(value)}"></label>`;
 }
-function switchField(label: string, key: keyof PluginSettings, value: boolean): string {
-  return `<label class="paper-manager-field"><span>${escapeHtml(label)}</span><span><input class="b3-switch" type="checkbox" data-key="${key}" ${value ? "checked" : ""}></span></label>`;
+function numberField(label: string, key: keyof PluginSettings, value: number, min = 1024, max = 65535, hint = ""): string {
+  return `<label class="paper-manager-field paper-manager-field--number">${fieldInfo(label, hint)}<input class="b3-text-field" type="number" min="${min}" max="${max}" step="1" data-key="${key}" value="${value}"></label>`;
 }
-function textareaField(label: string, key: keyof PluginSettings, value: string): string {
-  return `<label class="paper-manager-field paper-manager-field--column"><span>${escapeHtml(label)}</span><textarea class="b3-text-field" rows="4" data-key="${key}">${escapeHtml(value)}</textarea></label>`;
+function switchField(label: string, key: keyof PluginSettings, value: boolean, hint = ""): string {
+  return `<label class="paper-manager-field paper-manager-field--switch">${fieldInfo(label, hint)}<input class="b3-switch" type="checkbox" data-key="${key}" ${value ? "checked" : ""}></label>`;
+}
+function textareaField(label: string, key: keyof PluginSettings, value: string, hint = ""): string {
+  return `<label class="paper-manager-field paper-manager-field--column">${fieldInfo(label, hint)}<textarea class="b3-text-field" rows="4" data-key="${key}">${escapeHtml(value)}</textarea></label>`;
 }
 const PDF2ZH_LANGUAGES: Array<[string, string]> = [
   ["auto", "自动检测"], ["en", "英语"], ["zh", "中文"], ["ja", "日语"], ["ko", "韩语"],
@@ -674,7 +788,7 @@ function languageSelect(label: string, key: string, value = "", allowAuto = fals
   const options = languages.some(([code]) => code === value) || !value
     ? languages
     : [[value, `${value}（自定义）`] as [string, string], ...languages];
-  return `<label class="paper-manager-field"><span>${escapeHtml(label)}</span><select class="b3-select" ${attribute}="${key}">${options.map(([code, name]) => `<option value="${escapeHtml(code)}" ${code === value ? "selected" : ""}>${escapeHtml(name)} (${escapeHtml(code)})</option>`).join("")}</select></label>`;
+  return `<label class="paper-manager-field">${fieldInfo(label)}<select class="b3-select" ${attribute}="${key}">${options.map(([code, name]) => `<option value="${escapeHtml(code)}" ${code === value ? "selected" : ""}>${escapeHtml(name)} (${escapeHtml(code)})</option>`).join("")}</select></label>`;
 }
 const PDF2ZH_SERVICES: Array<[string, string]> = [
   ["google", "Google"], ["bing", "Bing"], ["deepl", "DeepL"], ["deeplx", "DeepLX"], ["openai", "OpenAI"],
@@ -689,10 +803,10 @@ const MODEL_SERVICES = new Set(["openai", "ollama", "xinference", "azure-openai"
 function serviceSupportsModel(service: string): boolean { return MODEL_SERVICES.has(service); }
 function translatorSelect(config: Record<string, unknown>): string {
   const value = configTranslatorValue(config); const options = PDF2ZH_SERVICES.some(([code]) => code === value) ? PDF2ZH_SERVICES : [[value, `${value}（自定义）`] as [string, string], ...PDF2ZH_SERVICES];
-  return `<label class="paper-manager-field"><span>默认服务</span><select class="b3-select" data-config-key="translator">${options.map(([code, name]) => `<option value="${escapeHtml(code)}" ${code === value ? "selected" : ""}>${escapeHtml(name)}</option>`).join("")}</select></label>`;
+  return `<label class="paper-manager-field">${fieldInfo("默认服务")}<select class="b3-select" data-config-key="translator">${options.map(([code, name]) => `<option value="${escapeHtml(code)}" ${code === value ? "selected" : ""}>${escapeHtml(name)}</option>`).join("")}</select></label>`;
 }
 function librarySelector(libraries: PaperLibraryInfo[], selected: string): string {
-  return `<label class="paper-manager-field"><span>默认文献库</span><select class="b3-select" data-default-library>${libraries.map((library) =>
+  return `<label class="paper-manager-field">${fieldInfo("默认文献库", "Connector 与本地 PDF 的默认导入目标。")}<select class="b3-select" data-default-library>${libraries.map((library) =>
     `<option value="${escapeHtml(library.docId)}" ${library.docId === selected ? "selected" : ""}>${escapeHtml(library.title)}</option>`).join("")}</select></label>`;
 }
 

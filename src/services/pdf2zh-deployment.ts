@@ -24,6 +24,66 @@ export interface InstalledPdf2zh { executable: string; pythonPath?: string; vers
  */
 export interface UvCommand { file: string; argsPrefix: string[]; display: string; }
 
+// pdf2zh 1.9.11 imports TextTranslateRequest at startup. Newer Tencent SDKs
+// removed it; use the same compatible version pinned by upstream.
+export const PDF2ZH_COMPAT_REQUIREMENT = "tencentcloud-sdk-python-tmt==3.1.70";
+
+export function isPdf2zhDependencyError(detail: string): boolean {
+  return /ImportError:\s*cannot import name ['"]TextTranslate(?:Request|Response)['"] from ['"]tencentcloud\.tmt\.v20180321\.models['"]/.test(detail);
+}
+
+const dependencyRepairs = new Map<string, Promise<boolean>>();
+
+/** Repair only the identified SDK incompatibility inside a dedicated tool/venv. */
+export function repairPdf2zhDependency(
+  executable: string,
+  detail: string,
+  requireFn: NodeRequire = getNodeRequire()!,
+  onLine?: (line: string) => void,
+): Promise<boolean> {
+  if (!isPdf2zhDependencyError(detail)) return Promise.resolve(false);
+  const fs = requireNode<typeof import("node:fs")>("fs", requireFn);
+  const key = realpathKey(fs, executable);
+  const existing = dependencyRepairs.get(key);
+  if (existing) return existing;
+  const repair = performDependencyRepair(executable, requireFn, onLine);
+  dependencyRepairs.set(key, repair);
+  void repair.finally(() => dependencyRepairs.delete(key)).catch(() => {});
+  return repair;
+}
+
+async function performDependencyRepair(executable: string, requireFn: NodeRequire, onLine?: (line: string) => void): Promise<boolean> {
+  const fs = requireNode<typeof import("node:fs")>("fs", requireFn);
+  const path = requireNode<typeof import("node:path")>("path", requireFn);
+  const os = requireNode<typeof import("node:os")>("os", requireFn);
+  const win = os.platform() === "win32";
+  const uv = await findUv(requireFn);
+  if (!uv) throw new Error(`已识别腾讯云 SDK 依赖错误；未找到 uv，请在 pdf2zh 环境安装 ${PDF2ZH_COMPAT_REQUIREMENT}`);
+  const roots = [path.dirname(path.dirname(realpathKey(fs, executable)))];
+  const paths = deploymentPaths(requireFn);
+  if (sameExecutable(executable, path.join(paths.bin, win ? "pdf2zh.exe" : "pdf2zh"), requireFn)) roots.push(path.join(paths.tools, "pdf2zh"));
+  // On Windows uv copies an .exe launcher into its bin dir rather than linking
+  // it. Resolve the matching external uv tool without changing its directories.
+  const externalBin = await runUv(uv, ["tool", "dir", "--bin"], requireFn, 5_000, false);
+  if (externalBin.code === 0 && sameExecutable(executable, path.join(externalBin.stdout.trim(), win ? "pdf2zh.exe" : "pdf2zh"), requireFn)) {
+    const externalTools = await runUv(uv, ["tool", "dir"], requireFn, 5_000, false);
+    if (externalTools.code === 0 && externalTools.stdout.trim()) roots.push(path.join(externalTools.stdout.trim(), "pdf2zh"));
+  }
+  for (const root of new Set(roots)) {
+    const python = path.join(root, win ? "Scripts" : "bin", win ? "python.exe" : "python");
+    if (!fs.existsSync(path.join(root, "pyvenv.cfg")) || !fs.existsSync(python)) continue;
+    const validation = await exec(python, ["-c", "import sys,importlib.metadata as m; print(sys.prefix); print(sys.prefix != sys.base_prefix); print(m.version('pdf2zh'))"], requireFn, 8_000);
+    const [prefix, isolated, version] = validation.stdout.trim().split(/\r?\n/);
+    if (validation.code !== 0 || isolated !== "True" || !version || !prefix || !sameExecutable(prefix, root, requireFn)) continue;
+    onLine?.("检测到腾讯云 SDK 接口不兼容，正在自动修复 pdf2zh 独立环境…");
+    const [file, args] = uvInvocation(uv, ["pip", "install", "--python", python, PDF2ZH_COMPAT_REQUIREMENT]);
+    const result = await spawnLogged(file, args, { requireFn, timeoutMs: 180_000, onLine });
+    if (result.code !== 0) throw new Error(`pdf2zh 依赖自动修复失败：${result.stderr || result.stdout}`);
+    return true;
+  }
+  throw new Error(`已识别腾讯云 SDK 依赖错误，但无法确认 pdf2zh 的独立 Python 环境；请在原环境安装 ${PDF2ZH_COMPAT_REQUIREMENT}`);
+}
+
 type ExecFile = (file: string, args: string[], options: Record<string, unknown>, callback: (error: any, stdout: string, stderr: string) => void) => void;
 
 let shellEnvironmentPromise: Promise<NodeJS.ProcessEnv> | undefined;
@@ -119,9 +179,40 @@ function uvInvocation(uv: UvCommand, args: string[]): [string, string[]] {
   return [uv.file, [...uv.argsPrefix, ...args]];
 }
 
-function runUv(uv: UvCommand, args: string[], requireFn: NodeRequire, timeout = 30_000): Promise<CommandResult> {
+async function runUv(uv: UvCommand, args: string[], requireFn: NodeRequire, timeout = 30_000, managed = true): Promise<CommandResult> {
   const [file, fullArgs] = uvInvocation(uv, args);
-  return exec(file, fullArgs, requireFn, timeout);
+  return exec(file, fullArgs, requireFn, timeout, managed ? await managedEnvironment(requireFn) : undefined);
+}
+
+/** Machine-local paths: Python environments must never sync with a workspace. */
+export function deploymentPaths(requireFn: NodeRequire = getNodeRequire()!) {
+  const path = requireNode<typeof import("node:path")>("path", requireFn);
+  const os = requireNode<typeof import("node:os")>("os", requireFn);
+  const platform = os.platform();
+  const home = os.homedir();
+  const base = platform === "win32" ? process.env.LOCALAPPDATA || path.join(home, "AppData", "Local")
+    : platform === "darwin" ? path.join(home, "Library", "Application Support")
+    : process.env.XDG_DATA_HOME || path.join(home, ".local", "share");
+  const root = path.join(base, PLUGIN_NAME, "pdf2zh");
+  const bootstrap = path.join(root, "bootstrap");
+  return { root, tools: path.join(root, "tools"), bin: path.join(root, "bin"), bootstrap,
+    python: path.join(bootstrap, platform === "win32" ? "Scripts" : "bin", platform === "win32" ? "python.exe" : "python") };
+}
+
+async function managedEnvironment(requireFn: NodeRequire): Promise<NodeJS.ProcessEnv> {
+  const paths = deploymentPaths(requireFn);
+  return { ...await resolveShellEnvironment(requireFn), UV_TOOL_DIR: paths.tools, UV_TOOL_BIN_DIR: paths.bin };
+}
+
+export function sameExecutable(a: string, b: string, requireFn: NodeRequire = getNodeRequire()!): boolean {
+  const fs = requireNode<typeof import("node:fs")>("fs", requireFn);
+  const path = requireNode<typeof import("node:path")>("path", requireFn);
+  const os = requireNode<typeof import("node:os")>("os", requireFn);
+  const key = (p: string) => {
+    const resolved = realpathKey(fs, path.resolve(p));
+    return os.platform() === "win32" ? resolved.toLowerCase() : resolved;
+  };
+  return key(a) === key(b);
 }
 
 /**
@@ -141,6 +232,12 @@ export async function findUv(requireFn: NodeRequire = getNodeRequire()!, pythonP
     const result = await exec(name, ["--version"], requireFn, 5_000);
     if (result.code === 0) return { file: name, argsPrefix: [], display: name };
   }
+  const bootstrap = deploymentPaths(requireFn).python;
+  const fs = requireNode<typeof import("node:fs")>("fs", requireFn);
+  if (fs.existsSync(bootstrap)) {
+    const result = await exec(bootstrap, ["-m", "uv", "--version"], requireFn, 8_000);
+    if (result.code === 0) return { file: bootstrap, argsPrefix: ["-m", "uv"], display: `${bootstrap} -m uv` };
+  }
   if (pythonPath) {
     const fs = requireNode<typeof import("node:fs")>("fs", requireFn);
     const path = requireNode<typeof import("node:path")>("path", requireFn);
@@ -158,11 +255,16 @@ export async function findUv(requireFn: NodeRequire = getNodeRequire()!, pythonP
   return null;
 }
 
-/** pdf2zh 依赖（如 onnxruntime）的版本约束：3.11–3.13 验证可用；更高版本不拦截，只标记「未验证」。 */
+/** Published pdf2zh 1.9.11 declares >=3.10,<3.13. */
 function pythonSupport(major: number, minor: number): PythonSupport {
-  if (major !== 3 || minor < 11) return "unsupported";
-  if (minor <= 13) return "supported";
-  return "unverified";
+  return major === 3 && minor >= 10 && minor < 13 ? "supported" : "unsupported";
+}
+
+export async function validateDeploymentPython(pythonPath: string, requireFn: NodeRequire = getNodeRequire()!): Promise<void> {
+  const result = await exec(pythonPath, ["-c", PYTHON_PROBE], requireFn, 8_000);
+  const version = result.stdout.trim().split("\t")[0]?.match(/^(\d+)\.(\d+)\.\d+$/);
+  if (result.code !== 0 || !version) throw new Error("无法启动所选 Python，请检查解释器路径");
+  if (pythonSupport(Number(version[1]), Number(version[2])) !== "supported") throw new Error("pdf2zh 需要 Python 3.10–3.12，请重新选择解释器");
 }
 
 /** 探测输出：版本\t架构\tsys.prefix。prefix 是同一安装跨 python/python3 文件名的合并键。 */
@@ -226,7 +328,7 @@ export async function scanPython(
   for (const dir of [environment.WORKON_HOME, path.join(home, "envs"), path.join(home, "Envs"), path.join(home, ".venvs"), path.join(home, ".virtualenvs"), path.join(home, ".local", "share", "virtualenvs")].filter(Boolean) as string[]) {
     if (fs.existsSync(dir)) for (const entry of fs.readdirSync(dir, { withFileTypes: true })) if (entry.isDirectory()) addDir(path.join(dir, entry.name, os.platform() === "win32" ? "Scripts" : "bin"), "global-venv");
   }
-  for (const command of ["conda", "mamba"]) { const result = await exec(command, ["env", "list", "--json"], requireFn, 8_000); if (result.code === 0) { try { const dirs = JSON.parse(result.stdout).envs as string[]; for (const dir of dirs ?? []) addDir(path.join(dir, os.platform() === "win32" ? "Scripts" : "bin"), "conda"); } catch { /* ignore malformed manager output */ } } }
+  for (const command of ["conda", "mamba"]) { const result = await exec(command, ["env", "list", "--json"], requireFn, 8_000); if (result.code === 0) { try { const dirs = JSON.parse(result.stdout).envs as string[]; for (const dir of dirs ?? []) addDir(os.platform() === "win32" ? dir : path.join(dir, "bin"), "conda"); } catch { /* ignore malformed manager output */ } } }
   if (os.platform() === "win32") {
     const result = await exec("reg", ["query", "HKCU\\Software\\Python\\PythonCore", "/s", "/v", "ExecutablePath"], requireFn, 8_000);
     for (const line of result.stdout.split(/\r?\n/)) { const match = line.match(/ExecutablePath\s+REG_SZ\s+(.+)$/i); if (match) add(match[1]!, "windows-registry"); }
@@ -301,12 +403,17 @@ export async function scanPython(
 }
 
 export async function installUv(pythonPath: string, requireFn: NodeRequire = getNodeRequire()!, onLine?: (line: string) => void): Promise<CommandResult> {
-  return spawnLogged(pythonPath, ["-m", "pip", "install", "--user", "uv"], { requireFn, timeoutMs: 180_000, onLine });
+  await validateDeploymentPython(pythonPath, requireFn);
+  const paths = deploymentPaths(requireFn);
+  const created = await spawnLogged(pythonPath, ["-m", "venv", paths.bootstrap], { requireFn, timeoutMs: 60_000, onLine });
+  if (created.code !== 0) return { ...created, stderr: `${created.stderr}\n无法创建 uv 独立环境；请确保所选 Python 包含 venv 和 ensurepip（Linux 可安装对应 python3-venv 包）。` };
+  return spawnLogged(paths.python, ["-m", "pip", "install", "uv"], { requireFn, timeoutMs: 180_000, onLine });
 }
 
 export async function installPdf2zh(pythonPath: string, uv: UvCommand, requireFn: NodeRequire = getNodeRequire()!, onLine?: (line: string) => void): Promise<CommandResult> {
-  const [file, args] = uvInvocation(uv, ["tool", "install", "--force", "--python", pythonPath, "pdf2zh"]);
-  return spawnLogged(file, args, { requireFn, timeoutMs: 300_000, onLine });
+  await validateDeploymentPython(pythonPath, requireFn);
+  const [file, args] = uvInvocation(uv, ["tool", "install", "--force", "--python", pythonPath, "--with", PDF2ZH_COMPAT_REQUIREMENT, "pdf2zh"]);
+  return spawnLogged(file, args, { requireFn, timeoutMs: 300_000, onLine, env: await managedEnvironment(requireFn) });
 }
 
 export async function inspectPdf2zh(requireFn: NodeRequire = getNodeRequire()!, pythonPath?: string): Promise<InstalledPdf2zh | null> {
@@ -326,7 +433,8 @@ export async function inspectPdf2zh(requireFn: NodeRequire = getNodeRequire()!, 
   if (fs.existsSync(envCfg)) {
     const cfg = fs.readFileSync(envCfg, "utf8");
     const home = cfg.match(/^home\s*=\s*(.+)$/m)?.[1]?.trim();
-    if (home) interpreterPath = path.join(home, win ? "python.exe" : "python");
+    const basePython = home ? path.join(home, win ? "python.exe" : "python") : undefined;
+    if (basePython && fs.existsSync(basePython)) interpreterPath = basePython;
     else {
       const interpreter = path.join(toolDir, "pdf2zh", win ? "Scripts" : "bin", win ? "python.exe" : "python");
       if (fs.existsSync(interpreter)) interpreterPath = interpreter;
@@ -339,11 +447,11 @@ export async function uninstallPdf2zh(requireFn: NodeRequire = getNodeRequire()!
   const uv = await findUv(requireFn, pythonPath);
   if (!uv) return { stdout: "", stderr: "未找到 uv", code: 1 };
   const [file, args] = uvInvocation(uv, ["tool", "uninstall", "pdf2zh"]);
-  return spawnLogged(file, args, { requireFn, timeoutMs: 120_000, onLine });
+  return spawnLogged(file, args, { requireFn, timeoutMs: 120_000, onLine, env: await managedEnvironment(requireFn) });
 }
 
-export async function resolvePdf2zh(uv: UvCommand, requireFn: NodeRequire = getNodeRequire()!): Promise<string | null> {
-  const result = await runUv(uv, ["tool", "dir", "--bin"], requireFn, 5_000);
+export async function resolvePdf2zh(uv: UvCommand, requireFn: NodeRequire = getNodeRequire()!, managed = true): Promise<string | null> {
+  const result = await runUv(uv, ["tool", "dir", "--bin"], requireFn, 5_000, managed);
   const path = requireNode<typeof import("node:path")>("path", requireFn);
   const fs = requireNode<typeof import("node:fs")>("fs", requireFn);
   if (result.code !== 0) return null;
@@ -357,7 +465,7 @@ export async function resolvePdf2zh(uv: UvCommand, requireFn: NodeRequire = getN
 
 export async function detectPdf2zh(requireFn: NodeRequire = getNodeRequire()!): Promise<string | null> {
   const uv = await findUv(requireFn);
-  if (uv) { const installed = await resolvePdf2zh(uv, requireFn); if (installed) return installed; }
+  if (uv) { const installed = await resolvePdf2zh(uv, requireFn, false); if (installed) return installed; }
   const result = await exec(process.platform === "win32" ? "where" : "which", ["pdf2zh"], requireFn, 5_000);
   return result.code === 0 ? result.stdout.split(/\r?\n/).map(item => item.trim()).find(Boolean) ?? null : null;
 }
@@ -371,7 +479,5 @@ export function systemConfigPath(requireFn: NodeRequire = getNodeRequire()!): st
   const path = requireNode<typeof import("node:path")>("path", requireFn);
   const os = requireNode<typeof import("node:os")>("os", requireFn);
   const home = os.homedir();
-  return process.platform === "win32"
-    ? path.join(process.env.APPDATA || path.join(home, "AppData", "Roaming"), "PDFMathTranslate", "config.json")
-    : path.join(process.env.XDG_CONFIG_HOME || path.join(home, ".config"), "PDFMathTranslate", "config.json");
+  return path.join(home, ".config", "PDFMathTranslate", "config.json");
 }

@@ -26,3 +26,6 @@ data/
 # test artifacts
 coverage/
 render_out/
+
+# Isolated SiYuan onboarding test workspace
+.test-workspace-onboarding/

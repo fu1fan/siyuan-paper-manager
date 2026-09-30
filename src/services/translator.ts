@@ -6,7 +6,7 @@ import type { TranslationState } from "../types/status";
 import { getNodeRequire, type NodeRequire, requireNode } from "../core/env";
 import { KernelClient } from "../core/kernel";
 import { sanitizeDocumentName } from "../core/naming";
-import { resolveShellEnvironment } from "./pdf2zh-deployment";
+import { repairPdf2zhDependency, resolveShellEnvironment } from "./pdf2zh-deployment";
 import { canonicalSecretEnvKey, ensureCredentialPlaceholders, isSecretKey, redactSecretValues } from "./pdf2zh-secrets";
 import { errorMessage } from "../core/errors";
 
@@ -181,7 +181,17 @@ export class TranslatorService {
     let persistAttempted = false;
     try {
       signal.throwIfAborted();
-      await this.spawn(executable, args, docId, settings, signal, config.secretEnv);
+      try {
+        await this.spawn(executable, args, docId, settings, signal, config.secretEnv);
+      } catch (error) {
+        signal.throwIfAborted();
+        const repaired = await repairPdf2zhDependency(executable, errorMessage(error), this.requireFn,
+          message => this.emit({ state: "running", docId, message }));
+        if (!repaired) throw error;
+        signal.throwIfAborted();
+        this.emit({ state: "running", docId, message: "依赖已自动修复，正在重新启动 pdf2zh" });
+        await this.spawn(executable, args, docId, settings, signal, config.secretEnv);
+      }
       signal.throwIfAborted();
       this.emit({ state: "running", docId, message: "正在保存译稿" });
       const outputs = locateOutputs(outputDir, path.basename(pdfPath, path.extname(pdfPath)), fs, path);

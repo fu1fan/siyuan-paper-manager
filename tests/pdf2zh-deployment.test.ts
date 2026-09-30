@@ -160,13 +160,13 @@ describe("scanning Python interpreters", () => {
     expect(progress.at(-1)).toEqual([2, 2]);
   });
 
-  it("marks versions above the verified range as unverified instead of disabling them", async () => {
+  it("disables versions outside the published pdf2zh Python range", async () => {
     const { requireFn } = requireWith({
       ...discovery({ python: pythonExe }),
       [probe(pythonExe)]: { stdout: "3.14.0\tAMD64\tC:\\Python312\n" },
     }, [pythonExe], { platform: "win32" });
     const list = await scanPython(requireFn);
-    expect(list[0]).toMatchObject({ version: "3.14.0", support: "unverified" });
+    expect(list[0]).toMatchObject({ version: "3.14.0", support: "unsupported" });
   });
 
   it("keeps interpreters from different prefixes as separate candidates", async () => {
@@ -192,7 +192,7 @@ describe("inspecting a uv-installed pdf2zh on any platform", () => {
       "uv tool list --show-paths --show-python": { stdout: "pdf2zh v1.9.6\n" },
       "uv tool dir --bin": { stdout: `${binDir}\n` },
       "uv tool dir": { stdout: `${toolDir}\n` },
-    }, [bin, envCfg], { fileContents: { [envCfg]: "home = /home/alice/.pyenv/versions/3.12.4/bin\n" } });
+    }, [bin, envCfg, path.join("/home/alice/.pyenv/versions/3.12.4/bin", WINDOWS ? "python.exe" : "python")], { fileContents: { [envCfg]: "home = /home/alice/.pyenv/versions/3.12.4/bin\n" } });
     const installed = await inspectPdf2zh(requireFn);
     expect(installed?.pythonPath).toBe(path.join("/home/alice/.pyenv/versions/3.12.4/bin", WINDOWS ? "python.exe" : "python"));
   });

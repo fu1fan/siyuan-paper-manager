@@ -1,7 +1,7 @@
 import { validateCitekeyFormat } from "./core/naming";
 import { openConnectorMetadataDialog, openMetadataDialog } from "./ui/dialogs/edit-metadata";
 import { disposeCnkiClient } from "./services/cnki-desktop";
-import { Dialog, Plugin, confirm, getFrontend, showMessage } from "siyuan";
+import { Dialog, Plugin, confirm, getFrontend, openSetting, showMessage } from "siyuan";
 import { ATTR, PLUGIN_NAME } from "./constants";
 import { canUseNode, getPluginTempDir } from "./core/env";
 import { KernelClient } from "./core/kernel";
@@ -21,6 +21,7 @@ import { registerPaperUi } from "./ui/commands";
 import { escapeHtml } from "./ui/dom";
 import { SettingsPanel } from "./ui/settings";
 import { mountTranslationStatusBar } from "./ui/statusbar";
+import { openIntroductionDialog } from "./ui/dialogs/introduction";
 import { openOnboardingDialog } from "./ui/dialogs/onboarding";
 import { openBatchTranslationDialog } from "./ui/dialogs/batch-translation";
 import { openCitationExportDialog } from "./ui/dialogs/export-citations";
@@ -42,6 +43,8 @@ export default class PaperManagerPlugin extends Plugin {
   private connectorQueue: Promise<void> = Promise.resolve();
   private readonly documentKinds = new Map<string, "paper" | "library">();
   private cleanup: Array<() => void> = [];
+  private introduction?: Dialog;
+  private unloaded = false;
 
   async onload(): Promise<void> {
     console.log(`[paper-manager] onload (${getFrontend()})`);
@@ -75,6 +78,9 @@ export default class PaperManagerPlugin extends Plugin {
       this.libraries,
       (settings) => this.updateSettings(settings),
       (name) => this.getSecret(name),
+      () => this.translator?.isRunning() ?? false,
+      () => this.showIntroduction(),
+      () => this.openSecretsSettings(),
     );
     this.setting = this.settingsPanel.setting;
     await this.refreshDocumentKinds();
@@ -101,6 +107,7 @@ export default class PaperManagerPlugin extends Plugin {
       translateLibrary: (docId) => this.translateLibrary(docId),
       exportLibrary: (docId) => openCitationExportDialog(this.libraries, docId),
       openSettings: () => this.settingsPanel.open(),
+      openIntroduction: () => this.showIntroduction(),
       selfCheck: () => this.selfCheck(),
       toggleConnector: () => this.toggleConnector(),
       getStatus: () => this.statusStore.get(),
@@ -112,11 +119,13 @@ export default class PaperManagerPlugin extends Plugin {
   }
 
   onLayoutReady(): void {
-    const timer = setTimeout(() => { void this.ensureOnboarding(); }, 500);
+    const timer = setTimeout(() => { void this.introduceOnFirstInstall(); }, 500);
     this.cleanup.push(() => clearTimeout(timer));
   }
 
   onunload(): void {
+    this.unloaded = true;
+    this.introduction?.destroy();
     disposeCnkiClient();
     console.log("[paper-manager] onunload");
     for (const cleanup of this.cleanup.splice(0)) cleanup();
@@ -137,7 +146,46 @@ export default class PaperManagerPlugin extends Plugin {
     if (restart && canUseNode()) await this.restartConnector(next.autoListen);
   }
 
-  private async ensureOnboarding(): Promise<void> {
+  private async introduceOnFirstInstall(): Promise<void> {
+    try {
+      const seen = await this.loadData("introduction.json");
+      if (this.unloaded) return;
+      if (seen?.completed || this.settings.onboardingCompleted || this.settings.defaultLibraryDocId) {
+        await this.ensureOnboarding(false);
+        return;
+      }
+      // Existing installations retain their setup; the guide stays available from the menu.
+      this.showIntroduction();
+    } catch (error) {
+      console.warn("[paper-manager] 使用指南状态读取失败", error);
+      if (!this.unloaded) this.showIntroduction();
+    }
+  }
+
+  private openSecretsSettings(): void {
+    try {
+      const dialog = openSetting(this.app);
+      const target = dialog?.element.querySelector<HTMLElement>('.config__side [data-name="secretsVariables"]');
+      if (!target) {
+        showMessage("请在思源设置中选择「密钥和变量」；当前版本无法自动定位该设置页。", 5000);
+        return;
+      }
+      target.click();
+    } catch (error) {
+      showMessage(`打开密钥和变量设置失败：${errorMessage(error)}`, 5000, "error");
+    }
+  }
+
+  private showIntroduction(): void {
+    if (this.introduction?.element.isConnected) return;
+    this.introduction = openIntroductionDialog({
+      onDismiss: async () => { if (!this.unloaded) await this.saveData("introduction.json", { completed: true }); },
+      createLibrary: () => this.ensureOnboarding(),
+      openTranslation: () => this.settingsPanel.open("translation"),
+    });
+  }
+
+  private async ensureOnboarding(prompt = true): Promise<void> {
     try {
       const libraries = await this.libraries.discoverLibraries();
       const current = libraries.find((library) => library.docId === this.settings.defaultLibraryDocId);
@@ -156,6 +204,7 @@ export default class PaperManagerPlugin extends Plugin {
         });
         return;
       }
+      if (!prompt) return;
       await openOnboardingDialog(this.kernelClient, this.libraries, async (library) => {
         await this.updateSettings({ ...this.settings, defaultLibraryDocId: library.docId, onboardingCompleted: true });
       });

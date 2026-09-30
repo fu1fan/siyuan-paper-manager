@@ -3,6 +3,7 @@ import type { PluginSettings } from "../types/settings";
 import type { PluginStatus } from "../types/status";
 import { resolveExecutable } from "./translator";
 import { errorMessage } from "../core/errors";
+import { repairPdf2zhDependency } from "./pdf2zh-deployment";
 
 export interface EnvironmentReport {
   desktopNode: { ok: boolean; detail: string; skipped?: boolean };
@@ -62,13 +63,14 @@ export async function buildEnvironmentReport(settings: PluginSettings, status: P
 }
 
 /** Check CLI startup only; no PDF is translated and no service credentials are passed. */
-export function probePdf2zh(
+export async function probePdf2zh(
   executable: string,
   requireFn: NodeRequire,
   timeoutMs = 15_000,
+  repairOptions?: { autoRepair: boolean; onLine?: (line: string) => void },
 ): Promise<{ ok: boolean; detail: string }> {
   const childProcess = requireNode<typeof import("node:child_process")>("child_process", requireFn);
-  return new Promise((resolve) => {
+  const result = await new Promise<{ ok: boolean; detail: string }>((resolve) => {
     try {
       childProcess.execFile(executable, ["--help"], {
         encoding: "utf8", shell: false, windowsHide: true,
@@ -90,4 +92,13 @@ export function probePdf2zh(
       resolve({ ok: false, detail: `启动失败：${errorMessage(error)}` });
     }
   });
+  if (!result.ok && repairOptions?.autoRepair) {
+    try {
+      if (await repairPdf2zhDependency(executable, result.detail, requireFn, repairOptions.onLine)) {
+        const verified = await probePdf2zh(executable, requireFn, timeoutMs);
+        return { ok: verified.ok, detail: verified.ok ? `腾讯云 SDK 依赖已自动修复；${verified.detail}` : `依赖修复后仍无法启动：${verified.detail}` };
+      }
+    } catch (error) { return { ok: false, detail: `${result.detail}\n${errorMessage(error)}` }; }
+  }
+  return result;
 }

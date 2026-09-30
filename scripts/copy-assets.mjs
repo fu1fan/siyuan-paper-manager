@@ -16,6 +16,8 @@ for (const file of ["zh_CN.json", "en_US.json"]) {
   await cp(resolve(root, "i18n", file), resolve(dist, "i18n", file));
 }
 
+await cp(resolve(root, "docs/assets/onboarding"), resolve(dist, "onboarding"), { recursive: true });
+
 // PDF.js dynamically loads these resources; they must ship with the plugin.
 const pdfjs = resolve(root, "node_modules/pdfjs-dist");
 await mkdir(resolve(dist, "pdfjs"), { recursive: true });

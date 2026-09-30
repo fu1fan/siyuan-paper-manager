@@ -5,6 +5,10 @@ const root = resolve(import.meta.dirname, "..");
 const dist = resolve(root, "dist");
 const required = [
   "plugin.json",
+  "onboarding/import.jpg",
+  "onboarding/library.jpg",
+  "onboarding/citations.jpg",
+  "onboarding/translation.jpg",
   "pdfjs/pdf.worker.min.mjs",
   "pdfjs/cmaps/UniGB-UCS2-H.bcmap",
   "pdfjs/standard_fonts/FoxitSerif.pfb",
