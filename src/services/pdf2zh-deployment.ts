@@ -1,3 +1,4 @@
+import { uvInstallerScriptUrl } from "./download-presets";
 import { getNodeRequire, requireNode, type NodeRequire } from "../core/env";
 import { PLUGIN_NAME } from "../constants";
 
@@ -127,6 +128,7 @@ async function exec(file: string, args: string[], requireFn: NodeRequire, timeou
 export interface SpawnLoggedOptions {
   requireFn: NodeRequire;
   timeoutMs?: number;
+  signal?: AbortSignal;
   env?: NodeJS.ProcessEnv;
   onLine?: (line: string) => void;
   maxLogChars?: number;
@@ -159,19 +161,35 @@ export async function spawnLogged(file: string, args: string[], options: SpawnLo
       for (const part of parts) emitLine(part);
     };
     const flush = () => { push(decoder.decode()); if (pending) { emitLine(pending); pending = ""; } };
+    if (options.signal?.aborted) return resolve({ stdout: "", stderr: "安装已取消", code: 1 });
     let child: ReturnType<typeof cp.spawn>;
     try {
-      child = cp.spawn(file, args, { shell: false, windowsHide: true, stdio: ["ignore", "pipe", "pipe"], env });
+      child = cp.spawn(file, args, { shell: false, windowsHide: true, stdio: ["ignore", "pipe", "pipe"], detached: process.platform !== "win32", env });
     } catch (error) {
       emitLine(String(error));
       return resolve({ stdout: log, stderr: log.slice(-4_000), code: 1 });
     }
     const timeoutMs = options.timeoutMs ?? 60_000;
-    const timer = setTimeout(() => { push(`\n[超过 ${Math.round(timeoutMs / 1000)} 秒未完成，已终止]`); child.kill(); }, timeoutMs);
+    let stopped = false;
+    let forceTimer: ReturnType<typeof setTimeout> | undefined;
+    const stop = (message: string) => {
+      stopped = true;
+      push(`\n[${message}]\n`);
+      if (process.platform === "win32" && child.pid) {
+        cp.execFile("taskkill", ["/PID", String(child.pid), "/T", "/F"], { windowsHide: true }, () => child.kill());
+      } else if (child.pid) {
+        try { process.kill(-child.pid, "SIGTERM"); } catch { child.kill(); }
+        forceTimer = setTimeout(() => { try { process.kill(-child.pid!, "SIGKILL"); } catch { /* already stopped */ } }, 3000);
+      } else child.kill();
+    };
+    const cancel = () => stop("安装已取消");
+    options.signal?.addEventListener("abort", cancel, { once: true });
+    const timer = setTimeout(() => stop(`超过 ${Math.round(timeoutMs / 1000)} 秒未完成，已终止`), timeoutMs);
+    const cleanup = () => { clearTimeout(timer); if (forceTimer) clearTimeout(forceTimer); options.signal?.removeEventListener("abort", cancel); };
     child.stdout?.on("data", (chunk: Uint8Array) => push(decoder.decode(chunk, { stream: true })));
     child.stderr?.on("data", (chunk: Uint8Array) => push(decoder.decode(chunk, { stream: true })));
-    child.once("error", (error) => { clearTimeout(timer); push(String(error)); flush(); resolve({ stdout: log, stderr: log.slice(-4_000), code: 1 }); });
-    child.once("close", (code) => { clearTimeout(timer); flush(); resolve({ stdout: log, stderr: log.slice(-4_000), code: code ?? 1 }); });
+    child.once("error", (error) => { cleanup(); push(String(error)); flush(); resolve({ stdout: log, stderr: log.slice(-4_000), code: 1 }); });
+    child.once("close", (code) => { cleanup(); flush(); resolve({ stdout: log, stderr: log.slice(-4_000), code: stopped ? 1 : code ?? 1 }); });
   });
 }
 
@@ -195,7 +213,7 @@ export function deploymentPaths(requireFn: NodeRequire = getNodeRequire()!) {
     : process.env.XDG_DATA_HOME || path.join(home, ".local", "share");
   const root = path.join(base, PLUGIN_NAME, "pdf2zh");
   const bootstrap = path.join(root, "bootstrap");
-  return { root, tools: path.join(root, "tools"), bin: path.join(root, "bin"), bootstrap,
+  return { root, uvBin: path.join(root, "uv-bin"), uv: path.join(root, "uv-bin", platform === "win32" ? "uv.exe" : "uv"), tools: path.join(root, "tools"), bin: path.join(root, "bin"), bootstrap,
     python: path.join(bootstrap, platform === "win32" ? "Scripts" : "bin", platform === "win32" ? "python.exe" : "python") };
 }
 
@@ -227,7 +245,8 @@ async function userScriptsDir(pythonPath: string, requireFn: NodeRequire): Promi
 }
 
 export async function findUv(requireFn: NodeRequire = getNodeRequire()!, pythonPath?: string): Promise<UvCommand | null> {
-  const names = process.platform === "win32" ? ["uv.exe", "uv"] : ["uv"];
+  const managedUv = deploymentPaths(requireFn).uv;
+  const names = [managedUv, ...(process.platform === "win32" ? ["uv.exe", "uv"] : ["uv"])];
   for (const name of names) {
     const result = await exec(name, ["--version"], requireFn, 5_000);
     if (result.code === 0) return { file: name, argsPrefix: [], display: name };
@@ -243,7 +262,7 @@ export async function findUv(requireFn: NodeRequire = getNodeRequire()!, pythonP
     const path = requireNode<typeof import("node:path")>("path", requireFn);
     const scriptsDir = await userScriptsDir(pythonPath, requireFn);
     if (scriptsDir) {
-      for (const name of names) {
+      for (const name of process.platform === "win32" ? ["uv.exe", "uv"] : ["uv"]) {
         const candidate = path.join(scriptsDir, name);
         if (fs.existsSync(candidate)) return { file: candidate, argsPrefix: [], display: candidate };
       }
@@ -402,18 +421,79 @@ export async function scanPython(
   return out.sort((a, b) => b.minor - a.minor || a.path.localeCompare(b.path));
 }
 
-export async function installUv(pythonPath: string, requireFn: NodeRequire = getNodeRequire()!, onLine?: (line: string) => void): Promise<CommandResult> {
-  await validateDeploymentPython(pythonPath, requireFn);
-  const paths = deploymentPaths(requireFn);
-  const created = await spawnLogged(pythonPath, ["-m", "venv", paths.bootstrap], { requireFn, timeoutMs: 60_000, onLine });
-  if (created.code !== 0) return { ...created, stderr: `${created.stderr}\n无法创建 uv 独立环境；请确保所选 Python 包含 venv 和 ensurepip（Linux 可安装对应 python3-venv 包）。` };
-  return spawnLogged(paths.python, ["-m", "pip", "install", "uv"], { requireFn, timeoutMs: 180_000, onLine });
+export interface DeploymentOptions {
+  pdf2zhIndexUrl?: string;
+  pdf2zhPythonMirror?: string;
+  pdf2zhUvInstallerUrl?: string;
+  pdf2zhUvGithubUrl?: string;
+  pdf2zhUvDownloadUrl?: string;
+  upgrade?: boolean;
+  repair?: boolean;
+  signal?: AbortSignal;
 }
 
-export async function installPdf2zh(pythonPath: string, uv: UvCommand, requireFn: NodeRequire = getNodeRequire()!, onLine?: (line: string) => void): Promise<CommandResult> {
-  await validateDeploymentPython(pythonPath, requireFn);
-  const [file, args] = uvInvocation(uv, ["tool", "install", "--force", "--python", pythonPath, "--with", PDF2ZH_COMPAT_REQUIREMENT, "pdf2zh"]);
-  return spawnLogged(file, args, { requireFn, timeoutMs: 300_000, onLine, env: await managedEnvironment(requireFn) });
+export function validateDownloadSources(options: DeploymentOptions): void {
+  for (const [key, label] of [["pdf2zhIndexUrl", "Python 包索引"], ["pdf2zhPythonMirror", "Python 镜像"], ["pdf2zhUvInstallerUrl", "uv 安装脚本目录"], ["pdf2zhUvGithubUrl", "uv GitHub 镜像"], ["pdf2zhUvDownloadUrl", "uv 发布文件目录"]] as const) {
+    const value = options[key]?.trim();
+    if (!value) continue;
+    try {
+      const url = new URL(value);
+      if (!["https:", "http:"].includes(url.protocol) || url.username || url.password || url.hash || url.search) throw new Error();
+    } catch { throw new Error(`${label}需填写 HTTP(S) 地址，不含账号、密码、查询参数或片段`); }
+  }
+}
+
+export async function downloadEnvironment(options: DeploymentOptions, requireFn: NodeRequire): Promise<NodeJS.ProcessEnv> {
+  validateDownloadSources(options);
+  const env = await managedEnvironment(requireFn);
+  if (options.pdf2zhIndexUrl?.trim()) {
+    env.UV_DEFAULT_INDEX = options.pdf2zhIndexUrl.trim();
+    env.UV_INDEX_URL = options.pdf2zhIndexUrl.trim();
+    delete env.UV_INDEX;
+    delete env.UV_EXTRA_INDEX_URL;
+  }
+  if (options.pdf2zhPythonMirror?.trim()) env.UV_PYTHON_INSTALL_MIRROR = options.pdf2zhPythonMirror.trim().replace(/\/+$/, "");
+  if (options.pdf2zhUvGithubUrl?.trim()) {
+    env.UV_INSTALLER_GITHUB_BASE_URL = options.pdf2zhUvGithubUrl.trim().replace(/\/+$/, "");
+    for (const key of ["UV_DOWNLOAD_URL", "INSTALLER_DOWNLOAD_URL", "UV_INSTALLER_GHE_BASE_URL"]) delete env[key];
+  }
+  if (options.pdf2zhUvDownloadUrl?.trim()) env.UV_DOWNLOAD_URL = options.pdf2zhUvDownloadUrl.trim().replace(/\/+$/, "");
+  return env;
+}
+
+/** Bootstrap the native uv executable without requiring Python, pip or venv. */
+export async function installUv(options: DeploymentOptions = {}, requireFn: NodeRequire = getNodeRequire()!, onLine?: (line: string) => void): Promise<CommandResult> {
+  const env = await downloadEnvironment(options, requireFn);
+  const paths = deploymentPaths(requireFn);
+  const fs = requireNode<typeof import("node:fs")>("fs", requireFn);
+  const path = requireNode<typeof import("node:path")>("path", requireFn);
+  const os = requireNode<typeof import("node:os")>("os", requireFn);
+  const win = os.platform() === "win32";
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "paper-manager-uv-"));
+  const script = path.join(temp, win ? "install.ps1" : "install.sh");
+  env.UV_UNMANAGED_INSTALL = paths.uvBin;
+  env.UV_NO_MODIFY_PATH = "1";
+  env.PAPER_MANAGER_UV_SCRIPT = script;
+  env.PAPER_MANAGER_UV_URL = uvInstallerScriptUrl(options.pdf2zhUvInstallerUrl, win);
+  try {
+    onLine?.("正在下载安装 uv；不需要预先安装 Python…");
+    const downloaded = await spawnLogged(win ? "powershell.exe" : "curl", win
+      ? ["-NoProfile", "-NonInteractive", "-Command", "$ErrorActionPreference='Stop'; Invoke-WebRequest -UseBasicParsing -Uri $env:PAPER_MANAGER_UV_URL -OutFile $env:PAPER_MANAGER_UV_SCRIPT"]
+      : ["--fail", "--location", "--silent", "--show-error", "--connect-timeout", "30", "--max-time", "180", "--output", script, env.PAPER_MANAGER_UV_URL],
+    { requireFn, env, timeoutMs: 200_000, onLine, signal: options.signal });
+    if (downloaded.code !== 0) return downloaded;
+    return await spawnLogged(win ? "powershell.exe" : "sh", win
+      ? ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script] : [script],
+    { requireFn, env, timeoutMs: 600_000, onLine, signal: options.signal });
+  } finally { fs.rmSync(temp, { recursive: true, force: true }); }
+}
+
+export async function installPdf2zh(pythonPath: string, uv: UvCommand, requireFn: NodeRequire = getNodeRequire()!, onLine?: (line: string) => void, options: DeploymentOptions = {}): Promise<CommandResult> {
+  const env = await downloadEnvironment(options, requireFn);
+  if (pythonPath) await validateDeploymentPython(pythonPath, requireFn);
+  const [file, args] = uvInvocation(uv, ["tool", "install", ...(options.upgrade ? ["--upgrade"] : []), ...(options.repair ? ["--reinstall"] : []), "--python", pythonPath || "3.12", "--with", PDF2ZH_COMPAT_REQUIREMENT, "pdf2zh", ...(options.pdf2zhIndexUrl?.trim() ? ["--no-config"] : [])]);
+  onLine?.(pythonPath ? "使用指定 Python 安装 pdf2zh…" : "正在查找 Python 3.12；缺少时由 uv 下载，然后安装 pdf2zh…");
+  return spawnLogged(file, args, { requireFn, timeoutMs: 1_800_000, onLine, env, signal: options.signal });
 }
 
 export async function inspectPdf2zh(requireFn: NodeRequire = getNodeRequire()!, pythonPath?: string): Promise<InstalledPdf2zh | null> {

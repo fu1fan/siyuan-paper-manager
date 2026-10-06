@@ -235,3 +235,14 @@ describe("spawnLogged", () => {
     expect(result.stderr).toContain("network unreachable");
   });
 });
+
+it("cancels a running real child process and reports failure", async () => {
+  const { createRequire } = await import("node:module");
+  const controller = new AbortController();
+  const result = await spawnLogged(process.execPath, ["-e", "console.log('ready'); setInterval(() => {}, 1000)"], {
+    requireFn: createRequire(import.meta.url), signal: controller.signal, timeoutMs: 5000,
+    onLine: line => { if (line === "ready") controller.abort(); },
+  });
+  expect(result.code).not.toBe(0);
+  expect(result.stdout).toContain("安装已取消");
+});

@@ -1,3 +1,4 @@
+import { DOWNLOAD_PRESETS } from "../services/download-presets";
 import { canUseNode, getNodeRequire, requireNode } from "../core/env";
 import { Setting, showMessage, confirm } from "siyuan";
 import type { KernelClient } from "../core/kernel";
@@ -6,7 +7,7 @@ import type { PluginSettings } from "../types/settings";
 import { normalizeSettings, pdf2zhLanguageCode, serializeArgs, splitArgString } from "../types/settings";
 import { escapeHtml } from "./dom";
 import { openOnboardingDialog } from "./dialogs/onboarding";
-import { configPath, detectPdf2zh, findUv, installPdf2zh, installUv, inspectPdf2zh, PDF2ZH_COMPAT_REQUIREMENT, systemConfigPath, uninstallPdf2zh, resolvePdf2zh, scanPython, sameExecutable, validateDeploymentPython } from "../services/pdf2zh-deployment";
+import { configPath, detectPdf2zh, findUv, installPdf2zh, installUv, inspectPdf2zh, PDF2ZH_COMPAT_REQUIREMENT, systemConfigPath, uninstallPdf2zh, resolvePdf2zh, scanPython, sameExecutable, validateDownloadSources, validateDeploymentPython } from "../services/pdf2zh-deployment";
 import { resolveExecutable } from "../services/translator";
 import { probePdf2zh } from "../services/environment-check";
 import { canonicalSecretEnvKey, pdf2zhCredentialKeys, pdf2zhRequiresSecret, withCredentialPlaceholders } from "../services/pdf2zh-secrets";
@@ -79,12 +80,13 @@ export class SettingsPanel {
   private savedConfigRevision = 0;
   private confirming = false;
   private deployBusy = false;
+  private deployAbort?: AbortController;
   private pythonChoiceRevision = 0;
   private managedSelection = false;
   private fontPicker?: FontPicker;
 
   private updateManagementControls(root: HTMLElement): void {
-    for (const button of root.querySelectorAll<HTMLButtonElement>("[data-upgrade-pdf2zh], [data-uninstall-pdf2zh]")) button.disabled = this.deployBusy || !this.managedSelection;
+    for (const button of root.querySelectorAll<HTMLButtonElement>("[data-upgrade-pdf2zh], [data-repair-pdf2zh], [data-uninstall-pdf2zh]")) button.disabled = this.deployBusy || !this.managedSelection;
   }
 
   /** 部署操作（扫描/安装/升级/卸载）互斥：进行中禁用相关按钮，防止并发写同一 uv 环境。 */
@@ -92,7 +94,7 @@ export class SettingsPanel {
     if (this.deployBusy) return;
     this.deployBusy = true;
     const buttons = root.querySelectorAll<HTMLButtonElement | HTMLInputElement | HTMLSelectElement>(
-      "[data-scan-pdf2zh], [data-uninstall-pdf2zh], [data-upgrade-pdf2zh], [data-install-pdf2zh], [data-scan-python], [data-python-select], [data-python-manual], [data-key=pdf2zhPath]",
+      "[data-scan-pdf2zh], [data-uninstall-pdf2zh], [data-upgrade-pdf2zh], [data-repair-pdf2zh], [data-install-pdf2zh], [data-scan-python], [data-python-select], [data-python-manual], [data-key=pdf2zhPath], [data-download-sources] input, [data-download-sources] select, [data-download-sources] button",
     );
     for (const button of buttons) button.disabled = true;
     try {
@@ -260,6 +262,20 @@ export class SettingsPanel {
     root.querySelector<HTMLButtonElement>("[data-uninstall-pdf2zh]")?.addEventListener("click", () => void this.uninstallPdf2zh(root));
     root.querySelector<HTMLButtonElement>("[data-upgrade-pdf2zh]")?.addEventListener("click", () => void this.installPdf2zh(root, true));
     root.querySelector<HTMLButtonElement>("[data-install-pdf2zh]")?.addEventListener("click", () => void this.installPdf2zh(root));
+    root.querySelector<HTMLButtonElement>("[data-cancel-install]")?.addEventListener("click", () => this.deployAbort?.abort());
+    root.querySelector<HTMLButtonElement>("[data-repair-pdf2zh]")?.addEventListener("click", () => void this.installPdf2zh(root, false, true));
+    root.querySelector<HTMLButtonElement>("[data-apply-download-preset]")?.addEventListener("click", () => {
+      const id = root.querySelector<HTMLSelectElement>("[data-download-preset]")?.value;
+      const preset = DOWNLOAD_PRESETS.find(item => item.id === id);
+      if (!preset) return;
+      Object.assign(this.draft, preset.values);
+      for (const [key, value] of Object.entries(preset.values)) {
+        const input = root.querySelector<HTMLInputElement>(`[data-key=${key}]`);
+        if (input) input.value = value;
+      }
+      const status = root.querySelector<HTMLElement>("[data-download-preset-status]");
+      if (status) status.textContent = `已填入：${preset.label}。保存设置后供下次使用。`;
+    });
     const manualPython = root.querySelector<HTMLInputElement>("[data-python-manual]");
     manualPython?.addEventListener("input", () => this.updatePythonChoice(root, manualPython.value));
     manualPython?.addEventListener("change", () => void this.selectPython(root, manualPython.value));
@@ -288,15 +304,27 @@ export class SettingsPanel {
       ${numberField("同时翻译篇数", "translationConcurrency", this.draft.translationConcurrency, 1, 8, "范围 1–8；总请求并发最多约为两项设置的乘积，下次提交时生效。取消会停止全部任务。")}
       ${switchField("保留双语版", "translationDual", this.draft.translationDual, "同时保留原文与译文的双语 PDF。")}
       ${switchField("删除旧翻译版本", "autoDeleteOldTranslations", this.draft.autoDeleteOldTranslations, "仅在新翻译及元数据保存成功后删除；删除失败不会影响新版本。")}`)
-      + settingsSection('pdf2zh 部署 <span class="paper-manager-badge paper-manager-badge--testing">测试中</span>', "扫描已有安装，或选择 Python 一键部署。", `
-      <div class="paper-manager-actions"><button type="button" class="b3-button b3-button--outline" data-scan-pdf2zh>扫描 pdf2zh</button><button type="button" class="b3-button b3-button--text" data-upgrade-pdf2zh disabled>升级</button><button type="button" class="b3-button b3-button--text" data-uninstall-pdf2zh disabled>卸载</button></div>
+      + settingsSection('pdf2zh 部署 <span class="paper-manager-badge paper-manager-badge--testing">测试中</span>', "扫描已有安装，或自动准备环境并安装。", `
+      <div class="paper-manager-actions"><button type="button" class="b3-button b3-button--outline" data-scan-pdf2zh>扫描 pdf2zh</button><button type="button" class="b3-button b3-button--text" data-upgrade-pdf2zh disabled>升级</button><button type="button" class="b3-button b3-button--text" data-repair-pdf2zh disabled>修复安装</button><button type="button" class="b3-button b3-button--text" data-uninstall-pdf2zh disabled>卸载</button></div>
       <div class="paper-manager-preview" data-pdf2zh-status>尚未扫描</div>
       <div data-pdf2zh-existing hidden><div class="paper-manager-preview" data-pdf2zh-detail></div></div>
       <div data-pdf2zh-deploy>
-        <p class="paper-manager-hint">使用 Python 3.10–3.12 在本机独立环境中安装。升级和卸载仅管理此环境；已有安装可填写下方路径继续使用。安装完成后请保存设置。</p>
-        <label class="paper-manager-field">${fieldInfo("部署 Python")}<div class="paper-manager-python-choice"><select class="b3-select" data-python-select aria-label="部署 Python"><option value="">选择用于部署的 Python</option></select><button type="button" class="b3-button b3-button--outline" data-scan-python>扫描</button></div></label>
-        <label class="paper-manager-field">${fieldInfo("手动 Python 路径")}<input class="b3-text-field" data-python-manual value="${escapeHtml(this.draft.pythonPath)}" placeholder="/path/to/python"></label>
-        <div class="paper-manager-actions"><button type="button" class="b3-button" data-install-pdf2zh>安装并使用独立环境</button></div>
+        <p class="paper-manager-hint">默认自动查找 Python 3.12，缺少时下载；无需预装 Python。升级和卸载仅管理此环境；已有安装可填写下方路径继续使用。安装完成后请保存设置。</p>
+        <details><summary>高级：指定 Python</summary>
+        <label class="paper-manager-field">${fieldInfo("部署 Python")}<div class="paper-manager-python-choice"><select class="b3-select" data-python-select aria-label="部署 Python"><option value="">自动（Python 3.12）</option></select><button type="button" class="b3-button b3-button--outline" data-scan-python>扫描</button></div></label>
+        <label class="paper-manager-field">${fieldInfo("手动 Python 路径")}<input class="b3-text-field" data-python-manual value="${escapeHtml(this.draft.pythonPath)}" placeholder="留空自动选择，或填写 /path/to/python"></label>
+        </details>
+        <details data-download-sources><summary>自定义下载源</summary>
+          <p class="paper-manager-hint">留空沿用 uv 默认或已有环境配置。包索引不影响 Python 和 uv 下载；以下地址分别设置。安装时立即使用当前填写值，保存设置后供下次使用。</p>
+          <div class="paper-manager-actions"><select class="b3-select" data-download-preset aria-label="下载源预设"><option value="">选择镜像预设…</option>${DOWNLOAD_PRESETS.map(item => `<option value="${item.id}">${escapeHtml(item.label)}</option>`).join("")}</select><button type="button" class="b3-button b3-button--outline" data-apply-download-preset>填入预设</button></div>
+          <p class="paper-manager-hint" data-download-preset-status role="status">清华和北外仅替换包索引；中科大替换全部下载源。中科大仅镜像最新发布，缺失的 Python 文件会转回 GitHub。</p>
+          ${textField("Python 包索引", "pdf2zhIndexUrl", this.draft.pdf2zhIndexUrl ?? "", "PEP 503 索引，例如 https://pypi.org/simple")}
+          ${textField("Python 下载镜像", "pdf2zhPythonMirror", this.draft.pdf2zhPythonMirror ?? "", "替换 https://github.com/astral-sh/python-build-standalone/releases/download 的根地址；须保留日期与文件名目录结构。")}
+          ${textField("uv 安装脚本目录", "pdf2zhUvInstallerUrl", this.draft.pdf2zhUvInstallerUrl ?? "", "默认 https://astral.sh/uv；自定义目录须提供 install.sh 和 install.ps1。中科大预设已适配 uv-installer 脚本。")}
+          ${textField("uv 发布文件目录", "pdf2zhUvDownloadUrl", this.draft.pdf2zhUvDownloadUrl ?? "", "可直接提供对应版本的 uv 压缩包目录；优先于下方 GitHub 镜像。中科大预设会自动填入。")}
+          ${textField("uv GitHub 镜像", "pdf2zhUvGithubUrl", this.draft.pdf2zhUvGithubUrl ?? "", "替换 https://github.com 的根地址；镜像须提供 astral-sh/uv 发布文件。仅缺少 uv 时使用。")}
+        </details>
+        <div class="paper-manager-actions"><button type="button" class="b3-button" data-install-pdf2zh>安装并使用独立环境</button><button type="button" class="b3-button b3-button--outline" data-cancel-install hidden>取消安装</button></div>
       </div>
       ${textField("pdf2zh 路径", "pdf2zhPath", this.draft.pdf2zhPath, "可执行文件路径；已安装在 PATH 中时可填写 pdf2zh。")}
       <div class="paper-manager-preview" data-deploy-status hidden></div><details class="paper-manager-term" data-term hidden><summary>终端输出</summary><pre data-term-log></pre></details>`)
@@ -338,9 +366,10 @@ export class SettingsPanel {
       // Keep Python selection available for upgrades and installing alongside an external tool.
       root.querySelector<HTMLElement>("[data-pdf2zh-deploy]")!.hidden = false;
       if (!executable) {
-        status.textContent = "未找到 pdf2zh，请选择 Python 后安装独立环境。";
+        status.textContent = "未找到 pdf2zh，可直接安装独立环境。";
         return;
       }
+      this.managedSelection = Boolean(installed && sameExecutable(executable, installed.executable));
       const term = this.deployTerminal(root);
       const probe = await probePdf2zh(executable, getNodeRequire()!, 15_000, {
         autoRepair: !this.isTranslationRunning(),
@@ -354,18 +383,13 @@ export class SettingsPanel {
         const input = root.querySelector<HTMLInputElement>("[data-key=pdf2zhPath]");
         if (input) input.value = executable;
       }
-      if (this.managedSelection && installed?.pythonPath && !this.draft.pythonPath) {
-        this.draft.pythonPath = installed.pythonPath;
-        this.syncPythonControls(root);
-      }
       status.textContent = (probe.detail.includes("已自动修复") ? "腾讯云 SDK 依赖已自动修复。" : "") + (this.managedSelection ? "插件独立环境：启动检查通过，可升级或卸载。"
         : "已有安装：启动检查通过。请通过原安装方式升级或卸载，或安装插件独立环境。");
       root.querySelector<HTMLElement>("[data-pdf2zh-detail]")!.textContent =
         `${this.managedSelection && installed?.version ? `版本 ${installed.version} · ` : ""}${executable}`;
       if (this.configRevision === this.savedConfigRevision) await this.loadConfig(root);
     } catch (error) {
-      this.managedSelection = false;
-      status.textContent = `检查失败：${errorMessage(error)}`;
+      status.textContent = `检查失败：${errorMessage(error)}${this.managedSelection ? "；可尝试修复安装。" : ""}`;
     } finally {
       this.updateManagementControls(root);
     }
@@ -484,14 +508,14 @@ export class SettingsPanel {
         const list = await scanPython(undefined, (done, total) => {
           status.textContent = `正在验证解释器 ${done}/${total}…`;
         });
-        select.innerHTML = `<option value="">选择用于部署的 Python</option>` + list.map(item => {
+        select.innerHTML = `<option value="">自动（Python 3.12）</option>` + list.map(item => {
           const note = item.support === "supported" ? "" : item.support === "unverified" ? "（未验证）" : "（不支持）";
           const disabled = item.support === "unsupported" ? "disabled" : "";
           return `<option value="${escapeHtml(item.path)}" ${disabled}>Python ${item.version} · ${escapeHtml(item.arch)} · ${escapeHtml(item.path)}${note}</option>`;
         }).join("");
         this.syncPythonControls(root);
         select.onchange = () => void this.selectPython(root, select.value);
-        status.textContent = `发现 ${list.length} 个 Python；同一解释器的 python/python3 已合并。${this.draft.pythonPath ? `当前部署 Python：${this.draft.pythonPath}` : "请从列表选择或手动填写路径。"}`;
+        status.textContent = `发现 ${list.length} 个 Python；同一解释器的 python/python3 已合并。${this.draft.pythonPath ? `当前部署 Python：${this.draft.pythonPath}` : "将自动查找或下载 Python 3.12。"}`;
       } catch (error) {
         status.hidden = false;
         status.textContent = `扫描失败：${errorMessage(error)}`;
@@ -513,7 +537,7 @@ export class SettingsPanel {
     this.syncPythonControls(root);
     const status = root.querySelector<HTMLElement>("[data-deploy-status]")!;
     status.hidden = false;
-    status.textContent = this.draft.pythonPath ? `当前部署 Python：${this.draft.pythonPath}` : "请从列表选择或手动填写 Python 路径。";
+    status.textContent = this.draft.pythonPath ? `当前部署 Python：${this.draft.pythonPath}` : "自动模式：查找或下载 Python 3.12。";
   }
 
   private async selectPython(root: HTMLElement, python: string): Promise<void> {
@@ -521,37 +545,39 @@ export class SettingsPanel {
     if (this.draft.pythonPath) await this.scanPdf2zh(root);
   }
 
-  private async installPdf2zh(root: HTMLElement, upgrade = false): Promise<void> {
+  private async installPdf2zh(root: HTMLElement, upgrade = false, repair = false): Promise<void> {
     const status = root.querySelector<HTMLElement>("[data-deploy-status]")!;
     const python = this.draft.pythonPath?.trim() ?? "";
     const term = this.deployTerminal(root);
-    if (!python) {
-      status.hidden = false;
-      status.textContent = "请先扫描并选择 Python 3.10–3.12。";
-      return;
-    }
     await this.withDeployBusy(root, async () => {
       status.hidden = false;
       term.clear();
+      this.deployAbort = new AbortController();
+      const cancel = root.querySelector<HTMLButtonElement>("[data-cancel-install]");
+      if (cancel) cancel.hidden = false;
+      const options = { ...this.draft, upgrade, repair, signal: this.deployAbort.signal };
       try {
+        validateDownloadSources(options);
         if (this.isTranslationRunning()) throw new Error("有翻译任务正在执行或排队，请完成后再管理 pdf2zh");
-        if (upgrade) await this.requireManagedSelection();
-        await validateDeploymentPython(python);
+        if (upgrade || repair) await this.requireManagedSelection();
+        if (python) await validateDeploymentPython(python);
         let uv = await findUv(undefined, python);
         if (!uv) {
           term.show();
           status.textContent = "第 1/3 步：正在安装 uv…";
-          term.append("创建 uv 独立虚拟环境并安装 uv…");
-          const result = await installUv(python, undefined, line => term.append(line));
+          term.append("安装独立 uv 到插件管理目录…");
+          const result = await installUv(options, undefined, line => term.append(line));
           if (result.code !== 0) throw new Error(`uv 安装失败：${result.stderr || "无输出"}`);
           uv = await findUv(undefined, python);
         }
         if (!uv) throw new Error("uv 安装完成但无法调用；请手动安装 uv 后重试，或填写已有 pdf2zh 的可执行文件路径");
         term.show();
-        status.textContent = upgrade ? "第 2/3 步：正在升级 pdf2zh…" : "第 2/3 步：正在通过 uv 安装 pdf2zh…";
-        term.append(`$ ${uv.display} tool install --force --python ${python} --with ${PDF2ZH_COMPAT_REQUIREMENT} pdf2zh`);
-        const result = await installPdf2zh(python, uv, undefined, line => term.append(line));
+        status.textContent = repair ? "第 2/3 步：正在修复 pdf2zh…" : upgrade ? "第 2/3 步：正在升级 pdf2zh…" : "第 2/3 步：正在通过 uv 安装 pdf2zh…";
+        term.append(`$ ${uv.display} tool install ${upgrade ? "--upgrade " : repair ? "--reinstall " : ""}--python ${python || "3.12"} --with ${PDF2ZH_COMPAT_REQUIREMENT} pdf2zh`);
+        const result = await installPdf2zh(python, uv, undefined, line => term.append(line), options);
+        if (options.signal.aborted) throw new Error("安装已取消，可重新安装以继续完成环境准备");
         if (result.code !== 0) throw new Error(`pdf2zh 安装失败：${result.stderr || "无输出"}`);
+        if (cancel) cancel.hidden = true;
         status.textContent = "第 3/3 步：正在验证安装…";
         const executable = await resolvePdf2zh(uv);
         if (!executable) throw new Error("安装完成但未找到 pdf2zh 可执行文件");
@@ -562,10 +588,15 @@ export class SettingsPanel {
         this.draft.pdf2zhPath = executable;
         const input = root.querySelector<HTMLInputElement>("[data-key=pdf2zhPath]");
         if (input) input.value = executable;
-        status.textContent = `pdf2zh ${upgrade ? "升级" : "安装"}完成：${executable}`;
+        status.textContent = `pdf2zh ${repair ? "修复" : upgrade ? "升级" : "安装"}完成：${executable}`;
         await this.refreshPdf2zh(root);
       } catch (error) {
+        term.show();
+        term.append(errorMessage(error));
         status.textContent = `${errorMessage(error)}（详见终端输出）`;
+      } finally {
+        this.deployAbort = undefined;
+        if (cancel) cancel.hidden = true;
       }
     });
   }
@@ -747,6 +778,7 @@ export class SettingsPanel {
       if (this.configRevision > this.savedConfigRevision && this.configRoot?.querySelector("[data-config-json]")) {
         await this.saveConfig(this.configRoot, ++this.configRevision);
       }
+      validateDownloadSources(this.draft);
       const settings = normalizeSettings(this.draft);
       settings.onboardingCompleted = Boolean(settings.defaultLibraryDocId);
       await this.onSave(settings);

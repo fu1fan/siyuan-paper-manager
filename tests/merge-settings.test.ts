@@ -132,3 +132,10 @@ it("preserves PDF extraction preferences and defaults online Zotero recognition 
   expect(normalizeSettings({ autoExtractMetadata: false, enableZoteroRecognizer: true }))
     .toMatchObject({ autoExtractMetadata: false, enableZoteroRecognizer: true });
 });
+
+it("persists custom download sources while keeping automatic Python selection", () => {
+  const settings = normalizeSettings({ pdf2zhIndexUrl: " https://packages.test/simple ", pdf2zhPythonMirror: "https://python.test/releases", pdf2zhUvInstallerUrl: "https://uv.test/scripts", pdf2zhUvGithubUrl: "https://uv.test/github" });
+  expect(settings.pythonPath).toBe("");
+  expect(settings.pdf2zhIndexUrl).toBe("https://packages.test/simple");
+  expect(normalizeSettings(settings)).toEqual(settings);
+});

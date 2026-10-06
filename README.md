@@ -45,6 +45,12 @@
 2. 解压到 `{工作空间}/data/plugins/siyuan-paper-manager/`；
 3. 重启思源，在 设置 → 集市 → 已下载 中启用。
 
+## v6.3.0 更新（2026-10-06）
+
+- **自动安装环境**：自动准备独立 uv 和 Python 3.12，保留手动指定 Python；安装、升级、修复分别处理，支持取消安装。
+- **自定义下载源**：支持 Python 包索引、Python 镜像、uv 安装脚本和发布文件来源。
+- **镜像预设**：内置清华、北外包镜像与中科大包/Python/uv 配置，支持填入后编辑及恢复默认。
+
 ## v6.2.0 更新（2026-10-01）
 
 - **首次使用指南**：四步介绍搭配真实思源截图和简单动画，末页引导 PDF2ZH 安装与密钥配置；可从顶栏菜单或设置底部左侧重新播放。
@@ -139,7 +145,19 @@ Zotero 官方识别接口发生连接重置时，桌面端会尝试官方域名�
 
 ### 翻译配置（pdf2zh）
 
-桌面端设置中的“翻译”页提供 pdf2zh 部署辅助（**测试中**）：可扫描 Python 3.10–3.12，并通过 uv 在插件独立环境中安装、升级或卸载 pdf2zh。没有 uv 时，会先创建独立虚拟环境安装 uv；所选 Python 需包含 venv 和 ensurepip，Linux 系统 Python 可能需补充对应的 python3-venv 包。扫描会保留已填写的程序路径并检查能否启动；已有 pip/uv 安装仍可使用，升级和卸载由原安装方式管理。旧版本部署到用户级 uv 的安装也按已有安装处理，迁移到插件独立环境需点击“安装并使用独立环境”。安装完成后保存设置。
+桌面端设置中的“翻译”页提供 pdf2zh 部署辅助（**测试中**）：点击“安装并使用独立环境”即可自动准备 uv 和 Python 3.12。已有合适的 Python 会复用，缺少时由 uv 下载；无需预装 pip、venv 或 ensurepip。缺少 uv 时，独立 uv 安装到插件的本机管理目录，不修改 shell 配置或 PATH。高级选项仍支持扫描和指定 Python 3.10–3.12。安装、升级（检查新版本）和修复安装（重装依赖）分别处理，可取消下载与安装；安装后检查能否启动。升级、修复和卸载仅管理插件独立环境；已有 pip/uv 安装仍可填写路径使用，并通过原方式管理。安装完成后保存设置。
+
+“自定义下载源”提供五项可选 HTTP(S) 地址，留空沿用默认或已有环境配置：
+
+- **Python 包索引**：PEP 503 索引，例如 `https://pypi.org/simple`。自定义时覆盖继承的额外索引并禁用 uv 配置文件发现，避免其他源优先生效。
+- **Python 下载镜像**：替换 `https://github.com/astral-sh/python-build-standalone/releases/download` 的根地址，镜像需保留日期与文件名路径。
+- **uv 安装脚本目录**：默认 `https://astral.sh/uv`，目录下需有 `install.sh`（macOS/Linux）与 `install.ps1`（Windows）；应使用可信脚本来源。
+- **uv 发布文件目录**：直接指向同版本 uv 压缩包所在目录（`UV_DOWNLOAD_URL`），优先于 GitHub 镜像。
+- **uv GitHub 镜像**：替换 `https://github.com` 的根地址，需提供 `astral-sh/uv/releases/download/...`。只在需要安装 uv 时使用。
+
+可从“下载源预设”选择后点击“填入预设”：清华 TUNA、北京外国语大学仅填入包索引；中国科学技术大学填入包索引、Python 镜像及 uv 脚本/发布文件目录；恢复默认会清空全部自定义源。填入后仍可修改地址。中科大仅镜像最新发布，缺失的 Python 文件可能转回 GitHub。来源：[清华说明](https://mirrors.tuna.tsinghua.edu.cn/help/pypi/)、[北外说明](https://mirrors.bfsu.edu.cn/help/pypi/)、[中科大 PyPI](https://mirrors.ustc.edu.cn/help/pypi.html)、[中科大 Python/uv](https://mirrors.ustc.edu.cn/help/github-release.html)。
+
+下载源在本次安装中立即使用，保存设置后供下次使用。这些选项不配置翻译服务或模型文件的下载源。
 
 Windows、macOS、Linux 桌面端在扫描启动检查或实际翻译遇到这条特定导入错误时，会定位 pdf2zh 独立环境，仅修复腾讯云 SDK，并重新检查或重试一次；同一安装的并发修复会合并。无法确认独立环境、缺少 uv 或下载失败时会显示原因，不改动系统 Python。安装会固定 `tencentcloud-sdk-python-tmt==3.1.70`，避免新版腾讯云 SDK 移除 `TextTranslateRequest` 后导致 pdf2zh 1.9.11 无法启动（[上游问题与修复](https://github.com/PDFMathTranslate/PDFMathTranslate/issues/1167)）。
 

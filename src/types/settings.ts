@@ -28,6 +28,11 @@ export interface PluginSettings {
   pdf2zhArgs: string[];
   translationAssetsDir: string;
   pythonPath?: string;
+  pdf2zhIndexUrl?: string;
+  pdf2zhPythonMirror?: string;
+  pdf2zhUvInstallerUrl?: string;
+  pdf2zhUvGithubUrl?: string;
+  pdf2zhUvDownloadUrl?: string;
   pdf2zhConfigPath?: string;
   pdf2zhConfig?: Record<string, unknown>;
   pdf2zhSecretNames?: Record<string, string>;
@@ -57,6 +62,11 @@ export const DEFAULT_SETTINGS: PluginSettings = {
   pdf2zhArgs: [],
   translationAssetsDir: DEFAULT_ASSETS_DIR,
   pythonPath: "",
+  pdf2zhIndexUrl: "",
+  pdf2zhPythonMirror: "",
+  pdf2zhUvInstallerUrl: "",
+  pdf2zhUvGithubUrl: "",
+  pdf2zhUvDownloadUrl: "",
   pdf2zhConfigPath: "",
   pdf2zhConfig: {},
   pdf2zhSecretNames: {},
@@ -103,6 +113,11 @@ export function normalizeSettings(input: unknown): PluginSettings {
       string(raw.translationAssetsDir ?? raw.translationOutDir, DEFAULT_SETTINGS.translationAssetsDir),
     ),
     pythonPath: optionalString(raw.pythonPath),
+    pdf2zhIndexUrl: optionalString(raw.pdf2zhIndexUrl),
+    pdf2zhPythonMirror: optionalString(raw.pdf2zhPythonMirror),
+    pdf2zhUvInstallerUrl: optionalString(raw.pdf2zhUvInstallerUrl),
+    pdf2zhUvGithubUrl: optionalString(raw.pdf2zhUvGithubUrl),
+    pdf2zhUvDownloadUrl: optionalString(raw.pdf2zhUvDownloadUrl),
     pdf2zhConfigPath: optionalString(raw.pdf2zhConfigPath),
     pdf2zhConfig: isRecord(raw.pdf2zhConfig) ? withoutConfigLanguages(raw.pdf2zhConfig) : {},
     pdf2zhSecretNames: isStringRecord(raw.pdf2zhSecretNames) ? raw.pdf2zhSecretNames : {},

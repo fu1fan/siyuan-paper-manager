@@ -71,7 +71,7 @@ export function openIntroductionDialog(actions: IntroductionActions): Dialog {
           <div class="paper-manager-intro-setup">
             <div class="paper-manager-intro-setup-card"><h3><span>1</span> 安装 PDF2ZH</h3>
               <p>在「插件设置 → 翻译」中扫描已有安装，或：</p>
-              <ol><li>扫描 Python，选择 3.10–3.12。</li><li>一键安装（测试中），安装后保存设置。</li></ol>
+              <ol><li>点击安装，自动准备 uv 和 Python；可展开自定义下载源。</li><li>安装后保存设置（部署功能测试中）。</li></ol>
               <div class="paper-manager-intro-command"><span>也可手动安装，再填写可执行文件路径</span><code>uv tool install --python 3.12 --with tencentcloud-sdk-python-tmt==3.1.70 pdf2zh</code></div>
               <a href="https://github.com/PDFMathTranslate/PDFMathTranslate#32-local-installation" target="_blank" rel="noopener noreferrer">官方安装说明 ↗</a>
             </div>

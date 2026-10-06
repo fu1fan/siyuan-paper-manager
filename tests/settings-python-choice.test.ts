@@ -30,7 +30,7 @@ type TestPanel = {
   scanPython(root: HTMLElement): Promise<void>;
   scanPdf2zh(root: HTMLElement): Promise<void>;
   updatePythonChoice(root: HTMLElement, python: string): void;
-  installPdf2zh(root: HTMLElement, upgrade?: boolean): Promise<void>;
+  installPdf2zh(root: HTMLElement, upgrade?: boolean, repair?: boolean): Promise<void>;
   uninstallPdf2zh(root: HTMLElement): Promise<void>;
   loadConfig(root: HTMLElement): Promise<void>;
 };
@@ -108,7 +108,7 @@ it("keeps a manually entered path after scanning and deploys with it", async () 
   expect(manual.value).toBe("C:/Custom/python.exe");
   await settings.installPdf2zh(root);
   expect(deployment.findUv).toHaveBeenCalledWith(undefined, "C:/Custom/python.exe");
-  expect(deployment.installPdf2zh).toHaveBeenCalledWith("C:/Custom/python.exe", expect.anything(), undefined, expect.any(Function));
+  expect(deployment.installPdf2zh).toHaveBeenCalledWith("C:/Custom/python.exe", expect.anything(), undefined, expect.any(Function), expect.objectContaining({ signal: expect.any(AbortSignal) }));
 });
 
 it("uses the latest dropdown choice for upgrade and updates the manual field", async () => {
@@ -122,7 +122,7 @@ it("uses the latest dropdown choice for upgrade and updates the manual field", a
   settings.draft.pdf2zhPath = "C:/uv/pdf2zh.exe";
   vi.mocked(deployment.inspectPdf2zh).mockResolvedValue({ executable: "C:/uv/pdf2zh.exe" });
   await settings.installPdf2zh(root, true);
-  expect(deployment.installPdf2zh).toHaveBeenCalledWith("C:/Python312/python.exe", expect.anything(), undefined, expect.any(Function));
+  expect(deployment.installPdf2zh).toHaveBeenCalledWith("C:/Python312/python.exe", expect.anything(), undefined, expect.any(Function), expect.objectContaining({ signal: expect.any(AbortSignal) }));
 });
 
 it("does not let a late automatic detection replace the user's path", async () => {
@@ -178,4 +178,27 @@ it("blocks environment mutation while translation tasks are active", async () =>
   await settings.uninstallPdf2zh(root);
   expect(deployment.installPdf2zh).not.toHaveBeenCalled();
   expect(deployment.uninstallPdf2zh).not.toHaveBeenCalled();
+});
+
+it("installs automatically without a selected Python and forwards unsaved download sources", async () => {
+  const settings = panel();
+  settings.draft.pdf2zhIndexUrl = "https://packages.test/simple";
+  const { root, status } = fixture();
+  await settings.installPdf2zh(root);
+  expect(deployment.validateDeploymentPython).not.toHaveBeenCalled();
+  expect(deployment.installPdf2zh).toHaveBeenCalledWith("", expect.anything(), undefined, expect.any(Function), expect.objectContaining({ pdf2zhIndexUrl: "https://packages.test/simple" }));
+  expect(status.textContent).toContain("安装完成");
+  expect(settings.draft.pythonPath).toBe("");
+});
+
+it("allows explicit repair for a managed installation that fails startup", async () => {
+  const settings = panel();
+  const { root } = fixture();
+  settings.draft.pdf2zhPath = "C:/uv/pdf2zh.exe";
+  vi.mocked(deployment.inspectPdf2zh).mockResolvedValue({ executable: "C:/uv/pdf2zh.exe" });
+  vi.mocked(probePdf2zh).mockResolvedValue({ ok: false, detail: "broken dependency" });
+  await settings.scanPdf2zh(root);
+  expect((settings as unknown as { managedSelection: boolean }).managedSelection).toBe(true);
+  await settings.installPdf2zh(root, false, true);
+  expect(deployment.installPdf2zh).toHaveBeenCalledWith("", expect.anything(), undefined, expect.any(Function), expect.objectContaining({ repair: true, upgrade: false }));
 });
