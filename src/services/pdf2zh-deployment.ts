@@ -132,6 +132,7 @@ export interface SpawnLoggedOptions {
   env?: NodeJS.ProcessEnv;
   onLine?: (line: string) => void;
   maxLogChars?: number;
+  captureStdout?: boolean;
 }
 
 /**
@@ -148,6 +149,8 @@ export async function spawnLogged(file: string, args: string[], options: SpawnLo
   return new Promise((resolve) => {
     let log = "";
     let pending = "";
+    let capturedStdout = "";
+    const stdoutDecoder = new TextDecoder();
     const decoder = new TextDecoder();
     const emitLine = (line: string) => {
       if (!line.trim()) return;
@@ -186,10 +189,14 @@ export async function spawnLogged(file: string, args: string[], options: SpawnLo
     options.signal?.addEventListener("abort", cancel, { once: true });
     const timer = setTimeout(() => stop(`超过 ${Math.round(timeoutMs / 1000)} 秒未完成，已终止`), timeoutMs);
     const cleanup = () => { clearTimeout(timer); if (forceTimer) clearTimeout(forceTimer); options.signal?.removeEventListener("abort", cancel); };
-    child.stdout?.on("data", (chunk: Uint8Array) => push(decoder.decode(chunk, { stream: true })));
+    child.stdout?.on("data", (chunk: Uint8Array) => {
+      const text = stdoutDecoder.decode(chunk, { stream: true });
+      if (options.captureStdout) capturedStdout = (capturedStdout + text).slice(-maxLogChars);
+      push(text);
+    });
     child.stderr?.on("data", (chunk: Uint8Array) => push(decoder.decode(chunk, { stream: true })));
     child.once("error", (error) => { cleanup(); push(String(error)); flush(); resolve({ stdout: log, stderr: log.slice(-4_000), code: 1 }); });
-    child.once("close", (code) => { cleanup(); flush(); resolve({ stdout: log, stderr: log.slice(-4_000), code: stopped ? 1 : code ?? 1 }); });
+    child.once("close", (code) => { cleanup(); push(stdoutDecoder.decode()); flush(); resolve({ stdout: options.captureStdout ? capturedStdout : log, stderr: log.slice(-4_000), code: stopped ? 1 : code ?? 1 }); });
   });
 }
 
@@ -427,6 +434,8 @@ export interface DeploymentOptions {
   pdf2zhUvInstallerUrl?: string;
   pdf2zhUvGithubUrl?: string;
   pdf2zhUvDownloadUrl?: string;
+  /** Only the diagnosed SDK incompatibility may change a dependency version during repair. */
+  repairDependency?: boolean;
   upgrade?: boolean;
   repair?: boolean;
   signal?: AbortSignal;
@@ -560,4 +569,100 @@ export function systemConfigPath(requireFn: NodeRequire = getNodeRequire()!): st
   const os = requireNode<typeof import("node:os")>("os", requireFn);
   const home = os.homedir();
   return path.join(home, ".config", "PDFMathTranslate", "config.json");
+}
+
+export interface UvToolPdf2zh extends InstalledPdf2zh {
+  uv: UvCommand;
+  toolDir: string;
+  binDir: string;
+}
+
+/** Recognize a registered uv tool by its executable, regardless of who installed it. */
+export async function inspectUvToolPdf2zh(executable: string, requireFn: NodeRequire = getNodeRequire()!): Promise<UvToolPdf2zh | null> {
+  const uv = await findUv(requireFn);
+  if (!uv) return null;
+  const fs = requireNode<typeof import("node:fs")>("fs", requireFn);
+  const path = requireNode<typeof import("node:path")>("path", requireFn);
+  const shell = await resolveShellEnvironment(requireFn);
+  const environments = [await managedEnvironment(requireFn), shell];
+  // A linked executable can also identify a non-default UV_TOOL_DIR.
+  const resolved = realpathKey(fs, executable);
+  const root = path.dirname(path.dirname(resolved));
+  if (path.basename(root) === "pdf2zh" && fs.existsSync(path.join(root, "uv-receipt.toml"))
+    && !sameExecutable(path.dirname(executable), path.dirname(resolved), requireFn)) {
+    environments.push({ ...shell, UV_TOOL_DIR: path.dirname(root), UV_TOOL_BIN_DIR: path.dirname(executable) });
+  }
+  for (const env of environments) {
+    const run = (args: string[]) => { const [file, argv] = uvInvocation(uv, args); return exec(file, argv, requireFn, 8_000, env); };
+    const listed = await run(["tool", "list"]);
+    const version = listed.stdout.match(/^pdf2zh\s+v([^\s]+)/im)?.[1];
+    if (listed.code !== 0 || !version) continue;
+    const tools = await run(["tool", "dir"]);
+    const bin = await run(["tool", "dir", "--bin"]);
+    if (tools.code !== 0 || bin.code !== 0 || !tools.stdout.trim() || !bin.stdout.trim()) continue;
+    const toolDir = tools.stdout.trim(), binDir = bin.stdout.trim();
+    const toolRoot = path.join(toolDir, "pdf2zh");
+    if (!fs.existsSync(path.join(toolRoot, "uv-receipt.toml")) || !fs.existsSync(path.join(toolRoot, "pyvenv.cfg"))) continue;
+    const name = process.platform === "win32" ? "pdf2zh.exe" : "pdf2zh";
+    const candidate = path.join(binDir, name);
+    const internal = path.join(toolRoot, process.platform === "win32" ? "Scripts" : "bin", name);
+    if (!fs.existsSync(candidate) || !fs.existsSync(internal) || !sameExecutable(executable, candidate, requireFn)) continue;
+    // Unix entrypoints are symlinks; Windows uv uses copied .exe launchers.
+    if (!sameExecutable(candidate, internal, requireFn) &&
+      !(process.platform === "win32" && fs.readFileSync(candidate).equals(fs.readFileSync(internal)))) continue;
+    return { executable: candidate, version, uv, toolDir, binDir };
+  }
+  return null;
+}
+
+export type UvToolAction = "upgrade" | "repair" | "uninstall";
+
+/** Recheck the target immediately before changing exactly this registered tool. */
+export async function manageUvToolPdf2zh(executable: string, action: UvToolAction, options: DeploymentOptions = {}, requireFn: NodeRequire = getNodeRequire()!, onLine?: (line: string) => void): Promise<CommandResult> {
+  const target = await inspectUvToolPdf2zh(executable, requireFn);
+  if (!target) throw new Error("无法确认当前路径属于 uv tool 独立环境，请重新检测");
+  const env = await downloadEnvironment(options, requireFn);
+  env.UV_TOOL_DIR = target.toolDir;
+  env.UV_TOOL_BIN_DIR = target.binDir;
+  onLine?.(`目标 uv tool 环境：${target.toolDir}；仅操作 pdf2zh。`);
+  if (action === "repair") return repairRegisteredTool(target, options, env, requireFn, onLine);
+  const args = action === "uninstall" ? ["tool", "uninstall", "pdf2zh"]
+    : ["tool", "upgrade", "pdf2zh",
+      ...(options.pdf2zhIndexUrl?.trim() ? ["--no-config", "--default-index", options.pdf2zhIndexUrl.trim()] : [])];
+  const [file, argv] = uvInvocation(target.uv, args);
+  if (action === "upgrade") onLine?.("保留原安装的 Python、附加依赖和版本约束，检查可用更新。");
+  return spawnLogged(file, argv, { requireFn, env, signal: options.signal, timeoutMs: 1_800_000, onLine });
+}
+
+/** Freeze before reinstalling: repair must not resolve newer versions or rewrite the uv receipt. */
+async function repairRegisteredTool(target: UvToolPdf2zh, options: DeploymentOptions, env: NodeJS.ProcessEnv,
+  requireFn: NodeRequire, onLine?: (line: string) => void): Promise<CommandResult> {
+  const path = requireNode<typeof import("node:path")>("path", requireFn);
+  const fs = requireNode<typeof import("node:fs")>("fs", requireFn);
+  const os = requireNode<typeof import("node:os")>("os", requireFn);
+  const python = path.join(target.toolDir, "pdf2zh", os.platform() === "win32" ? "Scripts" : "bin", os.platform() === "win32" ? "python.exe" : "python");
+  const [file, freezeArgs] = uvInvocation(target.uv, ["pip", "freeze", "--python", python]);
+  const frozen = await spawnLogged(file, freezeArgs, { requireFn, env, signal: options.signal, timeoutMs: 30_000, captureStdout: true });
+  if (frozen.code !== 0) throw new Error(`无法读取当前依赖版本；请通过原安装方式重建环境：${frozen.stderr}`);
+  // Only exact package pins can be repaired without changing sources or versions.
+  const pins = frozen.stdout.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+  if (!pins.length || pins.some(line => !/^[a-zA-Z0-9][a-zA-Z0-9._-]*==[a-zA-Z0-9.!+_-]+$/.test(line))
+    || !pins.some(line => line.toLowerCase() === `pdf2zh==${target.version}`.toLowerCase())) {
+    throw new Error("无法安全固定当前依赖版本（可能包含源码或可编辑安装），请通过原安装方式修复；未执行重装");
+  }
+  if (options.repairDependency) {
+    const index = pins.findIndex(line => /^tencentcloud[-_]sdk[-_]python[-_]tmt==/i.test(line));
+    if (index >= 0) pins[index] = PDF2ZH_COMPAT_REQUIREMENT;
+    else pins.push(PDF2ZH_COMPAT_REQUIREMENT);
+    onLine?.(`仅将已诊断不兼容的腾讯云 SDK 修复为 ${PDF2ZH_COMPAT_REQUIREMENT}；其余包保持当前版本。`);
+  }
+  onLine?.(`正在重装 PDF2ZH ${target.version} 及当前版本的依赖；不执行升级。`);
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "paper-manager-repair-"));
+  const requirements = path.join(temp, "requirements.txt");
+  try {
+    fs.writeFileSync(requirements, pins.join("\n") + "\n", { mode: 0o600 });
+    const [command, args] = uvInvocation(target.uv, ["pip", "install", "--python", python, "--reinstall", "--no-deps", "-r", requirements,
+      ...(options.pdf2zhIndexUrl?.trim() ? ["--no-config", "--default-index", options.pdf2zhIndexUrl.trim()] : [])]);
+    return await spawnLogged(command, args, { requireFn, env, signal: options.signal, timeoutMs: 1_800_000, onLine });
+  } finally { fs.rmSync(temp, { recursive: true, force: true }); }
 }

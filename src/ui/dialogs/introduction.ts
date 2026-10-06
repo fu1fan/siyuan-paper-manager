@@ -7,6 +7,7 @@ export interface IntroductionActions {
   onDismiss: () => Promise<void>;
   createLibrary: () => Promise<void>;
   openTranslation: () => void;
+  openEnvironment: () => void;
 }
 
 const STEPS = [
@@ -70,8 +71,8 @@ export function openIntroductionDialog(actions: IntroductionActions): Dialog {
           <div class="paper-manager-intro-setup-heading">${copy}${screenshot}</div>
           <div class="paper-manager-intro-setup">
             <div class="paper-manager-intro-setup-card"><h3><span>1</span> 安装 PDF2ZH</h3>
-              <p>在「插件设置 → 翻译」中扫描已有安装，或：</p>
-              <ol><li>点击安装，自动准备 uv 和 Python；可展开自定义下载源。</li><li>安装后保存设置（部署功能测试中）。</li></ol>
+              <p>在独立的环境管理窗口中一键安装，或使用已有安装。</p>
+              <p>自动准备 uv 和 Python，支持镜像与自定义下载源。关闭窗口后可从状态栏查看进度。</p><button type="button" class="b3-button b3-button--outline" data-intro-environment ${desktop ? "" : "disabled"}>管理翻译环境</button>
               <div class="paper-manager-intro-command"><span>也可手动安装，再填写可执行文件路径</span><code>uv tool install --python 3.12 --with tencentcloud-sdk-python-tmt==3.1.70 pdf2zh</code></div>
               <a href="https://github.com/PDFMathTranslate/PDFMathTranslate#32-local-installation" target="_blank" rel="noopener noreferrer">官方安装说明 ↗</a>
             </div>
@@ -93,6 +94,7 @@ export function openIntroductionDialog(actions: IntroductionActions): Dialog {
       preview = new Dialog({ title: `${step.label} · 真实使用截图`, width: "min(1200px, calc(100vw - 24px))",
         content: `<div class="paper-manager-intro-preview"><img src="/plugins/siyuan-paper-manager/onboarding/${step.image}" alt="${escapeHtml(step.alt)}"></div>` });
     });
+    body.querySelector("[data-intro-environment]")?.addEventListener("click", () => actions.openEnvironment());
     body.querySelector("[data-intro-library]")?.addEventListener("click", () => void finish(actions.createLibrary));
     body.querySelector("[data-intro-translation]")?.addEventListener("click", () => void finish(actions.openTranslation));
   };

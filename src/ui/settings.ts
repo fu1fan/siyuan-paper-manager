@@ -1,5 +1,5 @@
-import { DOWNLOAD_PRESETS } from "../services/download-presets";
-import { canUseNode, getNodeRequire, requireNode } from "../core/env";
+import { EnvironmentManager, environmentValues } from "./environment-manager";
+import { canUseNode, requireNode } from "../core/env";
 import { Setting, showMessage, confirm } from "siyuan";
 import type { KernelClient } from "../core/kernel";
 import type { LibraryService, PaperLibraryInfo } from "../services/library-service";
@@ -7,9 +7,7 @@ import type { PluginSettings } from "../types/settings";
 import { normalizeSettings, pdf2zhLanguageCode, serializeArgs, splitArgString } from "../types/settings";
 import { escapeHtml } from "./dom";
 import { openOnboardingDialog } from "./dialogs/onboarding";
-import { configPath, detectPdf2zh, findUv, installPdf2zh, installUv, inspectPdf2zh, PDF2ZH_COMPAT_REQUIREMENT, systemConfigPath, uninstallPdf2zh, resolvePdf2zh, scanPython, sameExecutable, validateDownloadSources, validateDeploymentPython } from "../services/pdf2zh-deployment";
-import { resolveExecutable } from "../services/translator";
-import { probePdf2zh } from "../services/environment-check";
+import { configPath, systemConfigPath } from "../services/pdf2zh-deployment";
 import { canonicalSecretEnvKey, pdf2zhCredentialKeys, pdf2zhRequiresSecret, withCredentialPlaceholders } from "../services/pdf2zh-secrets";
 import { canonicalPdf2zhConfig, cloneConfig, configModelValue, configTranslatorValue, firstTranslator, maskSecrets, modelEnvKey, restoreMaskedSecrets, secretSafeConfig } from "../services/pdf2zh-config";
 import { errorMessage } from "../core/errors";
@@ -72,6 +70,7 @@ function metadataPanelHtml(draft: PluginSettings): string {
 
 export class SettingsPanel {
   readonly setting: Setting;
+  readonly environment: EnvironmentManager;
   private draft: PluginSettings;
   private initialTab: TabName = "library";
   private configSaveTimer?: ReturnType<typeof setTimeout>;
@@ -79,51 +78,7 @@ export class SettingsPanel {
   private configRevision = 0;
   private savedConfigRevision = 0;
   private confirming = false;
-  private deployBusy = false;
-  private deployAbort?: AbortController;
-  private pythonChoiceRevision = 0;
-  private managedSelection = false;
   private fontPicker?: FontPicker;
-
-  private updateManagementControls(root: HTMLElement): void {
-    for (const button of root.querySelectorAll<HTMLButtonElement>("[data-upgrade-pdf2zh], [data-repair-pdf2zh], [data-uninstall-pdf2zh]")) button.disabled = this.deployBusy || !this.managedSelection;
-  }
-
-  /** 部署操作（扫描/安装/升级/卸载）互斥：进行中禁用相关按钮，防止并发写同一 uv 环境。 */
-  private async withDeployBusy(root: HTMLElement, work: () => Promise<void>): Promise<void> {
-    if (this.deployBusy) return;
-    this.deployBusy = true;
-    const buttons = root.querySelectorAll<HTMLButtonElement | HTMLInputElement | HTMLSelectElement>(
-      "[data-scan-pdf2zh], [data-uninstall-pdf2zh], [data-upgrade-pdf2zh], [data-repair-pdf2zh], [data-install-pdf2zh], [data-scan-python], [data-python-select], [data-python-manual], [data-key=pdf2zhPath], [data-download-sources] input, [data-download-sources] select, [data-download-sources] button",
-    );
-    for (const button of buttons) button.disabled = true;
-    try {
-      await work();
-    } finally {
-      this.deployBusy = false;
-      for (const button of buttons) button.disabled = false;
-      this.updateManagementControls(root);
-    }
-  }
-
-  /** 部署区可展开的终端输出；保留最近 500 行并滚动到底。 */
-  private deployTerminal(root: HTMLElement): { append: (line: string) => void; clear: () => void; show: () => void } {
-    const details = root.querySelector<HTMLDetailsElement>("[data-term]")!;
-    const pre = root.querySelector<HTMLElement>("[data-term-log]")!;
-    const append = (line: string) => {
-      details.hidden = false;
-      const lines = pre.textContent ? pre.textContent.split("\n") : [];
-      lines.push(line);
-      if (lines.length > 500) lines.splice(0, lines.length - 500);
-      pre.textContent = lines.join("\n");
-      pre.scrollTop = pre.scrollHeight;
-    };
-    return {
-      append,
-      clear: () => { pre.textContent = ""; },
-      show: () => { details.hidden = false; details.open = true; },
-    };
-  }
 
   constructor(
     private readonly displayName: string,
@@ -132,11 +87,13 @@ export class SettingsPanel {
     private readonly libraries: LibraryService,
     private readonly onSave: (settings: PluginSettings) => Promise<void>,
     private readonly getSecret?: (name: string) => string,
-    private readonly isTranslationRunning: () => boolean = () => false,
+    isTranslationRunning: () => boolean = () => false,
     private readonly openIntroduction?: () => void,
     private readonly openSecretsSettings?: () => void,
+    onSaveEnvironment: (settings: PluginSettings) => Promise<void> = onSave,
   ) {
     this.draft = structuredClone(getSettings());
+    this.environment = new EnvironmentManager(getSettings, onSaveEnvironment, isTranslationRunning);
     this.setting = new Setting({
       width: "min(860px, calc(100vw - 32px))",
       height: "min(720px, calc(100dvh - 64px))",
@@ -167,8 +124,6 @@ export class SettingsPanel {
     this.confirming = false;
     this.savedConfigRevision = ++this.configRevision;
     this.draft = structuredClone(this.getSettings());
-    this.pythonChoiceRevision = 0;
-    this.managedSelection = false;
     const root = document.createElement("div");
     this.configRoot = root;
     root.className = "paper-manager-form paper-manager-settings";
@@ -220,7 +175,7 @@ export class SettingsPanel {
     this.renderConfigVisual(root);
     const fontRoot = root.querySelector<HTMLElement>("[data-font-picker]");
     if (fontRoot) this.fontPicker = new FontPicker(fontRoot);
-    if (canUseNode()) void this.scanPdf2zh(root);
+    if (canUseNode()) void this.loadConfig(root);
     activate(this.initialTab);
     this.initialTab = "library";
     void this.renderLibraries(root);
@@ -257,28 +212,7 @@ export class SettingsPanel {
       this.scheduleSaveConfig(root);
     });
     root.querySelector<HTMLSelectElement>("[data-config-key=translator]")?.addEventListener("change", () => this.syncVisualToJson(root));
-    root.querySelector<HTMLButtonElement>("[data-scan-python]")?.addEventListener("click", () => void this.scanPython(root));
-    root.querySelector<HTMLButtonElement>("[data-scan-pdf2zh]")?.addEventListener("click", () => void this.scanPdf2zh(root));
-    root.querySelector<HTMLButtonElement>("[data-uninstall-pdf2zh]")?.addEventListener("click", () => void this.uninstallPdf2zh(root));
-    root.querySelector<HTMLButtonElement>("[data-upgrade-pdf2zh]")?.addEventListener("click", () => void this.installPdf2zh(root, true));
-    root.querySelector<HTMLButtonElement>("[data-install-pdf2zh]")?.addEventListener("click", () => void this.installPdf2zh(root));
-    root.querySelector<HTMLButtonElement>("[data-cancel-install]")?.addEventListener("click", () => this.deployAbort?.abort());
-    root.querySelector<HTMLButtonElement>("[data-repair-pdf2zh]")?.addEventListener("click", () => void this.installPdf2zh(root, false, true));
-    root.querySelector<HTMLButtonElement>("[data-apply-download-preset]")?.addEventListener("click", () => {
-      const id = root.querySelector<HTMLSelectElement>("[data-download-preset]")?.value;
-      const preset = DOWNLOAD_PRESETS.find(item => item.id === id);
-      if (!preset) return;
-      Object.assign(this.draft, preset.values);
-      for (const [key, value] of Object.entries(preset.values)) {
-        const input = root.querySelector<HTMLInputElement>(`[data-key=${key}]`);
-        if (input) input.value = value;
-      }
-      const status = root.querySelector<HTMLElement>("[data-download-preset-status]");
-      if (status) status.textContent = `已填入：${preset.label}。保存设置后供下次使用。`;
-    });
-    const manualPython = root.querySelector<HTMLInputElement>("[data-python-manual]");
-    manualPython?.addEventListener("input", () => this.updatePythonChoice(root, manualPython.value));
-    manualPython?.addEventListener("change", () => void this.selectPython(root, manualPython.value));
+    root.querySelector("[data-open-environment]")?.addEventListener("click", () => this.environment.open());
     root.querySelector<HTMLButtonElement>("[data-test-secrets]")?.addEventListener("click", () => {
       const result = this.testSecrets(root);
       showMessage(result.message, 4000, result.error ? "error" : undefined);
@@ -304,30 +238,7 @@ export class SettingsPanel {
       ${numberField("同时翻译篇数", "translationConcurrency", this.draft.translationConcurrency, 1, 8, "范围 1–8；总请求并发最多约为两项设置的乘积，下次提交时生效。取消会停止全部任务。")}
       ${switchField("保留双语版", "translationDual", this.draft.translationDual, "同时保留原文与译文的双语 PDF。")}
       ${switchField("删除旧翻译版本", "autoDeleteOldTranslations", this.draft.autoDeleteOldTranslations, "仅在新翻译及元数据保存成功后删除；删除失败不会影响新版本。")}`)
-      + settingsSection('pdf2zh 部署 <span class="paper-manager-badge paper-manager-badge--testing">测试中</span>', "扫描已有安装，或自动准备环境并安装。", `
-      <div class="paper-manager-actions"><button type="button" class="b3-button b3-button--outline" data-scan-pdf2zh>扫描 pdf2zh</button><button type="button" class="b3-button b3-button--text" data-upgrade-pdf2zh disabled>升级</button><button type="button" class="b3-button b3-button--text" data-repair-pdf2zh disabled>修复安装</button><button type="button" class="b3-button b3-button--text" data-uninstall-pdf2zh disabled>卸载</button></div>
-      <div class="paper-manager-preview" data-pdf2zh-status>尚未扫描</div>
-      <div data-pdf2zh-existing hidden><div class="paper-manager-preview" data-pdf2zh-detail></div></div>
-      <div data-pdf2zh-deploy>
-        <p class="paper-manager-hint">默认自动查找 Python 3.12，缺少时下载；无需预装 Python。升级和卸载仅管理此环境；已有安装可填写下方路径继续使用。安装完成后请保存设置。</p>
-        <details><summary>高级：指定 Python</summary>
-        <label class="paper-manager-field">${fieldInfo("部署 Python")}<div class="paper-manager-python-choice"><select class="b3-select" data-python-select aria-label="部署 Python"><option value="">自动（Python 3.12）</option></select><button type="button" class="b3-button b3-button--outline" data-scan-python>扫描</button></div></label>
-        <label class="paper-manager-field">${fieldInfo("手动 Python 路径")}<input class="b3-text-field" data-python-manual value="${escapeHtml(this.draft.pythonPath)}" placeholder="留空自动选择，或填写 /path/to/python"></label>
-        </details>
-        <details data-download-sources><summary>自定义下载源</summary>
-          <p class="paper-manager-hint">留空沿用 uv 默认或已有环境配置。包索引不影响 Python 和 uv 下载；以下地址分别设置。安装时立即使用当前填写值，保存设置后供下次使用。</p>
-          <div class="paper-manager-actions"><select class="b3-select" data-download-preset aria-label="下载源预设"><option value="">选择镜像预设…</option>${DOWNLOAD_PRESETS.map(item => `<option value="${item.id}">${escapeHtml(item.label)}</option>`).join("")}</select><button type="button" class="b3-button b3-button--outline" data-apply-download-preset>填入预设</button></div>
-          <p class="paper-manager-hint" data-download-preset-status role="status">清华和北外仅替换包索引；中科大替换全部下载源。中科大仅镜像最新发布，缺失的 Python 文件会转回 GitHub。</p>
-          ${textField("Python 包索引", "pdf2zhIndexUrl", this.draft.pdf2zhIndexUrl ?? "", "PEP 503 索引，例如 https://pypi.org/simple")}
-          ${textField("Python 下载镜像", "pdf2zhPythonMirror", this.draft.pdf2zhPythonMirror ?? "", "替换 https://github.com/astral-sh/python-build-standalone/releases/download 的根地址；须保留日期与文件名目录结构。")}
-          ${textField("uv 安装脚本目录", "pdf2zhUvInstallerUrl", this.draft.pdf2zhUvInstallerUrl ?? "", "默认 https://astral.sh/uv；自定义目录须提供 install.sh 和 install.ps1。中科大预设已适配 uv-installer 脚本。")}
-          ${textField("uv 发布文件目录", "pdf2zhUvDownloadUrl", this.draft.pdf2zhUvDownloadUrl ?? "", "可直接提供对应版本的 uv 压缩包目录；优先于下方 GitHub 镜像。中科大预设会自动填入。")}
-          ${textField("uv GitHub 镜像", "pdf2zhUvGithubUrl", this.draft.pdf2zhUvGithubUrl ?? "", "替换 https://github.com 的根地址；镜像须提供 astral-sh/uv 发布文件。仅缺少 uv 时使用。")}
-        </details>
-        <div class="paper-manager-actions"><button type="button" class="b3-button" data-install-pdf2zh>安装并使用独立环境</button><button type="button" class="b3-button b3-button--outline" data-cancel-install hidden>取消安装</button></div>
-      </div>
-      ${textField("pdf2zh 路径", "pdf2zhPath", this.draft.pdf2zhPath, "可执行文件路径；已安装在 PATH 中时可填写 pdf2zh。")}
-      <div class="paper-manager-preview" data-deploy-status hidden></div><details class="paper-manager-term" data-term hidden><summary>终端输出</summary><pre data-term-log></pre></details>`)
+      + settingsSection("翻译环境", "安装、升级或修复 PDF2ZH，管理下载源与已有安装。", `<button type="button" class="b3-button b3-button--outline" data-open-environment>管理翻译环境</button>`)
       + settingsSection("pdf2zh 配置文件", "选择翻译服务、模型，并映射所需密钥。", `
       <div class="paper-manager-actions"><button type="button" class="b3-button b3-button--outline" data-load-config>读取托管配置</button><button type="button" class="b3-button b3-button--text" data-import-system-config>读取系统配置并覆盖</button></div>
       <div class="paper-manager-tabs paper-manager-config-tabs"><button type="button" data-config-tab="visual" data-active="true">可视化</button><button type="button" data-config-tab="json">JSON</button></div>
@@ -344,85 +255,6 @@ export class SettingsPanel {
       ${textField("翻译资源目录", "translationAssetsDir", this.draft.translationAssetsDir)}
       ${textareaField("额外 CLI 参数", "pdf2zhArgs", serializeArgs(this.draft.pdf2zhArgs), "传给 pdf2zh 的额外命令行参数。")}
       <details class="paper-manager-settings-help"><summary>语言与配置文件的关系</summary><p class="paper-manager-hint">语言通过 <code>-li</code>/<code>-lo</code> 命令行参数传给 pdf2zh。命令行忽略配置文件里的语言键，因此语言属于插件设置；字体路径 NOTO_FONT_PATH 仍在配置文件中编辑。服务所需密钥通过思源「密钥和变量」映射，或使用环境变量。</p></details>`);
-  }
-
-  private async scanPdf2zh(root: HTMLElement): Promise<void> {
-    await this.withDeployBusy(root, () => this.refreshPdf2zh(root));
-  }
-
-  private async refreshPdf2zh(root: HTMLElement): Promise<void> {
-    const status = root.querySelector<HTMLElement>("[data-pdf2zh-status]")!;
-    const choiceRevision = this.pythonChoiceRevision;
-    const configured = this.draft.pdf2zhPath;
-    this.managedSelection = false;
-    try {
-      const installed = await inspectPdf2zh(undefined, this.draft.pythonPath || undefined);
-      const explicit = configured.trim() && configured.trim() !== "pdf2zh";
-      const executable = explicit ? await resolveExecutable(configured, getNodeRequire()!)
-        : installed?.executable ?? await detectPdf2zh();
-      if ((this.configRoot && root !== this.configRoot) || choiceRevision !== this.pythonChoiceRevision || configured !== this.draft.pdf2zhPath) return;
-      const existing = root.querySelector<HTMLElement>("[data-pdf2zh-existing]")!;
-      existing.hidden = !executable;
-      // Keep Python selection available for upgrades and installing alongside an external tool.
-      root.querySelector<HTMLElement>("[data-pdf2zh-deploy]")!.hidden = false;
-      if (!executable) {
-        status.textContent = "未找到 pdf2zh，可直接安装独立环境。";
-        return;
-      }
-      this.managedSelection = Boolean(installed && sameExecutable(executable, installed.executable));
-      const term = this.deployTerminal(root);
-      const probe = await probePdf2zh(executable, getNodeRequire()!, 15_000, {
-        autoRepair: !this.isTranslationRunning(),
-        onLine: line => { term.show(); term.append(line); status.textContent = line; },
-      });
-      if ((this.configRoot && root !== this.configRoot) || choiceRevision !== this.pythonChoiceRevision || configured !== this.draft.pdf2zhPath) return;
-      if (!probe.ok) throw new Error(probe.detail);
-      this.managedSelection = Boolean(installed && sameExecutable(executable, installed.executable));
-      if (!explicit) {
-        this.draft.pdf2zhPath = executable;
-        const input = root.querySelector<HTMLInputElement>("[data-key=pdf2zhPath]");
-        if (input) input.value = executable;
-      }
-      status.textContent = (probe.detail.includes("已自动修复") ? "腾讯云 SDK 依赖已自动修复。" : "") + (this.managedSelection ? "插件独立环境：启动检查通过，可升级或卸载。"
-        : "已有安装：启动检查通过。请通过原安装方式升级或卸载，或安装插件独立环境。");
-      root.querySelector<HTMLElement>("[data-pdf2zh-detail]")!.textContent =
-        `${this.managedSelection && installed?.version ? `版本 ${installed.version} · ` : ""}${executable}`;
-      if (this.configRevision === this.savedConfigRevision) await this.loadConfig(root);
-    } catch (error) {
-      status.textContent = `检查失败：${errorMessage(error)}${this.managedSelection ? "；可尝试修复安装。" : ""}`;
-    } finally {
-      this.updateManagementControls(root);
-    }
-  }
-
-  private async requireManagedSelection(): Promise<void> {
-    if (this.isTranslationRunning()) throw new Error("有翻译任务正在执行或排队，请完成后再管理 pdf2zh");
-    const installed = await inspectPdf2zh(undefined, this.draft.pythonPath || undefined);
-    const executable = await resolveExecutable(this.draft.pdf2zhPath, getNodeRequire()!);
-    if (!installed || !sameExecutable(executable, installed.executable)) throw new Error("当前使用已有安装，请通过原安装方式升级或卸载");
-  }
-
-  private async uninstallPdf2zh(root: HTMLElement): Promise<void> {
-    const status = root.querySelector<HTMLElement>("[data-pdf2zh-status]")!;
-    const term = this.deployTerminal(root);
-    await this.withDeployBusy(root, async () => {
-      try {
-        await this.requireManagedSelection();
-        term.clear();
-        term.show();
-        status.textContent = "正在卸载插件独立环境中的 pdf2zh…";
-        const result = await uninstallPdf2zh(undefined, this.draft.pythonPath || undefined, line => term.append(line));
-        status.textContent = result.code === 0 ? "pdf2zh 已卸载。" : `卸载失败：${result.stderr || "未知错误"}`;
-        if (result.code === 0) {
-          this.draft.pdf2zhPath = "pdf2zh";
-          const input = root.querySelector<HTMLInputElement>("[data-key=pdf2zhPath]");
-          if (input) input.value = "pdf2zh";
-          await this.refreshPdf2zh(root);
-        }
-      } catch (error) {
-        status.textContent = `卸载失败：${errorMessage(error)}`;
-      }
-    });
   }
 
   private bindConfigTabs(root: HTMLElement): void {
@@ -496,109 +328,6 @@ export class SettingsPanel {
     if (model) model.disabled = !serviceSupportsModel(service);
     const test = root.querySelector<HTMLButtonElement>("[data-test-secrets]");
     if (test) test.disabled = !serviceRequiresKey(service);
-  }
-
-  private async scanPython(root: HTMLElement): Promise<void> {
-    const status = root.querySelector<HTMLElement>("[data-deploy-status]")!;
-    const select = root.querySelector<HTMLSelectElement>("[data-python-select]")!;
-    await this.withDeployBusy(root, async () => {
-      try {
-        status.hidden = false;
-        status.textContent = "正在查找 Python 解释器…";
-        const list = await scanPython(undefined, (done, total) => {
-          status.textContent = `正在验证解释器 ${done}/${total}…`;
-        });
-        select.innerHTML = `<option value="">自动（Python 3.12）</option>` + list.map(item => {
-          const note = item.support === "supported" ? "" : item.support === "unverified" ? "（未验证）" : "（不支持）";
-          const disabled = item.support === "unsupported" ? "disabled" : "";
-          return `<option value="${escapeHtml(item.path)}" ${disabled}>Python ${item.version} · ${escapeHtml(item.arch)} · ${escapeHtml(item.path)}${note}</option>`;
-        }).join("");
-        this.syncPythonControls(root);
-        select.onchange = () => void this.selectPython(root, select.value);
-        status.textContent = `发现 ${list.length} 个 Python；同一解释器的 python/python3 已合并。${this.draft.pythonPath ? `当前部署 Python：${this.draft.pythonPath}` : "将自动查找或下载 Python 3.12。"}`;
-      } catch (error) {
-        status.hidden = false;
-        status.textContent = `扫描失败：${errorMessage(error)}`;
-      }
-    });
-  }
-
-  private syncPythonControls(root: HTMLElement): void {
-    const python = this.draft.pythonPath?.trim() ?? "";
-    const select = root.querySelector<HTMLSelectElement>("[data-python-select]");
-    if (select) select.value = [...select.options].some(option => option.value === python && !option.disabled) ? python : "";
-    const manual = root.querySelector<HTMLInputElement>("[data-python-manual]");
-    if (manual) manual.value = python;
-  }
-
-  private updatePythonChoice(root: HTMLElement, python: string): void {
-    this.draft.pythonPath = python.trim();
-    this.pythonChoiceRevision++;
-    this.syncPythonControls(root);
-    const status = root.querySelector<HTMLElement>("[data-deploy-status]")!;
-    status.hidden = false;
-    status.textContent = this.draft.pythonPath ? `当前部署 Python：${this.draft.pythonPath}` : "自动模式：查找或下载 Python 3.12。";
-  }
-
-  private async selectPython(root: HTMLElement, python: string): Promise<void> {
-    this.updatePythonChoice(root, python);
-    if (this.draft.pythonPath) await this.scanPdf2zh(root);
-  }
-
-  private async installPdf2zh(root: HTMLElement, upgrade = false, repair = false): Promise<void> {
-    const status = root.querySelector<HTMLElement>("[data-deploy-status]")!;
-    const python = this.draft.pythonPath?.trim() ?? "";
-    const term = this.deployTerminal(root);
-    await this.withDeployBusy(root, async () => {
-      status.hidden = false;
-      term.clear();
-      this.deployAbort = new AbortController();
-      const cancel = root.querySelector<HTMLButtonElement>("[data-cancel-install]");
-      if (cancel) cancel.hidden = false;
-      const options = { ...this.draft, upgrade, repair, signal: this.deployAbort.signal };
-      try {
-        validateDownloadSources(options);
-        if (this.isTranslationRunning()) throw new Error("有翻译任务正在执行或排队，请完成后再管理 pdf2zh");
-        if (upgrade || repair) await this.requireManagedSelection();
-        if (python) await validateDeploymentPython(python);
-        let uv = await findUv(undefined, python);
-        if (!uv) {
-          term.show();
-          status.textContent = "第 1/3 步：正在安装 uv…";
-          term.append("安装独立 uv 到插件管理目录…");
-          const result = await installUv(options, undefined, line => term.append(line));
-          if (result.code !== 0) throw new Error(`uv 安装失败：${result.stderr || "无输出"}`);
-          uv = await findUv(undefined, python);
-        }
-        if (!uv) throw new Error("uv 安装完成但无法调用；请手动安装 uv 后重试，或填写已有 pdf2zh 的可执行文件路径");
-        term.show();
-        status.textContent = repair ? "第 2/3 步：正在修复 pdf2zh…" : upgrade ? "第 2/3 步：正在升级 pdf2zh…" : "第 2/3 步：正在通过 uv 安装 pdf2zh…";
-        term.append(`$ ${uv.display} tool install ${upgrade ? "--upgrade " : repair ? "--reinstall " : ""}--python ${python || "3.12"} --with ${PDF2ZH_COMPAT_REQUIREMENT} pdf2zh`);
-        const result = await installPdf2zh(python, uv, undefined, line => term.append(line), options);
-        if (options.signal.aborted) throw new Error("安装已取消，可重新安装以继续完成环境准备");
-        if (result.code !== 0) throw new Error(`pdf2zh 安装失败：${result.stderr || "无输出"}`);
-        if (cancel) cancel.hidden = true;
-        status.textContent = "第 3/3 步：正在验证安装…";
-        const executable = await resolvePdf2zh(uv);
-        if (!executable) throw new Error("安装完成但未找到 pdf2zh 可执行文件");
-        const probe = await probePdf2zh(executable, getNodeRequire()!);
-        if (!probe.ok) throw new Error(`安装后启动检查失败：${probe.detail}`);
-        this.draft.pythonPath = python;
-        this.syncPythonControls(root);
-        this.draft.pdf2zhPath = executable;
-        const input = root.querySelector<HTMLInputElement>("[data-key=pdf2zhPath]");
-        if (input) input.value = executable;
-        status.textContent = `pdf2zh ${repair ? "修复" : upgrade ? "升级" : "安装"}完成：${executable}`;
-        await this.refreshPdf2zh(root);
-      } catch (error) {
-        term.show();
-        term.append(errorMessage(error));
-        status.textContent = `${errorMessage(error)}（详见终端输出）`;
-      } finally {
-        this.deployAbort = undefined;
-        if (cancel) cancel.hidden = true;
-      }
-    });
   }
 
   private async loadConfig(root: HTMLElement): Promise<void> {
@@ -719,10 +448,6 @@ export class SettingsPanel {
       : input instanceof HTMLInputElement && input.type === "number" ? Number(input.value) : input.value;
     if (key === "pdf2zhArgs") value = splitArgString(String(value));
     (this.draft as unknown as Record<string, unknown>)[key] = value;
-    if (key === "pdf2zhPath" && this.configRoot) {
-      this.managedSelection = false;
-      this.updateManagementControls(this.configRoot);
-    }
   }
 
   private async renderLibraries(root: HTMLElement): Promise<void> {
@@ -778,8 +503,7 @@ export class SettingsPanel {
       if (this.configRevision > this.savedConfigRevision && this.configRoot?.querySelector("[data-config-json]")) {
         await this.saveConfig(this.configRoot, ++this.configRevision);
       }
-      validateDownloadSources(this.draft);
-      const settings = normalizeSettings(this.draft);
+      const settings = normalizeSettings({ ...this.draft, ...environmentValues(this.getSettings()) });
       settings.onboardingCompleted = Boolean(settings.defaultLibraryDocId);
       await this.onSave(settings);
       this.draft = structuredClone(settings);

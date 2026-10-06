@@ -14,7 +14,7 @@ import * as deployment from "../src/services/pdf2zh-deployment";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 
-it.each([false, true])("retries a translation once after dependency repair; cancelled=%s", async cancelled => {
+it("reports dependency incompatibility without mutating the environment during translation", async () => {
   const root = mkdtempSync(path.join(tmpdir(), "pdf2zh-retry-"));
   mkdirSync(path.join(root, "data", "assets"), { recursive: true });
   writeFileSync(path.join(root, "data", "assets", "input.pdf"), "%PDF-1.4\n");
@@ -26,19 +26,16 @@ it.each([false, true])("retries a translation once after dependency repair; canc
     });
     return child as unknown as import("node:child_process").ChildProcess;
   });
-  const repair = vi.spyOn(deployment, "repairPdf2zhDependency").mockImplementation(async () => {
-    if (cancelled) translator.cancel();
-    return true;
-  });
+  const repair = vi.spyOn(deployment, "repairPdf2zhDependency");
   const persist = vi.fn();
   const translator = new TranslatorService({ getWorkspaceInfo: async () => ({ workspaceDir: root }) } as KernelClient, {
     requireFn: createRequire(import.meta.url), persist, spawnProcess: launches,
     readPaper: async () => paper({ attachments: [{ title: "input", mimeType: "application/pdf", assetAddress: "assets/input.pdf", sha256: "test" }] }),
   });
   try {
-    await expect(translator.translate("doc", { ...DEFAULT_SETTINGS, pdf2zhPath: process.execPath })).rejects.toThrow(cancelled ? /取消/ : /TextTranslateRequest/);
-    expect(repair).toHaveBeenCalledTimes(1);
-    expect(launches).toHaveBeenCalledTimes(cancelled ? 1 : 2);
+    await expect(translator.translate("doc", { ...DEFAULT_SETTINGS, pdf2zhPath: process.execPath })).rejects.toThrow(/管理翻译环境/);
+    expect(repair).not.toHaveBeenCalled();
+    expect(launches).toHaveBeenCalledTimes(1);
     expect(persist).not.toHaveBeenCalled();
   } finally {
     translator.cancel(); repair.mockRestore(); rmSync(root, { recursive: true, force: true });

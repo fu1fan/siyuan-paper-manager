@@ -19,6 +19,7 @@ import { openDuplicateResolutionDialog } from "./ui/dialogs/duplicate";
 import { openImportPdfDialog } from "./ui/dialogs/import-pdf";
 import { registerPaperUi } from "./ui/commands";
 import { escapeHtml } from "./ui/dom";
+import { environmentValues } from "./ui/environment-manager";
 import { SettingsPanel } from "./ui/settings";
 import { mountTranslationStatusBar } from "./ui/statusbar";
 import { openIntroductionDialog } from "./ui/dialogs/introduction";
@@ -76,13 +77,16 @@ export default class PaperManagerPlugin extends Plugin {
       () => this.settings,
       this.kernelClient,
       this.libraries,
-      (settings) => this.updateSettings(settings),
+      (settings) => this.updateSettings(settings, "settings"),
       (name) => this.getSecret(name),
       () => this.translator?.isRunning() ?? false,
       () => this.showIntroduction(),
       () => this.openSecretsSettings(),
+      (settings) => this.updateSettings(settings, "environment"),
     );
     this.setting = this.settingsPanel.setting;
+    this.settingsPanel.environment.mountStatusBar(this);
+    this.cleanup.push(() => this.settingsPanel.environment.destroy());
     await this.refreshDocumentKinds();
     let refreshTimer: ReturnType<typeof setTimeout> | undefined;
     const refreshKinds = () => {
@@ -134,14 +138,18 @@ export default class PaperManagerPlugin extends Plugin {
     this.connector = null;
   }
 
-  private async updateSettings(next: PluginSettings): Promise<void> {
+  private async updateSettings(next: PluginSettings, scope?: "settings" | "environment"): Promise<void> {
     validateCitekeyFormat(next.citekeyFormat);
-    const restart = next.zoteroPort !== this.settings.zoteroPort || next.autoListen !== this.settings.autoListen;
+    const restart = scope !== "environment" && (next.zoteroPort !== this.settings.zoteroPort || next.autoListen !== this.settings.autoListen);
     if (/[,，#\r\n]/u.test(next.defaultDocumentTag)) throw new Error("默认标签请填写一个标签名，不含 #、逗号或换行；留空表示不添加");
     await this.processor.runMembershipChange(async () => {
+      // Merge after acquiring the lock: a background install and an open settings
+      // dialog may save concurrently, but own different fields.
+      if (scope === "environment") next = { ...this.settings, ...environmentValues(next) };
+      if (scope === "settings") next = { ...next, ...environmentValues(this.settings) };
       await this.settingsStore.save(next);
       this.settings = next;
-      await syncDocumentTags(this.kernelClient, next.defaultDocumentTag);
+      if (scope !== "environment") await syncDocumentTags(this.kernelClient, next.defaultDocumentTag);
     });
     if (restart && canUseNode()) await this.restartConnector(next.autoListen);
   }
@@ -182,6 +190,7 @@ export default class PaperManagerPlugin extends Plugin {
       onDismiss: async () => { if (!this.unloaded) await this.saveData("introduction.json", { completed: true }); },
       createLibrary: () => this.ensureOnboarding(),
       openTranslation: () => this.settingsPanel.open("translation"),
+      openEnvironment: () => this.settingsPanel.environment.open(),
     });
   }
 

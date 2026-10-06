@@ -1,3 +1,4 @@
+import { pdf2zhActivity } from "./environment-activity";
 import { translationSource } from "./attachments";
 import type { ChildProcess } from "node:child_process";
 import type { PaperData } from "../types/paper";
@@ -6,7 +7,7 @@ import type { TranslationState } from "../types/status";
 import { getNodeRequire, type NodeRequire, requireNode } from "../core/env";
 import { KernelClient } from "../core/kernel";
 import { sanitizeDocumentName } from "../core/naming";
-import { repairPdf2zhDependency, resolveShellEnvironment } from "./pdf2zh-deployment";
+import { isPdf2zhDependencyError, resolveShellEnvironment } from "./pdf2zh-deployment";
 import { canonicalSecretEnvKey, ensureCredentialPlaceholders, isSecretKey, redactSecretValues } from "./pdf2zh-secrets";
 import { errorMessage } from "../core/errors";
 
@@ -31,6 +32,7 @@ export interface TranslatorOptions {
 }
 
 interface QueuedTranslation {
+  releaseEnvironment: () => void;
   docId: string;
   settings: PluginSettings;
   untranslatedOnly?: boolean;
@@ -76,7 +78,8 @@ export class TranslatorService {
         this.total = this.succeeded = this.failed = this.cancelled = 0;
         this.errors = [];
       }
-      this.queue.push({ docId, settings: snapshot, untranslatedOnly: options.untranslatedOnly, resolve, reject });
+      const releaseEnvironment = pdf2zhActivity.acquireTranslation();
+      this.queue.push({ releaseEnvironment, docId, settings: snapshot, untranslatedOnly: options.untranslatedOnly, resolve, reject });
       this.total++;
       this.concurrency = Math.max(1, Math.min(8, Math.floor(settings.translationConcurrency || 1)));
       this.pump();
@@ -93,9 +96,11 @@ export class TranslatorService {
       this.active.set(task.docId, { controller, state });
       this.emit(state);
       void this.runTranslation(task.docId, task.settings, controller.signal, task.untranslatedOnly).then((result) => {
+        task.releaseEnvironment();
         this.finish(task.docId, { state: "success", docId: task.docId, elapsedMs: result.elapsedMs });
         task.resolve(result);
       }, (error: unknown) => {
+        task.releaseEnvironment();
         const message = translationError(error);
         this.finish(task.docId, { state: "error", docId: task.docId, message });
         task.reject(new Error(message));
@@ -185,12 +190,10 @@ export class TranslatorService {
         await this.spawn(executable, args, docId, settings, signal, config.secretEnv);
       } catch (error) {
         signal.throwIfAborted();
-        const repaired = await repairPdf2zhDependency(executable, errorMessage(error), this.requireFn,
-          message => this.emit({ state: "running", docId, message }));
-        if (!repaired) throw error;
-        signal.throwIfAborted();
-        this.emit({ state: "running", docId, message: "依赖已自动修复，正在重新启动 pdf2zh" });
-        await this.spawn(executable, args, docId, settings, signal, config.secretEnv);
+        if (isPdf2zhDependencyError(errorMessage(error))) {
+          throw new Error("PDF2ZH 的腾讯云 SDK 依赖不兼容，请在翻译任务结束后打开「管理翻译环境」修复安装。\n" + errorMessage(error));
+        }
+        throw error;
       }
       signal.throwIfAborted();
       this.emit({ state: "running", docId, message: "正在保存译稿" });
@@ -278,6 +281,7 @@ export class TranslatorService {
   cancel(): void {
     for (const task of this.queue.splice(0)) {
       this.cancelled++;
+      task.releaseEnvironment();
       task.reject(new Error("翻译已取消"));
     }
     for (const task of this.active.values()) {
