@@ -48,3 +48,13 @@ it('parses both Retry-After forms without a five second cap', () => {
   expect(retryAfterMs(new Date(Date.now() + 120_000).toUTCString())).toBeGreaterThan(119_000);
   expect(retryAfterMs('invalid')).toBe(0);
 });
+
+it('rejects oversized arXiv bodies before decoding or caching them', async () => {
+  const client = new ArxivClient();
+  const fetcher = vi.fn<typeof fetch>(async () => new Response('<entry>paper</entry>', { headers: { 'content-length': String(8 * 1024 * 1024 + 1) } }));
+  const result = expect(client.query('oversized', fetcher)).rejects.toThrow('8 MiB');
+  await vi.advanceTimersByTimeAsync(0);
+  await result;
+  await expect(client.query('oversized', fetcher)).rejects.toThrow('冷却');
+  expect(fetcher).toHaveBeenCalledTimes(1);
+});

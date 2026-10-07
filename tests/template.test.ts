@@ -2,6 +2,7 @@ import { renderTemplateText } from "../src/core/template-engine";
 import { KernelClient } from "../src/core/kernel";
 import { TemplateService } from "../src/core/templates";
 import { paper } from "./fixtures";
+import { readFileSync } from "node:fs";
 
 describe("fallback template engine", () => {
   it("renders fields, conditions, ranges, and super-block markers", () => {
@@ -88,4 +89,31 @@ it("preserves custom attributes when refreshing a metadata container", async () 
   });
   await service.refreshMeta("doc", paper(), "meta");
   expect(attrs).toEqual(expected);
+});
+
+it("treats imported bibliographic Markdown and SiYuan markers as literal text", async () => {
+  const service = new TemplateService(new KernelClient(), { loadTemplate: async () => "{{.title}}\n{{.abstract}}\n{{range .authors}}{{.display}}{{end}}\n{{range .tags}}{{.display}}{{end}}" });
+  const data = paper();
+  data.canonical.title = "![remote](https://example.org/pixel)\n# Heading";
+  data.canonical.abstract = "Text\n\n    code\n- list\n}}}\n{: id=\"injected\"}\n<script>x</script>\n((20260101000000-abcdefg))";
+  data.canonical.creators = [{ family: "[link](https://example.org)", given: "", creatorType: "author" }];
+  data.canonical.tags = ["#tag#", "*bold*"];
+  const output = await service.renderBuiltin("paper-meta", data);
+  expect(output).toContain("\\!\\[remote\\]\\(https\\:\\/\\/example\\.org\\/pixel\\) \\# Heading");
+  expect(output).toContain("Text\n\ncode\n\\- list\n\\}\\}\\}\n\\{\\: id\\=\\\"injected\\\"\\}");
+  expect(output).toContain("\\<script\\>x\\<\\/script\\>");
+  expect(output).toContain("\\#tag\\#\\*bold\\*");
+  expect(output).not.toContain("\n# Heading");
+  expect(output).not.toContain("\n    code");
+});
+
+it("keeps intentional DOI and source links valid without allowing destination breakout", async () => {
+  const template = readFileSync(new URL("../templates/paper-meta.md", import.meta.url), "utf8");
+  const service = new TemplateService(new KernelClient(), { loadTemplate: async () => template });
+  const data = paper();
+  data.canonical.doi = "10.1234/a(b)";
+  data.canonical.url = "https://example.org/a(b)?x=1";
+  const output = await service.renderBuiltin("paper-meta", data);
+  expect(output).toContain("[10\\.1234\\/a\\(b\\)](https://doi.org/10.1234/a%28b%29)");
+  expect(output).toContain("[访问网页](https://example.org/a%28b%29?x=1)");
 });

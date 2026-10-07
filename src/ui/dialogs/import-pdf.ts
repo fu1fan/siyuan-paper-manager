@@ -1,4 +1,5 @@
 import { uniqueMetadataCandidates } from "../../services/metadata-candidates";
+import { readLocalPdf } from "../../services/resource-limits";
 import { metadataProgress, metadataResultHtml } from "./metadata-status";
 import { Dialog, showMessage } from "siyuan";
 import { SOURCE } from "../../constants";
@@ -91,7 +92,7 @@ export async function openImportPdfDialog(
     preview.textContent = shouldExtract ? "正在提取元数据…" : "使用文件名创建元数据页。";
     const progress = metadataProgress(controller.signal, text => { if (request === extractionRequest) preview.textContent = text; });
     try {
-      const selectedBytes = new Uint8Array(await file.arrayBuffer());
+      const selectedBytes = await readLocalPdf(file);
       if (request !== extractionRequest || controller.signal.aborted) return;
       bytes = selectedBytes;
       const extractor = new MetadataExtractor({ onProgress: progress.update, enableZoteroRecognizer: settings.enableZoteroRecognizer, enableCnki: settings.enableCnki, cnkiRegion: settings.cnkiRegion, cnkiTimeoutSeconds: settings.cnkiTimeoutSeconds, signal: controller.signal });
@@ -108,6 +109,7 @@ export async function openImportPdfDialog(
       warningBox.hidden = false; warningBox.innerHTML = metadataResultHtml(result);
     } catch (error) {
       if (request !== extractionRequest || controller.signal.aborted) return;
+      if (!bytes) { preview.textContent = errorMessage(error); setWarnings([errorMessage(error)]); return; }
       const title = file.name.replace(/\.pdf$/i, "") || "未命名文献";
       candidates = [{
         provider: "filename",

@@ -1,5 +1,52 @@
 import { EventEmitter } from "node:events";
 import { metadataFetch } from "../src/services/metadata-http";
+import { MAX_METADATA_BYTES, readMetadataBody } from "../src/services/metadata-body";
+
+it.each([undefined, "1"])("limits browser streams independently of Content-Length %s", async length => {
+  const cancel = vi.fn();
+  let chunks = 0;
+  const stream = new ReadableStream<Uint8Array>({
+    pull(controller) { chunks++; controller.enqueue(new Uint8Array(1024 * 1024)); }, cancel,
+  });
+  vi.stubGlobal("require", undefined);
+  vi.stubGlobal("fetch", vi.fn(async () => new Response(stream, { headers: length ? { "content-length": length } : {} })));
+  try {
+    await expect(metadataFetch("https://example.org")).rejects.toThrow("8 MiB");
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(chunks).toBeLessThanOrEqual(10);
+  } finally { vi.unstubAllGlobals(); }
+});
+
+it("rejects a declared oversized response without reading its body", async () => {
+  const cancel = vi.fn();
+  const response = new Response(new ReadableStream({ cancel }), { headers: { "content-length": String(MAX_METADATA_BYTES + 1) } });
+  await expect(readMetadataBody(response)).rejects.toThrow("8 MiB");
+  expect(cancel).toHaveBeenCalledOnce();
+});
+
+it("accepts the exact metadata boundary and preserves normal browser response metadata", async () => {
+  expect((await readMetadataBody(new Response(new Uint8Array(MAX_METADATA_BYTES)))).byteLength).toBe(MAX_METADATA_BYTES);
+  vi.stubGlobal("require", undefined);
+  const original = new Response('{"ok":true}', { status: 201, headers: { "content-type": "application/json" } });
+  Object.defineProperty(original, "url", { value: "https://example.org/final" });
+  vi.stubGlobal("fetch", vi.fn(async () => original));
+  try {
+    const response = await metadataFetch("https://example.org");
+    expect(response.status).toBe(201);
+    expect(response.url).toBe(original.url);
+    expect(await response.json()).toEqual({ ok: true });
+  } finally { vi.unstubAllGlobals(); }
+});
+
+it("cancels a stalled response body when the caller aborts", async () => {
+  const controller = new AbortController();
+  const cancel = vi.fn();
+  const response = new Response(new ReadableStream({ cancel }));
+  const pending = readMetadataBody(response, controller.signal);
+  controller.abort();
+  await expect(pending).rejects.toThrow();
+  expect(cancel).toHaveBeenCalledOnce();
+});
 it("bridges desktop cancellation without sending AbortSignal over Electron remote", async () => {
   const request = Object.assign(new EventEmitter(), { setHeader: vi.fn(), write: vi.fn(), end: vi.fn(), abort: vi.fn() });
   const factory = vi.fn().mockReturnValue(request);

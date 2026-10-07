@@ -7,7 +7,7 @@
 {{end}}{{if .volume}}- **卷**：{{.volume}}
 {{end}}{{if .issue}}- **期**：{{.issue}}
 {{end}}{{if .pages}}- **页码**：{{.pages}}
-{{end}}{{if .doi}}- **DOI**：[{{.doi}}](https://doi.org/{{.doi}})
+{{end}}{{if .doi}}- **DOI**：[{{.doi}}]({{.doiUrl}})
 {{end}}{{if .isbn}}- **ISBN**：{{.isbn}}
 {{end}}{{if .issn}}- **ISSN**：{{.issn}}
 {{end}}{{if .publisher}}- **出版社**：{{.publisher}}

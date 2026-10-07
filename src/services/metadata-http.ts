@@ -1,5 +1,6 @@
 import type { EventEmitter } from "node:events";
 import { getNodeRequire } from "../core/env";
+import { MAX_METADATA_BYTES, readMetadataBody } from "./metadata-body";
 interface Request extends EventEmitter { setHeader(name: string, value: string): void; write(body: string): void; end(): void; abort(): void }
 interface Incoming extends EventEmitter { statusCode: number; headers: Record<string, string | string[]> }
 interface Net { request(options: Record<string, unknown>): Request }
@@ -9,7 +10,15 @@ const desktopMetadataFetch: typeof fetch = async (input, init) => {
   const require = getNodeRequire();
   let net: Net | undefined;
   try { net = (require?.("@electron/remote") as { net?: Net } | undefined)?.net; } catch { /* browser frontend */ }
-  if (!net) return globalThis.fetch(input, init);
+  if (!net) {
+    const response = await globalThis.fetch(input, init);
+    const body = await readMetadataBody(response, init?.signal ?? undefined);
+    const bounded = new Response([204, 205, 304].includes(response.status) ? null : body, {
+      status: response.status, statusText: response.statusText, headers: response.headers,
+    });
+    Object.defineProperty(bounded, "url", { value: response.url });
+    return bounded;
+  }
   init?.signal?.throwIfAborted();
   return new Promise<Response>((resolve, reject) => {
     const request = net!.request({ url: String(input), method: init?.method ?? "GET", credentials: "omit", useSessionCookies: false });
@@ -39,8 +48,9 @@ const desktopMetadataFetch: typeof fetch = async (input, init) => {
       });
       // Terminal listeners must cross remote IPC before data starts the stream.
       response.on("data", (chunk: Uint8Array) => {
+        if (settled) return;
         length += chunk.length;
-        if (length > 8 * 1024 * 1024) { finish(new Error("元数据响应超过 8 MiB")); return; }
+        if (length > MAX_METADATA_BYTES) { finish(new Error("元数据响应超过 8 MiB")); return; }
         chunks.push(new Uint8Array(chunk));
       });
     });
@@ -92,7 +102,7 @@ export const metadataFetch: typeof fetch = async (input, init) => {
             });
             response.on("data", (chunk: Uint8Array) => {
               length += chunk.length;
-              if (length > 8 * 1024 * 1024) { request.destroy(new Error("元数据响应超过 8 MiB")); return; }
+              if (length > MAX_METADATA_BYTES) { request.destroy(new Error("元数据响应超过 8 MiB")); return; }
               chunks.push(new Uint8Array(chunk));
             });
           });

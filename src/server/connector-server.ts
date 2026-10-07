@@ -35,6 +35,8 @@ interface ConnectorSession {
   expectedAttachments: number;
   pendingUploads: number;
   uploadedBytes: number;
+  metadataBytes: number;
+  standalone?: boolean;
   processing?: Promise<void>;
   attachmentStatus: Map<string, { id: string; parentItemId: string; title: string; progress: number | false; error?: string }>;
   timer?: ReturnType<typeof setTimeout>;
@@ -62,6 +64,9 @@ const DEFAULT_SESSION_BYTES = 128 * 1024 * 1024;
 const DEFAULT_TOTAL_BYTES = 512 * 1024 * 1024;
 const DEFAULT_CONCURRENT_UPLOADS = 4;
 const MAX_SESSIONS = 128;
+export const MAX_CONNECTOR_ITEMS = 100;
+export const MAX_CONNECTOR_TOTAL_ITEMS = 500;
+export const MAX_CONNECTOR_METADATA_BYTES = 32 * 1024 * 1024;
 
 export class ConnectorServer {
   private readonly requireFn: NodeRequire;
@@ -215,6 +220,7 @@ export class ConnectorServer {
 
   private async handleSaveItems(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const payload = await readJson(request, MAX_JSON_BODY_BYTES);
+    this.validateItemCount(payload.items);
     const items = Array.isArray(payload.items) ? payload.items.filter(isRecord) : [];
     if (!items.length) {
       this.respondJson(response, 400, { error: "items is required" });
@@ -225,6 +231,7 @@ export class ConnectorServer {
 
   private async handleSaveSnapshot(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const payload = await readJson(request, MAX_JSON_BODY_BYTES);
+    this.validateItemCount(payload.items);
     const rawItems = Array.isArray(payload.items) && payload.items.some(isRecord)
       ? payload.items.filter(isRecord)
       : [isRecord(payload.item) ? payload.item : {
@@ -237,16 +244,18 @@ export class ConnectorServer {
   }
 
   private saveSession(payload: Record<string, unknown>, items: Record<string, unknown>[], response: ServerResponse): void {
+    this.validateItemCount(items);
     const sessionId = cleanId(payload.sessionID) || randomId();
     // Connector 会重发请求；活动会话也必须幂等，不能覆盖已上传附件与定时器。
     if (!this.sessions.has(sessionId)) {
-      this.ensureSessionCapacity();
+      const metadataBytes = Buffer.byteLength(JSON.stringify(items), "utf8");
+      this.ensureSessionCapacity(items.length, metadataBytes);
       const now = Date.now();
       const session: ConnectorSession = {
         id: sessionId,
         uri: string(payload.uri ?? payload.url) || undefined,
         items: items.map((raw, index) => ({ id: itemId(raw, index), raw: cloneRecord(raw), imported: false, delivered: new Set<string>() })),
-        attachments: [], createdAt: now, updatedAt: now, uploadedBytes: 0,
+        attachments: [], createdAt: now, updatedAt: now, uploadedBytes: 0, metadataBytes,
         expectedAttachments: expectedAttachmentCount(items), pendingUploads: 0, attachmentStatus: new Map(),
       };
       for (const item of session.items) {
@@ -354,7 +363,7 @@ export class ConnectorServer {
     if (!session) {
       this.ensureSessionCapacity();
       session = { id: sessionId, uri: string(metadata.url), items: [{ id: "standalone", raw: {}, imported: false, delivered: new Set() }],
-        attachments: [], attachmentStatus: new Map(), createdAt: Date.now(), updatedAt: Date.now(), expectedAttachments: 1, pendingUploads: 0, uploadedBytes: 0 };
+        attachments: [], attachmentStatus: new Map(), createdAt: Date.now(), updatedAt: Date.now(), expectedAttachments: 1, pendingUploads: 0, uploadedBytes: 0, metadataBytes: 0, standalone: true };
       this.sessions.set(sessionId, session);
     }
     try { this.beginUpload(session); }
@@ -364,7 +373,16 @@ export class ConnectorServer {
     }
     let attachment: StoredAttachment;
     try { attachment = await this.streamAttachment(request, metadata, session); }
-    finally { session.pendingUploads -= 1; this.activeUploads -= 1; }
+    catch (error) {
+      // The last failed upload removes an empty standalone session, even when
+      // another concurrent request originally created it.
+      if (session.standalone && session.pendingUploads === 1 && !session.processing && !session.attachments.length
+        && !Object.keys(session.items[0]?.raw ?? {}).length && this.sessions.get(sessionId) === session) {
+        this.sessions.delete(sessionId);
+        this.totalUploadedBytes -= session.uploadedBytes;
+      }
+      throw error;
+    } finally { session.pendingUploads -= 1; this.activeUploads -= 1; }
     const id = attachment.parentItemId = "standalone";
     const raw = { id, itemType: "document", title: metadata.title || metadata.filename || "独立附件", url: metadata.url };
     session.items[0]!.raw = raw;
@@ -490,6 +508,7 @@ export class ConnectorServer {
     const id = cleanId(metadata.id) || randomId();
     const filename = safeFilename(metadata.filename || metadata.title || "attachment", mimeExtension(metadata.contentType ?? metadata.mimeType));
     const tempPath = path.join(this.options.tempDirectory, `${randomId()}-${id}-${filename}`);
+    let reservedBytes = 0;
     try {
       let bytes = 0;
       const contentLength = Number(header(request, "content-length"));
@@ -499,6 +518,7 @@ export class ConnectorServer {
         try {
           if (bytes > this.maxAttachmentBytes()) throw new ProtocolError(413, "附件超过大小限制");
           this.reserveBytes(session, chunk.length);
+          reservedBytes += chunk.length;
           callback(null, chunk);
         } catch (error) { callback(error as Error); }
       } });
@@ -506,6 +526,8 @@ export class ConnectorServer {
         stream.pipeline(request, limiter, fs.createWriteStream(tempPath), (error) => error ? reject(error) : resolve());
       });
     } catch (error) {
+      session.uploadedBytes -= reservedBytes;
+      if (this.sessions.get(session.id) === session) this.totalUploadedBytes -= reservedBytes;
       this.removeTempFile(tempPath);
       throw error;
     }
@@ -546,9 +568,23 @@ export class ConnectorServer {
 
   private maxAttachmentBytes(): number { return this.options.maxAttachmentBytes ?? DEFAULT_ATTACHMENT_BYTES; }
 
-  private ensureSessionCapacity(): void {
+  private validateItemCount(items: unknown): void {
+    if (Array.isArray(items) && items.length > MAX_CONNECTOR_ITEMS) {
+      throw new ProtocolError(413, `单次最多导入 ${MAX_CONNECTOR_ITEMS} 条文献，请分批保存`);
+    }
+  }
+
+  private ensureSessionCapacity(itemCount = 1, metadataBytes = 0): void {
     this.cleanupExpired();
     if (this.sessions.size >= MAX_SESSIONS) throw new ProtocolError(429, "Connector 会话数已达上限");
+    let retainedItems = 0;
+    let retainedBytes = 0;
+    for (const session of this.sessions.values()) {
+      retainedItems += session.items.length;
+      retainedBytes += session.metadataBytes;
+    }
+    if (retainedItems + itemCount > MAX_CONNECTOR_TOTAL_ITEMS) throw new ProtocolError(429, "Connector 暂存文献数已达 500 条，请稍后重试");
+    if (retainedBytes + metadataBytes > MAX_CONNECTOR_METADATA_BYTES) throw new ProtocolError(429, "Connector 暂存元数据超过 32 MiB，请稍后重试");
   }
 
   private reserveBytes(session: ConnectorSession, bytes: number): void {

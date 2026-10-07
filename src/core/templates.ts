@@ -138,11 +138,12 @@ function templateContext(data: PaperData): Record<string, unknown> {
     issue: markdownText(canonical.issue),
     pages: markdownText(canonical.pages),
     doi: markdownText(canonical.doi),
+    doiUrl: canonical.doi ? markdownUrl(`https://doi.org/${canonical.doi}`) : undefined,
     isbn: markdownText(canonical.isbn),
     issn: markdownText(canonical.issn),
     publisher: markdownText(canonical.publisher),
-    url: safeExternalUrl(canonical.url),
-    abstract: markdownText(canonical.abstract),
+    url: markdownUrl(canonical.url),
+    abstract: markdownText(canonical.abstract, true),
     tags: canonical.tags.map((tag, index) => ({
       display: markdownText(tag),
       separator: index < canonical.tags.length - 1 ? "、" : "",
@@ -161,16 +162,20 @@ function templateContext(data: PaperData): Record<string, unknown> {
 }
 
 function markdownLinkTitle(value: string): string {
-  return markdownText(value).replace(/[\r\n]+/g, " ").replace(/\[/g, "\\[").replace(/\]/g, "\\]");
+  return markdownText(value);
 }
 
-function markdownText(value: string | undefined): string {
-  return (value ?? "")
-    .replace(/\\/g, "\\\\")
-    .replace(/</g, "\\<")
-    .replace(/>/g, "\\>")
-    .replace(/\r/g, "")
-    .trim();
+function markdownText(value: string | undefined, multiline = false): string {
+  const text = (value ?? "").replace(/\r\n?/g, "\n").trim();
+  // Escape ASCII punctuation, including SiYuan's block/IAL and math markers.
+  // Remove indentation so multi-line abstracts cannot create code blocks.
+  return (multiline ? text.split("\n").map(line => line.trim()).join("\n") : text.replace(/\s+/g, " "))
+    .replace(/[!-/:-@[-`{-~]/g, "\\$&");
+}
+
+function markdownUrl(value: string | undefined): string | undefined {
+  return safeExternalUrl(value)?.replace(/[\s()<>\\[\]"']/g,
+    character => `%${character.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0")}`);
 }
 
 function preserveRootIal(markdown: string, blockId: string, section: string): string {
@@ -181,4 +186,3 @@ function preserveRootIal(markdown: string, blockId: string, section: string): st
   }
   return `${trimmed}\n${ial}\n`;
 }
-

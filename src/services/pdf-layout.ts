@@ -1,4 +1,5 @@
 import { containsHan } from "../core/chinese";
+import { assertPdfTextBudget } from "./resource-limits";
 
 export interface PdfLine {
   text: string;
@@ -22,12 +23,25 @@ export function normalizePdfText(value: string): string {
 }
 
 /** Assemble a line from positioned text runs before applying Chinese title heuristics. */
-export function pdfTextLines(items: PdfTextItem[]): PdfLine[] {
+export function pdfTextLines(items: PdfTextItem[], signal?: AbortSignal): PdfLine[] {
+  assertPdfTextBudget(items, signal);
   const rows: Array<{ y: number; items: PdfTextItem[] }> = [];
-  for (const item of items.filter((item) => item.str.trim()).sort((a, b) => b.transform[5]! - a.transform[5]! || a.transform[4]! - b.transform[4]!)) {
+  for (const item of items.filter((item) => item.str.trim() && Number.isFinite(item.transform[5] ?? 0)).sort((a, b) => (b.transform[5] ?? 0) - (a.transform[5] ?? 0) || (a.transform[4] ?? 0) - (b.transform[4] ?? 0))) {
+    signal?.throwIfAborted();
     const y = item.transform[5] ?? 0;
     const size = Math.hypot(item.transform[2] ?? 0, item.transform[3] ?? 0) || item.height || 1;
-    const row = rows.find((row) => Math.abs(row.y - y) <= Math.max(1, size * 0.2));
+    // Rows are descending by y. Find the first matching row, preserving the old
+    // mixed-font tolerance semantics without scanning every previous row.
+    const tolerance = Number.isFinite(size) ? Math.max(1, size * 0.2) : 1;
+    let low = 0;
+    let high = rows.length;
+    while (low < high) {
+      const middle = (low + high) >>> 1;
+      if (rows[middle]!.y > y + tolerance) low = middle + 1;
+      else high = middle;
+    }
+    const candidate = rows[low];
+    const row = candidate && Math.abs(candidate.y - y) <= tolerance ? candidate : undefined;
     if (row) row.items.push(item);
     else rows.push({ y, items: [item] });
   }

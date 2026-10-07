@@ -2,6 +2,8 @@ import { uniqueMetadataCandidates } from "./metadata-candidates";
 import { arxivClient } from "./arxiv-client";
 import { recognizerPage } from "./zotero-recognizer";
 import { metadataFetch } from "./metadata-http";
+import { readMetadataBody } from "./metadata-body";
+import { assertPdfSize, assertPdfTextBudget, MAX_PDF_TEXT_ITEMS } from "./resource-limits";
 import { bibtexCandidates } from "./bibtex-input";
 import { englishPdfMetadata } from "./english-pdf";
 import { desktopCnkiClient } from "./cnki-desktop";
@@ -57,6 +59,7 @@ export class MetadataExtractor {
   }
 
   async extract(bytes: Uint8Array, filename: string): Promise<ExtractionResult> {
+    assertPdfSize(bytes.byteLength);
     return new MetadataExtractor(this.options).extractInternal(bytes, filename);
   }
 
@@ -67,7 +70,7 @@ export class MetadataExtractor {
     const warnings: string[] = [];
     let snapshot: PdfMetadataSnapshot = { info: {}, xmp: {}, text: "" };
     try {
-      snapshot = await inspectPdf(bytes, this.options.pdfOptions, status => this.progress(status), this.options.signal);
+      snapshot = await inspectPdf(bytes, this.options.pdfOptions, status => this.progress(status), this.options.signal, this.options.enableZoteroRecognizer);
     } catch (error) {
       warnings.push(`PDF 本地解析失败：${errorMessage(error)}`);
     }
@@ -302,7 +305,7 @@ export class MetadataExtractor {
         throw new PermanentHttpError(`HTTP ${response.status}`);
       }
       // Keep the timeout and caller cancellation active until the full body arrives.
-      const body = await response.arrayBuffer();
+      const body = await readMetadataBody(response, controller.signal);
       controller.signal.throwIfAborted();
       return new Response([204, 205].includes(response.status) ? null : body, { status: response.status, headers: response.headers });
     } catch (error) {
@@ -319,7 +322,9 @@ export class MetadataExtractor {
 
 }
 
-export async function inspectPdf(bytes: Uint8Array, options: Partial<DocumentInitParameters> = pdfDocumentOptions(), onProgress?: (status: string) => void, signal?: AbortSignal): Promise<PdfMetadataSnapshot> {
+export async function inspectPdf(bytes: Uint8Array, options: Partial<DocumentInitParameters> = pdfDocumentOptions(), onProgress?: (status: string) => void, signal?: AbortSignal, includeRecognizer = false): Promise<PdfMetadataSnapshot> {
+  assertPdfSize(bytes.byteLength);
+  signal?.throwIfAborted();
   const loading = pdfjs.getDocument({
     ...options,
     data: bytes.slice(),
@@ -344,14 +349,17 @@ export async function inspectPdf(bytes: Uint8Array, options: Partial<DocumentIni
       onProgress?.(`正在本地解析 PDF 第 ${pageNumber}/${Math.min(8, document.numPages)} 页：文字、字号和排版`);
       const page = await document.getPage(pageNumber);
       const content = await page.getTextContent();
-      if (pageNumber <= 5) {
+      if (content.items.length > MAX_PDF_TEXT_ITEMS) throw new Error("PDF 单页文字项超过 20000，已停止解析");
+      const items = content.items.filter((item): item is TextItem => "str" in item);
+      assertPdfTextBudget(items, signal);
+      if (includeRecognizer && pageNumber <= 5) {
         const viewport = page.getViewport({ scale: 1 });
-        recognizerPages.push(recognizerPage(viewport.width, viewport.height, content.items.filter((item): item is TextItem => "str" in item)));
+        recognizerPages.push(recognizerPage(viewport.width, viewport.height, items, signal));
       }
-      pages.push(pdfTextLines(content.items.filter((item): item is TextItem => "str" in item)));
+      pages.push(pdfTextLines(items, signal));
       page.cleanup();
     }
-    return { info, xmp, recognizer: { metadata: Object.fromEntries(Object.entries(info).filter(([, value]) => typeof value === "string")), totalPages: document.numPages, pages: recognizerPages }, text: pages.map((lines) => lines.map((line) => line.text).join("\n")).join("\n"), pages };
+    return { info, xmp, recognizer: includeRecognizer ? { metadata: Object.fromEntries(Object.entries(info).filter(([, value]) => typeof value === "string")), totalPages: document.numPages, pages: recognizerPages } : undefined, text: pages.map((lines) => lines.map((line) => line.text).join("\n")).join("\n"), pages };
   } finally {
     await loading.destroy();
   }

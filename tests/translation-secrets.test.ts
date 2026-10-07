@@ -161,6 +161,41 @@ it("does not add a placeholder for a keyless service", async () => {
   } finally { cleanup(); }
 });
 
+it.each(["deepseek", "google"])("only exposes credentials for the selected %s service", async service => {
+  const { root, translator, captures, cleanup } = setup();
+  vi.stubEnv("OPENAI_API_KEY", "unrelated-shell-key");
+  vi.stubEnv("UNRELATED_ACCESS_TOKEN", "unrelated-shell-token");
+  try {
+    await translator.translate("doc", settingsFor(root, {
+      translateService: service,
+      pdf2zhConfig: { translators: [
+        { name: service, envs: service === "deepseek" ? { DEEPSEEK_API_KEY: "deepseek" } : {} },
+        { name: "tencent", envs: { TENCENTCLOUD_SECRET_ID: "tencent-id", TENCENTCLOUD_SECRET_KEY: "tencent-key" } },
+      ] },
+      pdf2zhSecretNames: { DEEPSEEK_API_KEY: "deepseek", ALI_API_KEY: "ali-secret" },
+    }));
+    const env = captures[0]!.env;
+    expect(env.DEEPSEEK_API_KEY).toBe(service === "deepseek" ? "sk-test-key" : undefined);
+    for (const key of ["ALI_API_KEY", "TENCENTCLOUD_SECRET_ID", "TENCENTCLOUD_SECRET_KEY", "OPENAI_API_KEY", "UNRELATED_ACCESS_TOKEN"]) expect(env).not.toHaveProperty(key);
+    expect(env.PATH).toBeTruthy();
+  } finally { vi.unstubAllEnvs(); cleanup(); }
+});
+
+it("resolves legacy mappings only for the selected service", async () => {
+  const { root, translator, captures, cleanup } = setup();
+  try {
+    await translator.translate("doc", settingsFor(root, {
+      pdf2zhSecretNames: {},
+      pdf2zhConfig: { translators: [
+        { name: "deepseek", envs: { DEEPSEEK_API_KEY: "deepseek" } },
+        { name: "tencent", envs: { TENCENTCLOUD_SECRET_KEY: "tencent-key" } },
+      ] },
+    }));
+    expect(captures[0]!.env.DEEPSEEK_API_KEY).toBe("sk-test-key");
+    expect(captures[0]!.env).not.toHaveProperty("TENCENTCLOUD_SECRET_KEY");
+  } finally { cleanup(); }
+});
+
 it("uses settings when the configured source path cannot be read", async () => {
   const { root, translator, captures, cleanup } = setup();
   try {

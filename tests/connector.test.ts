@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import { mkdtempSync, rmSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ConnectorServer } from "../src/server/connector-server";
+import { ConnectorServer, MAX_CONNECTOR_ITEMS, MAX_CONNECTOR_TOTAL_ITEMS } from "../src/server/connector-server";
 import type { ImportCandidate } from "../src/types/import";
 
 describe("ConnectorServer", () => {
@@ -38,6 +38,81 @@ describe("ConnectorServer", () => {
       }
     }
   }
+
+  it("does not retain 128 rejected standalone sessions or deny the next valid save", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await boot("connector-rejected-", { requireFn: createRequire(import.meta.url), onImport: () => "doc", maxAttachmentBytes: 1 });
+      for (let index = 0; index < 128; index++) {
+        const response = await fetch(`${base}/connector/saveStandaloneAttachment?sessionID=bad-${index}`, { method: "POST", headers: { "X-Metadata": "{}" }, body: "xx" });
+        expect(response.status).toBe(413);
+        await response.text();
+      }
+      const progress = await fetch(`${base}/connector/sessionProgress`, { method: "POST", body: JSON.stringify({ sessionID: "bad-0" }) });
+      expect(progress.status).toBe(404);
+      expect(readdirSync(directory)).toHaveLength(0);
+      const valid = await fetch(`${base}/connector/saveStandaloneAttachment?sessionID=valid`, { method: "POST", headers: { "X-Metadata": "{}" }, body: "x" });
+      expect(valid.status).toBe(201);
+    } finally { log.mockRestore(); }
+  });
+
+  it("reclaims bytes and the empty session after a partial standalone stream aborts", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await boot("connector-aborted-", { requireFn: createRequire(import.meta.url), onImport: () => "doc", maxTotalAttachmentBytes: 8 });
+      const pending = httpRequest(`${base}/connector/saveStandaloneAttachment?sessionID=partial`, { method: "POST", headers: { "X-Metadata": "{}" } });
+      pending.on("error", () => {});
+      pending.write("12345678");
+      const progress = () => fetch(`${base}/connector/sessionProgress`, { method: "POST", body: JSON.stringify({ sessionID: "partial" }) });
+      await vi.waitFor(async () => { expect((await progress()).status).toBe(200); expect(readdirSync(directory)).toHaveLength(1); });
+      pending.destroy();
+      await vi.waitFor(async () => { expect((await progress()).status).toBe(404); expect(readdirSync(directory)).toHaveLength(0); });
+      const valid = await fetch(`${base}/connector/saveStandaloneAttachment?sessionID=next`, { method: "POST", headers: { "X-Metadata": "{}" }, body: "12345678" });
+      expect(valid.status).toBe(201);
+    } finally { log.mockRestore(); }
+  });
+
+  it("rejects oversized item lists on both save routes before scheduling imports", async () => {
+    const onImport = vi.fn();
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await boot("connector-items-", { requireFn: createRequire(import.meta.url), onImport });
+      for (const route of ["saveItems", "saveSnapshot"]) {
+        const response = await fetch(`${base}/connector/${route}`, { method: "POST",
+          body: JSON.stringify({ sessionID: route, items: Array.from({ length: MAX_CONNECTOR_ITEMS + 1 }, (_, id) => ({ id, title: "Paper" })) }) });
+        expect(response.status).toBe(413);
+        expect((await response.json()).error).toContain("分批");
+        expect((await fetch(`${base}/connector/sessionProgress`, { method: "POST", body: JSON.stringify({ sessionID: route }) })).status).toBe(404);
+      }
+      expect(onImport).not.toHaveBeenCalled();
+    } finally { log.mockRestore(); }
+  });
+
+  it("bounds retained items across sessions while preserving retries at capacity", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await boot("connector-total-items-", { requireFn: createRequire(import.meta.url), onImport: vi.fn(), graceMs: 60_000 });
+      const items = Array.from({ length: MAX_CONNECTOR_ITEMS }, (_, id) => ({ id, title: "Paper" }));
+      const save = (sessionID: string) => fetch(`${base}/connector/saveItems`, { method: "POST", body: JSON.stringify({ sessionID, items }) });
+      for (let index = 0; index < MAX_CONNECTOR_TOTAL_ITEMS / MAX_CONNECTOR_ITEMS; index++) expect((await save(String(index))).status).toBe(201);
+      expect((await save("overflow")).status).toBe(429);
+      expect((await save("0")).status).toBe(201);
+      const now = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 31 * 60_000);
+      try { expect((await save("after-expiry")).status).toBe(201); }
+      finally { now.mockRestore(); }
+    } finally { log.mockRestore(); }
+  });
+
+  it("bounds retained metadata bytes even with few items per session", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await boot("connector-total-json-", { requireFn: createRequire(import.meta.url), onImport: vi.fn(), graceMs: 60_000 });
+      const item = { title: "Paper", abstractNote: "x".repeat(4 * 1024 * 1024) };
+      const save = (sessionID: string) => fetch(`${base}/connector/saveItems`, { method: "POST", body: JSON.stringify({ sessionID, items: [item] }) });
+      for (let index = 0; index < 7; index++) { const response = await save(String(index)); expect(response.status).toBe(201); await response.text(); }
+      expect((await save("overflow")).status).toBe(429);
+    } finally { log.mockRestore(); }
+  });
 
   it("rejects website origins and DNS rebinding hosts while accepting extension and originless clients", async () => {
     const onImport = vi.fn();

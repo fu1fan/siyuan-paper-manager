@@ -76,6 +76,12 @@ it('keeps the timeout active while reading a response body', async () => {
   expect(fetchImpl).toHaveBeenCalledTimes(1);
 });
 
+it('rejects an oversized provider body before parsing JSON, including injected fetch implementations', async () => {
+  const fetchImpl = vi.fn<typeof fetch>(async () => new Response('[]', { headers: { 'content-length': String(8 * 1024 * 1024 + 1) } }));
+  await expect(new MetadataExtractor({ fetchImpl }).lookup('PMID: 12345')).rejects.toThrow('8 MiB');
+  expect(fetchImpl).toHaveBeenCalledTimes(1);
+});
+
 it('propagates user cancellation without starting another provider', async () => {
   const controller = new AbortController();
   const fetchImpl = vi.fn<typeof fetch>(async () => { controller.abort(); throw controller.signal.reason; });

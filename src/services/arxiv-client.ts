@@ -1,3 +1,5 @@
+import { readMetadataBody } from "./metadata-body";
+
 /** Shared by all extractors in this plugin window. Never retry an arXiv failure immediately. */
 export class ArxivClient {
   private tail: Promise<unknown> = Promise.resolve();
@@ -27,7 +29,7 @@ export class ArxivClient {
       try {
         onProgress?.(`正在请求 arXiv API（export.arxiv.org/api/query）：${id}，超时上限 ${timeoutMs / 1000} 秒`);
         const response = await fetchImpl(`https://export.arxiv.org/api/query?id_list=${encodeURIComponent(id)}`, { signal: controller.signal });
-        const text = await response.text();
+        const text = new TextDecoder().decode(await readMetadataBody(response, controller.signal));
         if (response.status === 429 || /rate\s+exceeded/i.test(text)) {
           this.cooldown = Date.now() + Math.max(60_000, retryAfterMs(response.headers.get('Retry-After')));
           throw new Error('arXiv 请求频率受限，已暂停请求，请稍后重试');

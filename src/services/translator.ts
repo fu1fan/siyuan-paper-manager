@@ -8,7 +8,7 @@ import { getNodeRequire, type NodeRequire, requireNode } from "../core/env";
 import { KernelClient } from "../core/kernel";
 import { sanitizeDocumentName } from "../core/naming";
 import { isPdf2zhDependencyError, resolveShellEnvironment } from "./pdf2zh-deployment";
-import { canonicalSecretEnvKey, ensureCredentialPlaceholders, isSecretKey, redactSecretValues } from "./pdf2zh-secrets";
+import { canonicalSecretEnvKey, ensureCredentialPlaceholders, isSecretKey, pdf2zhCredentialKeys, redactSecretValues } from "./pdf2zh-secrets";
 import { errorMessage } from "../core/errors";
 
 export interface TranslationResult {
@@ -479,7 +479,26 @@ function withoutConfig(args: string[], managed: boolean): string[] {
 }
 
 function buildPdf2zhEnv(settings: PluginSettings, getSecret?: (name: string) => string, base: NodeJS.ProcessEnv = process.env, configSecrets: Record<string, string> = {}): NodeJS.ProcessEnv {
-  return { ...base, ...configSecrets, ...resolvedSecrets(settings, getSecret) };
+  const allowed = selectedSecretKeys(settings, Object.keys(configSecrets));
+  const env: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries({ ...base, ...configSecrets })) {
+    if (!isSecretKey(key)) env[key] = value;
+    else if (allowed.has(canonicalSecretEnvKey(key))) env[canonicalSecretEnvKey(key)] = value;
+  }
+  return { ...env, ...resolvedSecrets(settings, getSecret) };
+}
+
+function selectedSecretKeys(settings: PluginSettings, configKeys: string[] = []): Set<string> {
+  const service = selectedPdf2zhService(settings).trim().toLowerCase();
+  const known = pdf2zhCredentialKeys(service);
+  if (known.length) return new Set(known);
+  // Custom services can explicitly declare their own credential keys.
+  const translators = settings.pdf2zhConfig?.translators;
+  const entry = Array.isArray(translators) ? translators.find(item => item && typeof item === "object"
+    && String((item as Record<string, unknown>).name ?? "").trim().toLowerCase() === service) : undefined;
+  const envs = entry && typeof entry === "object" ? (entry as Record<string, unknown>).envs : undefined;
+  const keys = envs && typeof envs === "object" && !Array.isArray(envs) ? Object.keys(envs) : [];
+  return new Set([...keys, ...configKeys].filter(isSecretKey).map(canonicalSecretEnvKey));
 }
 
 function plaintextConfigSecrets(config: Record<string, unknown>, service: string): Record<string, string> {
@@ -498,19 +517,24 @@ function plaintextConfigSecrets(config: Record<string, unknown>, service: string
  */
 function resolvedSecrets(settings: PluginSettings, getSecret?: (name: string) => string): Record<string, string> {
   const resolved: Record<string, string> = {};
+  const allowed = selectedSecretKeys(settings);
+  const service = selectedPdf2zhService(settings).trim().toLowerCase();
   for (const [key, name] of Object.entries(settings.pdf2zhSecretNames ?? {})) {
     const envKey = canonicalSecretEnvKey(key);
     const secretName = name.trim();
-    if (!envKey || !secretName) continue;
+    if (!allowed.has(envKey) || !secretName) continue;
     const value = getSecret?.(secretName)?.trim();
     if (value) resolved[envKey] = value;
   }
   const translators = settings.pdf2zhConfig?.translators;
   if (Array.isArray(translators)) for (const translator of translators) {
+    if (!translator || typeof translator !== "object"
+      || String((translator as Record<string, unknown>).name ?? "").trim().toLowerCase() !== service) continue;
     const envs = translator && typeof translator === "object" ? (translator as Record<string, unknown>).envs : undefined;
     if (!envs || typeof envs !== "object") continue;
     for (const [key, candidate] of Object.entries(envs as Record<string, unknown>)) {
-      if (!isSecretKey(key) || typeof candidate !== "string" || !candidate.trim()) continue;
+      if (!allowed.has(canonicalSecretEnvKey(key)) || typeof candidate !== "string" || !candidate.trim()
+        || resolved[canonicalSecretEnvKey(key)]) continue;
       const value = getSecret?.(candidate.trim())?.trim();
       if (value) resolved[canonicalSecretEnvKey(key)] = value;
     }
