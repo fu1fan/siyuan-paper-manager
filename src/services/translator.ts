@@ -309,11 +309,24 @@ export class TranslatorService {
       });
       task.child = child;
       let stderr = "";
+      let fatalError: string | undefined;
+      let killTimer: ReturnType<typeof setTimeout> | undefined;
+      const recent = { stdout: "", stderr: "" };
       // 流式解码：多字节字符跨 chunk 时不会被切成 U+FFFD。
       const stdoutDecoder = new TextDecoder();
       const stderrDecoder = new TextDecoder();
       let lastLogEmit = 0;
-      const handleText = (text: string) => {
+      const handleText = (text: string, stream: "stdout" | "stderr") => {
+        recent[stream] = (recent[stream] + text).slice(-8000);
+        const failure = translationServiceFailure(recent[stream]);
+        if (failure && !fatalError && !signal.aborted) {
+          fatalError = failure;
+          // Wait for close before cleaning temporary files or starting the next job.
+          killTimer = setTimeout(() => { child.kill("SIGKILL"); }, 3000);
+          killTimer.unref?.();
+          child.kill("SIGTERM");
+        }
+        if (fatalError) return;
         const progress = parseProgress(text);
         // 日志行高频出现时节流，进度变化始终即时广播。
         if (progress == null) {
@@ -328,18 +341,22 @@ export class TranslatorService {
           message: progress == null ? text.trim().slice(-160) || "翻译中" : `翻译中 ${progress}%`,
         });
       };
-      child.stdout?.on("data", (chunk: Uint8Array) => handleText(stdoutDecoder.decode(chunk, { stream: true })));
+      child.stdout?.on("data", (chunk: Uint8Array) => handleText(stdoutDecoder.decode(chunk, { stream: true }), "stdout"));
       child.stderr?.on("data", (chunk: Uint8Array) => {
         const text = stderrDecoder.decode(chunk, { stream: true });
         stderr = `${stderr}${text}`.slice(-8_000);
-        handleText(text);
+        handleText(text, "stderr");
       });
       child.once("error", (error) => reject(signal.aborted ? cancellationError(signal) : error));
       child.once("close", (code, exitSignal) => {
-        stderr = `${stderr}${stderrDecoder.decode()}`.slice(-8_000);
+        if (killTimer) clearTimeout(killTimer);
+        const tail = stderrDecoder.decode();
+        stderr = `${stderr}${tail}`.slice(-8_000);
+        fatalError ??= translationServiceFailure(stderr);
         // Windows 上 kill 的进程以非零退出码结束且不带信号，必须以取消状态为准，
         // 否则用户主动取消会被误报为「退出码 1」失败。
         if (signal.aborted) reject(cancellationError(signal));
+        else if (fatalError) reject(new Error(fatalError));
         else if (exitSignal) reject(new Error(`pdf2zh 已中止 (${exitSignal})`));
         else if (code === 0) resolve();
         else reject(new Error(`pdf2zh 退出码 ${String(code)}：${stderr.trim().slice(-1000)}`));
@@ -644,4 +661,21 @@ function translationError(error: unknown): string {
   if (/KeyError|API_KEY|AUTH_KEY|ACCESS_TOKEN|SECRET_KEY|密钥/.test(message)) return `${message}；请在设置中填写对应服务的思源「密钥和变量」名称`;
   if (/huggingface|hf-mirror|download|Failed to (?:download|load)|model.*(?:not found|missing)/i.test(message)) return `${message}；国内网络可设置 HF_ENDPOINT=https://hf-mirror.com`;
   return message;
+}
+
+/** Recognize explicit service failures, never bare numbers in PDF/progress output. */
+export function translationServiceFailure(output: string): string | undefined {
+  if (/Authentication Fails|invalid[_ ]api[_ ]key|Incorrect API key|AuthenticationError|(?:Error code:|HTTP(?:Error)?[: ]+)\s*401\b/i.test(output)) {
+    return "翻译服务认证失败（401）：API 密钥无效或已失效，请检查插件的密钥名称映射及思源「设置 → 密钥和变量」，更新后重新翻译。";
+  }
+  if (/Insufficient Balance|insufficient_quota|(?:Error code:|HTTP(?:Error)?[: ]+)\s*402\b/i.test(output)) {
+    return "翻译服务余额或配额不足，请检查服务账户后重新翻译。";
+  }
+  if (/model_not_found|ModelNotFoundError/i.test(output)) {
+    return "翻译模型不存在或无权使用，请检查翻译服务和模型名称后重新翻译。";
+  }
+  if (/(?:Error code:|HTTP(?:Error)?[: ]+)\s*403\b|PermissionDeniedError/i.test(output)) {
+    return "翻译服务拒绝访问（403），请检查 API 密钥权限及服务访问限制。";
+  }
+  return undefined;
 }

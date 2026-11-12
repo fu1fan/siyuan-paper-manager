@@ -253,3 +253,39 @@ it("keeps multibyte stderr characters split across chunks intact in the error me
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+it("stops a retrying process on a split authentication error and preserves the actionable reason", async () => {
+  const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { EventEmitter } = await import("node:events");
+  const { PassThrough } = await import("node:stream");
+  const root = mkdtempSync(join(tmpdir(), "paper-decode-"));
+  mkdirSync(join(root, "data", "assets"), { recursive: true });
+  writeFileSync(join(root, "data", "assets", "input.pdf"), "%PDF-1.4\n");
+  const bytes = new TextEncoder().encode("Error code: 401 Authentication Fails: private-key-do-not-display\n");
+  const cut = 17; // 切在多字节字符中间
+  const translator = new TranslatorService({ getWorkspaceInfo: async () => ({ workspaceDir: root }) } as KernelClient, {
+    requireFn: createRequire(import.meta.url),
+    persist: vi.fn(),
+    readPaper: async () => paper({ attachments: [{ title: "input", mimeType: "application/pdf", assetAddress: "assets/input.pdf", sha256: "test" }] }),
+    spawnProcess: () => {
+      const child = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough(), kill: () => { setImmediate(() => child.emit("close", null, "SIGTERM")); return true; } });
+      setImmediate(() => {
+        child.stderr.write(bytes.slice(0, cut));
+        child.stderr.write(bytes.slice(cut));
+        child.stderr.end();
+
+      });
+      return child as unknown as import("node:child_process").ChildProcess;
+    },
+  });
+  try {
+    const job = translator.translate("doc", { ...DEFAULT_SETTINGS, pdf2zhPath: process.execPath });
+    await expect(job).rejects.toThrow(/认证失败（401）/);
+    await expect(job).rejects.not.toThrow("private-key");
+  } finally {
+    translator.cancel();
+    rmSync(root, { recursive: true, force: true });
+  }
+});

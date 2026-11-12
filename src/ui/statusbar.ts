@@ -29,7 +29,7 @@ export function mountTranslationStatusBar(plugin: Plugin, status: StatusStore): 
     previous = status.translation;
     render(element, status.translation);
     if (status.translation.state === "success") scheduleHide(5_000);
-    else if (status.translation.state === "error") scheduleHide(12_000);
+
     else if (hideTimer) { clearTimeout(hideTimer); hideTimer = undefined; }
   });
   return () => {
@@ -74,7 +74,7 @@ export function translationStatusView(translation: TranslationState): { label: s
   }
   if (translation.state === "idle") return { label: "", title: "" };
   return {
-    label: multi ? `翻译结束 · ${counts} / ${batch.total} 篇` : translation.state === "success" ? "翻译完成" : batch?.cancelled ? "翻译已取消" : "翻译失败",
+    label: multi ? `翻译结束 · ${counts} / ${batch.total} 篇` : translation.state === "success" ? "翻译完成" : batch?.cancelled ? "翻译已取消" : `翻译失败：${translation.message}`,
     title: [translation.state === "success" ? (multi ? `全部 ${batch.total} 篇翻译完成` : `用时 ${(translation.elapsedMs / 1000).toFixed(1)} 秒`) : translation.message,
       ...batch?.errors ?? [],
     ].filter(Boolean).join("\n"),
